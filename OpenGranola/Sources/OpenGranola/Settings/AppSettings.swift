@@ -170,7 +170,12 @@ final class AppSettings {
         guard !defaults.bool(forKey: migrationKey) else { return }
         defer { defaults.set(true, forKey: migrationKey) }
 
-        guard let oldDefaults = UserDefaults(suiteName: "com.opengranola.app") else { return }
+        // --- Migrate UserDefaults ---
+        guard let oldDefaults = UserDefaults(suiteName: "com.opengranola.app") else {
+            // Even without old defaults, migrate file-backed state
+            migrateFilesFromOpenGranola(defaults: defaults)
+            return
+        }
 
         let keysToMigrate = [
             "kbFolderPath", "selectedModel", "transcriptionLocale", "inputDeviceID",
@@ -185,12 +190,91 @@ final class AppSettings {
             }
         }
 
+        // --- Migrate Keychain ---
         let oldService = "com.opengranola.app"
         let keychainKeys = ["openRouterApiKey", "voyageApiKey"]
         for key in keychainKeys {
             if KeychainHelper.load(key: key) == nil,
                let oldValue = Self.loadKeychain(service: oldService, key: key) {
                 KeychainHelper.save(key: key, value: oldValue)
+            }
+        }
+
+        // --- Migrate file-backed state ---
+        migrateFilesFromOpenGranola(defaults: defaults)
+    }
+
+    /// Migrate file-backed state (sessions, templates, KB cache, transcripts)
+    /// from ~/Library/Application Support/OpenGranola/ to OpenOats/ and
+    /// handle the implicit KB folder default.
+    private static func migrateFilesFromOpenGranola(defaults: UserDefaults) {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+
+        let oldAppSupportDir = appSupport.appendingPathComponent("OpenGranola")
+        let newAppSupportDir = appSupport.appendingPathComponent("OpenOats")
+
+        // Migrate Application Support: sessions/, templates.json, kb_cache.json
+        if fm.fileExists(atPath: oldAppSupportDir.path) {
+            try? fm.createDirectory(at: newAppSupportDir, withIntermediateDirectories: true)
+
+            // Sessions directory (JSONL files + sidecars)
+            let oldSessions = oldAppSupportDir.appendingPathComponent("sessions")
+            let newSessions = newAppSupportDir.appendingPathComponent("sessions")
+            if fm.fileExists(atPath: oldSessions.path) && !fm.fileExists(atPath: newSessions.path) {
+                try? fm.moveItem(at: oldSessions, to: newSessions)
+            }
+
+            // Templates
+            let oldTemplates = oldAppSupportDir.appendingPathComponent("templates.json")
+            let newTemplates = newAppSupportDir.appendingPathComponent("templates.json")
+            if fm.fileExists(atPath: oldTemplates.path) && !fm.fileExists(atPath: newTemplates.path) {
+                try? fm.moveItem(at: oldTemplates, to: newTemplates)
+            }
+
+            // KB embedding cache
+            let oldCache = oldAppSupportDir.appendingPathComponent("kb_cache.json")
+            let newCache = newAppSupportDir.appendingPathComponent("kb_cache.json")
+            if fm.fileExists(atPath: oldCache.path) && !fm.fileExists(atPath: newCache.path) {
+                try? fm.moveItem(at: oldCache, to: newCache)
+            }
+        }
+
+        // Handle implicit KB folder default: if kbFolderPath was never explicitly
+        // set, users were using ~/Documents/OpenGranola as the implicit default.
+        // That path won't be in UserDefaults, so migrate it to the new default.
+        let oldDocDir = home.appendingPathComponent("Documents/OpenGranola")
+        let newDocDir = home.appendingPathComponent("Documents/OpenOats")
+        if defaults.string(forKey: "kbFolderPath") == nil {
+            // Check if the old default directory exists and has content
+            if fm.fileExists(atPath: oldDocDir.path) {
+                let contents = (try? fm.contentsOfDirectory(atPath: oldDocDir.path)) ?? []
+                if !contents.isEmpty {
+                    // Point KB at the existing old directory rather than
+                    // creating a new empty one — preserves user's files in place
+                    defaults.set(oldDocDir.path, forKey: "kbFolderPath")
+                }
+            }
+        } else if defaults.string(forKey: "kbFolderPath") == oldDocDir.path {
+            // User explicitly had the old default path saved — keep it pointing
+            // at the existing directory so their files stay accessible
+            // (no change needed, the path is already persisted)
+        }
+
+        // Migrate transcript archives: move files from ~/Documents/OpenGranola/
+        // into ~/Documents/OpenOats/ so new sessions and old archives coexist
+        if fm.fileExists(atPath: oldDocDir.path) && oldDocDir.path != (defaults.string(forKey: "kbFolderPath") ?? "") {
+            // Only move transcript .txt files if the old dir isn't the active KB folder
+            // (if it IS the KB folder, leave everything in place)
+            try? fm.createDirectory(at: newDocDir, withIntermediateDirectories: true)
+            if let files = try? fm.contentsOfDirectory(at: oldDocDir, includingPropertiesForKeys: nil) {
+                for file in files where file.pathExtension == "txt" {
+                    let dest = newDocDir.appendingPathComponent(file.lastPathComponent)
+                    if !fm.fileExists(atPath: dest.path) {
+                        try? fm.moveItem(at: file, to: dest)
+                    }
+                }
             }
         }
     }
