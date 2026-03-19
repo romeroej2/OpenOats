@@ -1,4 +1,6 @@
-use crate::models::{EnhancedNotes, SessionIndex, SessionRecord, SessionSidecar, SuggestionFeedbackEntry};
+use crate::models::{
+    EnhancedNotes, SessionIndex, SessionRecord, SessionSidecar, SuggestionFeedbackEntry,
+};
 use chrono::{DateTime, Utc};
 use serde_json;
 use std::fs::{self, File};
@@ -14,7 +16,11 @@ pub struct SessionStore {
 impl SessionStore {
     pub fn new(sessions_dir: PathBuf) -> Self {
         let _ = fs::create_dir_all(&sessions_dir);
-        Self { sessions_dir, current_id: None, current_file: None }
+        Self {
+            sessions_dir,
+            current_id: None,
+            current_file: None,
+        }
     }
 
     pub fn with_default_path() -> Self {
@@ -56,9 +62,13 @@ impl SessionStore {
     }
 
     pub fn write_sidecar(&self, sidecar: &SessionSidecar) {
-        let path = self.sessions_dir.join(format!("{}.meta.json", sidecar.index.id));
+        let path = self
+            .sessions_dir
+            .join(format!("{}.meta.json", sidecar.index.id));
         match serde_json::to_string_pretty(sidecar) {
-            Ok(json) => { let _ = fs::write(path, json); }
+            Ok(json) => {
+                let _ = fs::write(path, json);
+            }
             Err(e) => log::error!("SessionStore: sidecar write failed: {e}"),
         }
     }
@@ -101,12 +111,19 @@ impl SessionStore {
     }
 
     pub fn load_session_index(&self) -> Vec<SessionIndex> {
-        let Ok(entries) = fs::read_dir(&self.sessions_dir) else { return vec![] };
-        let mut map: std::collections::HashMap<String, SessionIndex> = std::collections::HashMap::new();
+        let Ok(entries) = fs::read_dir(&self.sessions_dir) else {
+            return vec![];
+        };
+        let mut map: std::collections::HashMap<String, SessionIndex> =
+            std::collections::HashMap::new();
 
         for entry in entries.flatten() {
             let path = entry.path();
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
 
             if name.ends_with(".meta.json") {
                 let stem = name.trim_end_matches(".meta.json").to_string();
@@ -118,21 +135,32 @@ impl SessionStore {
             }
         }
 
-        for entry in fs::read_dir(&self.sessions_dir).into_iter().flatten().flatten() {
+        for entry in fs::read_dir(&self.sessions_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                let stem = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 if !map.contains_key(&stem) {
                     let records = self.load_transcript(&stem);
-                    map.insert(stem.clone(), SessionIndex {
-                        id: stem.clone(),
-                        started_at: Self::parse_date_from_id(&stem),
-                        ended_at: None,
-                        template_snapshot: None,
-                        title: None,
-                        utterance_count: records.len(),
-                        has_notes: false,
-                    });
+                    map.insert(
+                        stem.clone(),
+                        SessionIndex {
+                            id: stem.clone(),
+                            started_at: Self::parse_date_from_id(&stem),
+                            ended_at: None,
+                            template_snapshot: None,
+                            title: None,
+                            utterance_count: records.len(),
+                            has_notes: false,
+                        },
+                    );
                 }
             }
         }
@@ -144,7 +172,9 @@ impl SessionStore {
 
     pub fn load_transcript(&self, session_id: &str) -> Vec<SessionRecord> {
         let path = self.sessions_dir.join(format!("{}.jsonl", session_id));
-        let Ok(file) = File::open(&path) else { return vec![] };
+        let Ok(file) = File::open(&path) else {
+            return vec![];
+        };
         BufReader::new(file)
             .lines()
             .flatten()

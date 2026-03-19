@@ -1,4 +1,6 @@
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+};
 
 pub struct WhisperManager {
     ctx: WhisperContext,
@@ -9,7 +11,10 @@ impl WhisperManager {
     pub fn new(model_path: &str, language: &str) -> Result<Self, String> {
         let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
             .map_err(|e| format!("Failed to load whisper model: {e}"))?;
-        Ok(Self { ctx, language: language.to_string() })
+        Ok(Self {
+            ctx,
+            language: language.to_string(),
+        })
     }
 
     pub fn create_state(&self) -> Result<WhisperState, String> {

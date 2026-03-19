@@ -8,17 +8,29 @@ pub struct KeyEntry {
 
 impl KeyEntry {
     fn new(key: &str) -> Self {
-        Self { entry: Entry::new(SERVICE, key).expect("keyring entry creation failed") }
+        Self {
+            entry: Entry::new(SERVICE, key).expect("keyring entry creation failed"),
+        }
     }
 
     pub fn new_with_service(service: &str, key: &str) -> Self {
-        Self { entry: Entry::new(service, key).expect("keyring entry creation failed") }
+        Self {
+            entry: Entry::new(service, key).expect("keyring entry creation failed"),
+        }
     }
 
-    pub fn open_router_api_key() -> Self { Self::new("openRouterApiKey") }
-    pub fn voyage_api_key() -> Self { Self::new("voyageApiKey") }
-    pub fn open_ai_llm_api_key() -> Self { Self::new("openAILLMApiKey") }
-    pub fn open_ai_embed_api_key() -> Self { Self::new("openAIEmbedApiKey") }
+    pub fn open_router_api_key() -> Self {
+        Self::new("openRouterApiKey")
+    }
+    pub fn voyage_api_key() -> Self {
+        Self::new("voyageApiKey")
+    }
+    pub fn open_ai_llm_api_key() -> Self {
+        Self::new("openAILLMApiKey")
+    }
+    pub fn open_ai_embed_api_key() -> Self {
+        Self::new("openAIEmbedApiKey")
+    }
 
     pub fn save(&self, value: &str) -> Result<(), keyring::Error> {
         self.entry.set_password(value)

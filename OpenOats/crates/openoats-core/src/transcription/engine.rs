@@ -42,7 +42,9 @@ impl TranscriptionEngine {
 }
 
 impl Default for TranscriptionEngine {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

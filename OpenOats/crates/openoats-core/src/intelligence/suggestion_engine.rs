@@ -2,6 +2,7 @@ use crate::intelligence::llm_client::{strip_fences, Message};
 use crate::models::{
     ConversationState, KBResult, Suggestion, SuggestionDecision, SuggestionKind, Utterance,
 };
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 const COOLDOWN_SECS: u64 = 90;
@@ -12,6 +13,7 @@ const MAX_RECENT_ANGLES: usize = 3;
 pub struct SuggestionEngine {
     pub conversation_state: ConversationState,
     recent_suggestion_texts: Vec<String>,
+    surfaced_smart_questions: HashSet<String>,
     last_suggestion_time: Option<Instant>,
     utterance_count: usize,
 }
@@ -21,6 +23,7 @@ impl SuggestionEngine {
         Self {
             conversation_state: ConversationState::empty(),
             recent_suggestion_texts: Vec::new(),
+            surfaced_smart_questions: HashSet::new(),
             last_suggestion_time: None,
             utterance_count: 0,
         }
@@ -55,7 +58,8 @@ impl SuggestionEngine {
         }
 
         // Stage 2: Refresh conversation state from the current rolling window.
-        self.update_conversation_state(recent_them_utterances, &complete_fn).await;
+        self.update_conversation_state(recent_them_utterances, &complete_fn)
+            .await;
 
         // Stage 3: KB retrieval
         let queries = self.build_search_queries(transcript_window);
@@ -75,25 +79,29 @@ impl SuggestionEngine {
 
         if kb_hits.is_empty() {
             return self
-                .maybe_surface_smart_question(transcript_window, recent_them_utterances, &complete_fn)
+                .maybe_surface_smart_question(
+                    transcript_window,
+                    recent_them_utterances,
+                    &complete_fn,
+                )
                 .await;
         }
 
         // Stage 4: LLM surfacing gate
-        let decision = self.run_surfacing_gate(transcript_window, &kb_hits, &complete_fn).await?;
+        let decision = self
+            .run_surfacing_gate(transcript_window, &kb_hits, &complete_fn)
+            .await?;
 
         if !decision.should_surface {
             return None;
         }
 
-        let suggestion_text = self.synthesize_suggestion(transcript_window, &kb_hits, &complete_fn).await?;
+        let suggestion_text = self
+            .synthesize_suggestion(transcript_window, &kb_hits, &complete_fn)
+            .await?;
 
         // Track recent suggestions to avoid duplicates
-        self.recent_suggestion_texts.push(suggestion_text.clone());
-        if self.recent_suggestion_texts.len() > MAX_RECENT_ANGLES {
-            self.recent_suggestion_texts.remove(0);
-        }
-        self.last_suggestion_time = Some(Instant::now());
+        self.register_recent_suggestion(suggestion_text.clone());
 
         Some(Suggestion::new(
             SuggestionKind::KnowledgeBase,
@@ -106,6 +114,7 @@ impl SuggestionEngine {
     pub fn clear(&mut self) {
         self.conversation_state = ConversationState::empty();
         self.recent_suggestion_texts.clear();
+        self.surfaced_smart_questions.clear();
         self.last_suggestion_time = None;
         self.utterance_count = 0;
     }
@@ -114,9 +123,13 @@ impl SuggestionEngine {
 
     fn passes_prefilter(&self, text: &str) -> bool {
         let words: Vec<&str> = text.split_whitespace().collect();
-        if words.len() < MIN_WORDS || text.len() < MIN_CHARS { return false; }
+        if words.len() < MIN_WORDS || text.len() < MIN_CHARS {
+            return false;
+        }
         if let Some(t) = self.last_suggestion_time {
-            if t.elapsed() < Duration::from_secs(COOLDOWN_SECS) { return false; }
+            if t.elapsed() < Duration::from_secs(COOLDOWN_SECS) {
+                return false;
+            }
         }
         true
     }
@@ -124,7 +137,10 @@ impl SuggestionEngine {
     fn build_search_queries(&self, transcript_window: &str) -> Vec<String> {
         let mut queries = vec![transcript_window.to_string()];
         if !self.conversation_state.current_topic.is_empty() {
-            queries.push(format!("{} {}", self.conversation_state.current_topic, transcript_window));
+            queries.push(format!(
+                "{} {}",
+                self.conversation_state.current_topic, transcript_window
+            ));
         }
         if !self.conversation_state.short_summary.is_empty() {
             queries.push(self.conversation_state.short_summary.clone());
@@ -132,23 +148,47 @@ impl SuggestionEngine {
         queries
     }
 
+    fn register_recent_suggestion(&mut self, text: String) {
+        self.recent_suggestion_texts.push(text);
+        if self.recent_suggestion_texts.len() > MAX_RECENT_ANGLES {
+            self.recent_suggestion_texts.remove(0);
+        }
+        self.last_suggestion_time = Some(Instant::now());
+    }
+
+    fn normalize_question(text: &str) -> String {
+        text.split_whitespace()
+            .map(|part| part.trim_matches(|c: char| c.is_ascii_punctuation()))
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+
+    fn has_already_surfaced_question(&self, question: &str) -> bool {
+        let normalized = Self::normalize_question(question);
+        !normalized.is_empty() && self.surfaced_smart_questions.contains(&normalized)
+    }
+
     async fn update_conversation_state<F, Fut>(
         &mut self,
         recent_them: &[&Utterance],
         complete_fn: &F,
-    )
-    where
+    ) where
         F: Fn(Vec<Message>) -> Fut,
         Fut: std::future::Future<Output = Result<String, String>>,
     {
-        let transcript = recent_them.iter()
+        let transcript = recent_them
+            .iter()
             .map(|u| format!("Them: {}", u.text))
-            .collect::<Vec<_>>().join("\n");
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let prompt = format!(
             "Analyze this conversation excerpt and return JSON with fields: \
             currentTopic, shortSummary, openQuestions (array), activeTensions (array), \
-            recentDecisions (array), themGoals (array).\n\nTranscript:\n{}", transcript
+            recentDecisions (array), themGoals (array).\n\nTranscript:\n{}",
+            transcript
         );
 
         let messages = vec![
@@ -180,9 +220,17 @@ impl SuggestionEngine {
         F: Fn(Vec<Message>) -> Fut,
         Fut: std::future::Future<Output = Result<String, String>>,
     {
-        let context = kb_hits.iter()
-            .map(|h| format!("- {} (score: {:.2})", &h.text[..h.text.len().min(100)], h.score))
-            .collect::<Vec<_>>().join("\n");
+        let context = kb_hits
+            .iter()
+            .map(|h| {
+                format!(
+                    "- {} (score: {:.2})",
+                    &h.text[..h.text.len().min(100)],
+                    h.score
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let recent = self.recent_suggestion_texts.join(", ");
 
@@ -197,7 +245,9 @@ impl SuggestionEngine {
         );
 
         let messages = vec![
-            Message::system("You decide if an AI suggestion should be shown. Return only valid JSON."),
+            Message::system(
+                "You decide if an AI suggestion should be shown. Return only valid JSON.",
+            ),
             Message::user(prompt),
         ];
 
@@ -229,9 +279,12 @@ impl SuggestionEngine {
         F: Fn(Vec<Message>) -> Fut,
         Fut: std::future::Future<Output = Result<String, String>>,
     {
-        let context = kb_hits.iter().take(3)
+        let context = kb_hits
+            .iter()
+            .take(3)
             .map(|h| h.text.clone())
-            .collect::<Vec<_>>().join("\n\n");
+            .collect::<Vec<_>>()
+            .join("\n\n");
 
         let prompt = format!(
             "Given this conversation moment and relevant knowledge, write a concise, \
@@ -267,6 +320,12 @@ impl SuggestionEngine {
             .join("\n");
 
         let recent = self.recent_suggestion_texts.join(", ");
+        let previously_surfaced_questions = self
+            .surfaced_smart_questions
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         let prompt = format!(
             "A meeting participant may need a clarifying or probing question when there is a knowledge gap, ambiguity, \
             missing constraint, or unstated assumption.\n\
@@ -274,16 +333,19 @@ impl SuggestionEngine {
             Short summary: {}\n\
             Recent conversation:\n{}\n\n\
             Most recent utterance: {}\n\
-            Recent suggestions: {}\n\n\
+            Recent suggestions: {}\n\
+            Previously surfaced smart questions: {}\n\n\
             Return JSON: {{\"shouldSurface\": bool, \"question\": string, \"confidence\": 0-1, \
             \"relevanceScore\": 0-1, \"helpfulnessScore\": 0-1, \"timingScore\": 0-1, \
             \"noveltyScore\": 0-1, \"reason\": string}}.\n\
-            The question must be concise, natural, and directly ask for the missing information.",
+            The question must be concise, natural, and directly ask for the missing information. \
+            Do not repeat a smart question that was already surfaced earlier in the session.",
             self.conversation_state.current_topic,
             self.conversation_state.short_summary,
             recent_context,
             utterance,
             recent,
+            previously_surfaced_questions,
         );
 
         let messages = vec![
@@ -298,7 +360,7 @@ impl SuggestionEngine {
         let should_surface = v["shouldSurface"].as_bool().unwrap_or(false);
         let question = v["question"].as_str().unwrap_or("").trim().to_string();
 
-        if !should_surface || question.is_empty() {
+        if !should_surface || question.is_empty() || self.has_already_surfaced_question(&question) {
             return None;
         }
 
@@ -312,11 +374,9 @@ impl SuggestionEngine {
             reason: v["reason"].as_str().unwrap_or("").to_string(),
         };
 
-        self.recent_suggestion_texts.push(question.clone());
-        if self.recent_suggestion_texts.len() > MAX_RECENT_ANGLES {
-            self.recent_suggestion_texts.remove(0);
-        }
-        self.last_suggestion_time = Some(Instant::now());
+        self.surfaced_smart_questions
+            .insert(Self::normalize_question(&question));
+        self.register_recent_suggestion(question.clone());
 
         Some(Suggestion::new(
             SuggestionKind::SmartQuestion,
@@ -328,7 +388,9 @@ impl SuggestionEngine {
 }
 
 impl Default for SuggestionEngine {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -344,7 +406,8 @@ mod tests {
     #[test]
     fn prefilter_accepts_substantive_text() {
         let engine = SuggestionEngine::new();
-        let text = "What is the best approach to solving this customer problem we keep running into?";
+        let text =
+            "What is the best approach to solving this customer problem we keep running into?";
         assert!(engine.passes_prefilter(text));
     }
 
@@ -353,5 +416,25 @@ mod tests {
         let engine = SuggestionEngine::new();
         let text = "Estamos revisando el alcance del proyecto y necesitamos ordenar las prioridades del cliente.";
         assert!(engine.passes_prefilter(text));
+    }
+
+    #[test]
+    fn normalize_question_ignores_case_whitespace_and_punctuation() {
+        let normalized = SuggestionEngine::normalize_question("  What is the budget timeline?  ");
+        assert_eq!(normalized, "what is the budget timeline");
+    }
+
+    #[test]
+    fn surfaced_question_match_uses_normalized_text() {
+        let mut engine = SuggestionEngine::new();
+        engine
+            .surfaced_smart_questions
+            .insert(SuggestionEngine::normalize_question(
+                "What is the budget timeline?",
+            ));
+
+        assert!(engine.has_already_surfaced_question("what is the budget timeline"));
+        assert!(engine.has_already_surfaced_question("What is the budget timeline?!"));
+        assert!(!engine.has_already_surfaced_question("Who owns the budget timeline?"));
     }
 }

@@ -6,8 +6,8 @@
 //! On non-macOS builds the module compiles to a no-op stub so the
 //! Windows build is not affected.
 
-use openoats_core::audio::{AudioCaptureService, AudioStream};
 use async_trait::async_trait;
+use openoats_core::audio::{AudioCaptureService, AudioStream};
 use std::error::Error;
 
 // ── macOS implementation ──────────────────────────────────────────────────────
@@ -44,9 +44,8 @@ mod macos_impl {
         channels: u32,
     ) -> Vec<f32> {
         use coreaudio_sys::{
-            kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
-            AudioBufferList, CMBlockBufferRef,
-            CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer,
+            kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment, AudioBufferList,
+            CMBlockBufferRef, CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer,
             CMSampleBufferRef,
         };
 
@@ -130,8 +129,7 @@ mod macos_impl {
                 return;
             }
 
-            let rms =
-                (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+            let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
             *self.level.lock().unwrap() = rms;
 
             self.tx.blocking_send(samples).ok();

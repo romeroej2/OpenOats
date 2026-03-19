@@ -29,18 +29,17 @@ pub struct KnowledgeBase {
 
 impl KnowledgeBase {
     pub fn new(cache_path: PathBuf, config_fingerprint: String) -> Self {
-        let chunks = Self::load_cache(&cache_path, &config_fingerprint)
-            .unwrap_or_default();
-        Self { chunks, cache_path, config_fingerprint }
+        let chunks = Self::load_cache(&cache_path, &config_fingerprint).unwrap_or_default();
+        Self {
+            chunks,
+            cache_path,
+            config_fingerprint,
+        }
     }
 
     /// Index all .md and .txt files in `folder`. Returns count of new chunks embedded.
     /// `embed_fn` takes a batch of texts and returns their embeddings.
-    pub async fn index<F, Fut>(
-        &mut self,
-        folder: &Path,
-        embed_fn: F,
-    ) -> Result<usize, String>
+    pub async fn index<F, Fut>(&mut self, folder: &Path, embed_fn: F) -> Result<usize, String>
     where
         F: Fn(Vec<String>) -> Fut,
         Fut: std::future::Future<Output = Result<Vec<Vec<f32>>, String>>,
@@ -51,7 +50,11 @@ impl KnowledgeBase {
         for path in &files {
             let content = std::fs::read_to_string(path)
                 .map_err(|e| format!("Read {}: {e}", path.display()))?;
-            let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let filename = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             let _hash = sha2_hex(&content);
 
             // Check if already cached
@@ -63,7 +66,9 @@ impl KnowledgeBase {
             }
 
             let raw_chunks = chunk_markdown(&content, &filename);
-            if raw_chunks.is_empty() { continue; }
+            if raw_chunks.is_empty() {
+                continue;
+            }
 
             let texts: Vec<String> = raw_chunks.iter().map(|(t, _)| t.clone()).collect();
             let embeddings = embed_fn(texts).await?;
@@ -85,22 +90,32 @@ impl KnowledgeBase {
     }
 
     pub fn search(&self, query_embedding: &[f32], top_k: usize, threshold: f32) -> Vec<KBResult> {
-        let mut scored: Vec<(f32, &KbChunk)> = self.chunks.iter()
+        let mut scored: Vec<(f32, &KbChunk)> = self
+            .chunks
+            .iter()
             .map(|c| (cosine_similarity(query_embedding, &c.embedding), c))
             .filter(|(s, _)| *s >= threshold)
             .collect();
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored.into_iter().take(top_k).map(|(score, c)| KBResult {
-            id: Uuid::new_v4(),
-            text: c.text.clone(),
-            source_file: c.source_file.clone(),
-            header_context: c.header_context.clone(),
-            score: score as f64,
-        }).collect()
+        scored
+            .into_iter()
+            .take(top_k)
+            .map(|(score, c)| KBResult {
+                id: Uuid::new_v4(),
+                text: c.text.clone(),
+                source_file: c.source_file.clone(),
+                header_context: c.header_context.clone(),
+                score: score as f64,
+            })
+            .collect()
     }
 
-    pub fn is_indexed(&self) -> bool { !self.chunks.is_empty() }
-    pub fn chunk_count(&self) -> usize { self.chunks.len() }
+    pub fn is_indexed(&self) -> bool {
+        !self.chunks.is_empty()
+    }
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
 
     fn save_cache(&self) {
         if let Some(parent) = self.cache_path.parent() {
@@ -110,7 +125,9 @@ impl KnowledgeBase {
             entries: {
                 let mut m = HashMap::new();
                 for c in &self.chunks {
-                    m.entry(c.source_file.clone()).or_insert_with(Vec::new).push(c.clone());
+                    m.entry(c.source_file.clone())
+                        .or_insert_with(Vec::new)
+                        .push(c.clone());
                 }
                 m
             },
@@ -124,7 +141,9 @@ impl KnowledgeBase {
     fn load_cache(path: &Path, fingerprint: &str) -> Option<Vec<KbChunk>> {
         let data = std::fs::read_to_string(path).ok()?;
         let cache: KbCache = serde_json::from_str(&data).ok()?;
-        if cache.config_fingerprint != fingerprint { return None; }
+        if cache.config_fingerprint != fingerprint {
+            return None;
+        }
         Some(cache.entries.into_values().flatten().collect())
     }
 
@@ -135,7 +154,10 @@ impl KnowledgeBase {
                 let path = entry.path();
                 if path.is_dir() {
                     files.extend(Self::collect_files(&path));
-                } else if matches!(path.extension().and_then(|e| e.to_str()), Some("md") | Some("txt")) {
+                } else if matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("md") | Some("txt")
+                ) {
                     files.push(path);
                 }
             }
@@ -146,20 +168,30 @@ impl KnowledgeBase {
 
 /// Search a provided chunk snapshot without holding a KnowledgeBase reference.
 /// Useful for async contexts where snapshotting chunks avoids lock contention.
-pub fn search_chunks(chunks: &[KbChunk], query_embedding: &[f32], top_k: usize, threshold: f32) -> Vec<crate::models::KBResult> {
+pub fn search_chunks(
+    chunks: &[KbChunk],
+    query_embedding: &[f32],
+    top_k: usize,
+    threshold: f32,
+) -> Vec<crate::models::KBResult> {
     use crate::intelligence::embedding_client::cosine_similarity;
-    let mut scored: Vec<(f32, &KbChunk)> = chunks.iter()
+    let mut scored: Vec<(f32, &KbChunk)> = chunks
+        .iter()
         .map(|c| (cosine_similarity(query_embedding, &c.embedding), c))
         .filter(|(s, _)| *s >= threshold)
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.into_iter().take(top_k).map(|(score, c)| crate::models::KBResult {
-        id: uuid::Uuid::new_v4(),
-        text: c.text.clone(),
-        source_file: c.source_file.clone(),
-        header_context: c.header_context.clone(),
-        score: score as f64,
-    }).collect()
+    scored
+        .into_iter()
+        .take(top_k)
+        .map(|(score, c)| crate::models::KBResult {
+            id: uuid::Uuid::new_v4(),
+            text: c.text.clone(),
+            source_file: c.source_file.clone(),
+            header_context: c.header_context.clone(),
+            score: score as f64,
+        })
+        .collect()
 }
 
 /// Simple markdown chunker: splits on headers, returns (text, header_context) pairs.

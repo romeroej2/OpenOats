@@ -4,11 +4,18 @@ const MAX_TRANSCRIPT_CHARS: usize = 60_000;
 
 /// Format a transcript slice as a human-readable string for the LLM prompt.
 pub fn format_transcript(records: &[SessionRecord]) -> String {
-    records.iter().map(|r| {
-        let label = match r.speaker { Speaker::You => "You", Speaker::Them => "Them" };
-        let ts = r.timestamp.format("%H:%M:%S");
-        format!("[{ts}] {label}: {}", r.text)
-    }).collect::<Vec<_>>().join("\n")
+    records
+        .iter()
+        .map(|r| {
+            let label = match r.speaker {
+                Speaker::You => "You",
+                Speaker::Them => "Them",
+            };
+            let ts = r.timestamp.format("%H:%M:%S");
+            format!("[{ts}] {label}: {}", r.text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Truncate transcript text to MAX_TRANSCRIPT_CHARS keeping start + end.
@@ -41,19 +48,16 @@ where
 
     let messages = vec![
         crate::intelligence::llm_client::Message::system(&template.system_prompt),
-        crate::intelligence::llm_client::Message::user(
-            format!("Here is the meeting transcript:\n\n{}", transcript)
-        ),
+        crate::intelligence::llm_client::Message::user(format!(
+            "Here is the meeting transcript:\n\n{}",
+            transcript
+        )),
     ];
 
     crate::intelligence::llm_client::stream_completion(
-        base_url,
-        api_key,
-        model,
-        messages,
-        4096,
-        on_chunk,
-    ).await
+        base_url, api_key, model, messages, 4096, on_chunk,
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -51,7 +51,9 @@ impl CpalMicCapture {
 }
 
 impl Default for CpalMicCapture {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait]
@@ -103,7 +105,8 @@ impl MicCaptureService for CpalMicCapture {
                 sinc_params,
                 CHUNK_SIZE,
                 1,
-            ).ok()
+            )
+            .ok()
         } else {
             None
         };
@@ -116,7 +119,9 @@ impl MicCaptureService for CpalMicCapture {
             let rms = (mono.iter().map(|s| s * s).sum::<f32>() / mono.len() as f32).sqrt();
             *level_arc.lock().unwrap() = rms;
 
-            if finished.load(Ordering::Relaxed) { return; }
+            if finished.load(Ordering::Relaxed) {
+                return;
+            }
 
             if let Some(ref mut resampler) = resampler {
                 ring.extend_from_slice(&mono);
@@ -124,7 +129,9 @@ impl MicCaptureService for CpalMicCapture {
                     let chunk: Vec<f32> = ring.drain(..CHUNK_SIZE).collect();
                     if let Ok(out) = resampler.process(&[chunk], None) {
                         if let Some(ch) = out.into_iter().next() {
-                            if !ch.is_empty() { tx_clone.try_send(ch).ok(); }
+                            if !ch.is_empty() {
+                                tx_clone.try_send(ch).ok();
+                            }
                         }
                     }
                 }
@@ -137,39 +144,52 @@ impl MicCaptureService for CpalMicCapture {
             SampleFormat::F32 => device.build_input_stream(
                 &config.into(),
                 move |data: &[f32], _: &_| {
-                    let mono: Vec<f32> = data.chunks(channels)
+                    let mono: Vec<f32> = data
+                        .chunks(channels)
                         .map(|c| c.iter().sum::<f32>() / c.len() as f32)
                         .collect();
                     process(mono);
                 },
-                err_fn, None,
+                err_fn,
+                None,
             ),
             SampleFormat::I16 => {
                 let mut process2 = process;
                 device.build_input_stream(
                     &config.into(),
                     move |data: &[i16], _: &_| {
-                        let mono: Vec<f32> = data.chunks(channels)
-                            .map(|c| c.iter().map(|&s| s as f32 / 32768.0).sum::<f32>() / c.len() as f32)
+                        let mono: Vec<f32> = data
+                            .chunks(channels)
+                            .map(|c| {
+                                c.iter().map(|&s| s as f32 / 32768.0).sum::<f32>() / c.len() as f32
+                            })
                             .collect();
                         process2(mono);
                     },
-                    err_fn, None,
+                    err_fn,
+                    None,
                 )
-            },
+            }
             SampleFormat::U16 => {
                 let mut process3 = process;
                 device.build_input_stream(
                     &config.into(),
                     move |data: &[u16], _: &_| {
-                        let mono: Vec<f32> = data.chunks(channels)
-                            .map(|c| c.iter().map(|&s| (s as f32 - 32768.0) / 32768.0).sum::<f32>() / c.len() as f32)
+                        let mono: Vec<f32> = data
+                            .chunks(channels)
+                            .map(|c| {
+                                c.iter()
+                                    .map(|&s| (s as f32 - 32768.0) / 32768.0)
+                                    .sum::<f32>()
+                                    / c.len() as f32
+                            })
                             .collect();
                         process3(mono);
                     },
-                    err_fn, None,
+                    err_fn,
+                    None,
                 )
-            },
+            }
             fmt => {
                 log::error!("Unsupported sample format: {:?}", fmt);
                 return Box::pin(stream::empty());

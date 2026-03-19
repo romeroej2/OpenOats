@@ -68,7 +68,11 @@ impl TemplateStore {
     }
 
     pub fn delete(&mut self, id: uuid::Uuid) {
-        if let Some(idx) = self.templates.iter().position(|t| t.id == id && !t.is_built_in) {
+        if let Some(idx) = self
+            .templates
+            .iter()
+            .position(|t| t.id == id && !t.is_built_in)
+        {
             self.templates.remove(idx);
             self.save();
         }
@@ -78,7 +82,10 @@ impl TemplateStore {
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let stored = StorageFormat { version: 1, templates: self.templates.clone() };
+        let stored = StorageFormat {
+            version: 1,
+            templates: self.templates.clone(),
+        };
         if let Ok(json) = serde_json::to_string_pretty(&stored) {
             let _ = std::fs::write(&self.path, json);
         }

@@ -46,7 +46,10 @@ pub struct AppSettings {
     #[serde(default = "default_openai_embed_model", alias = "open_ai_embed_model")]
     pub open_ai_embed_model: String,
 
-    #[serde(default = "default_suggestion_interval_seconds", alias = "suggestion_interval_seconds")]
+    #[serde(
+        default = "default_suggestion_interval_seconds",
+        alias = "suggestion_interval_seconds"
+    )]
     pub suggestion_interval_seconds: u64,
 
     #[serde(default, alias = "kb_folder_path")]
@@ -130,20 +133,48 @@ impl Default for AppSettings {
     }
 }
 
-fn default_whisper_model() -> String { "auto".into() }
-fn default_model() -> String { "google/gemini-3-flash-preview".into() }
-fn default_locale() -> String { "en-US".into() }
-fn default_transcription_model() -> String { "whisper-base".into() }
-fn default_llm_provider() -> String { "openrouter".into() }
-fn default_embedding_provider() -> String { "voyage".into() }
-fn default_ollama_url() -> String { "http://localhost:11434".into() }
-fn default_ollama_llm_model() -> String { "qwen3:8b".into() }
-fn default_ollama_embed_model() -> String { "nomic-embed-text".into() }
-fn default_openai_llm_url() -> String { "http://localhost:1234".into() }
-fn default_openai_embed_url() -> String { "http://localhost:8080".into() }
-fn default_openai_embed_model() -> String { "text-embedding-3-small".into() }
-fn default_suggestion_interval_seconds() -> u64 { 30 }
-fn default_true() -> bool { true }
+fn default_whisper_model() -> String {
+    "auto".into()
+}
+fn default_model() -> String {
+    "google/gemini-3-flash-preview".into()
+}
+fn default_locale() -> String {
+    "en-US".into()
+}
+fn default_transcription_model() -> String {
+    "whisper-base".into()
+}
+fn default_llm_provider() -> String {
+    "openrouter".into()
+}
+fn default_embedding_provider() -> String {
+    "voyage".into()
+}
+fn default_ollama_url() -> String {
+    "http://localhost:11434".into()
+}
+fn default_ollama_llm_model() -> String {
+    "qwen3:8b".into()
+}
+fn default_ollama_embed_model() -> String {
+    "nomic-embed-text".into()
+}
+fn default_openai_llm_url() -> String {
+    "http://localhost:1234".into()
+}
+fn default_openai_embed_url() -> String {
+    "http://localhost:8080".into()
+}
+fn default_openai_embed_model() -> String {
+    "text-embedding-3-small".into()
+}
+fn default_suggestion_interval_seconds() -> u64 {
+    30
+}
+fn default_true() -> bool {
+    true
+}
 fn default_notes_folder() -> String {
     dirs::document_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -221,7 +252,10 @@ mod tests {
         s.system_audio_device_name = Some("Speakers (Realtek)".into());
         s.save_to(path.clone());
         let s2 = AppSettings::load_from(path);
-        assert_eq!(s2.system_audio_device_name.as_deref(), Some("Speakers (Realtek)"));
+        assert_eq!(
+            s2.system_audio_device_name.as_deref(),
+            Some("Speakers (Realtek)")
+        );
     }
 
     #[test]

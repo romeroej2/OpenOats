@@ -16,12 +16,22 @@ pub struct StreamingTranscriber {
 
 impl StreamingTranscriber {
     pub fn new(model_path: String, language: String, on_final: OnFinal) -> Self {
-        Self { on_final, model_path: Some(model_path), language, on_volatile: None }
+        Self {
+            on_final,
+            model_path: Some(model_path),
+            language,
+            on_volatile: None,
+        }
     }
 
     /// Test-only: passthrough mode that skips actual transcription.
     pub fn new_passthrough(on_final: OnFinal) -> Self {
-        Self { on_final, model_path: None, language: "en".into(), on_volatile: None }
+        Self {
+            on_final,
+            model_path: None,
+            language: "en".into(),
+            on_volatile: None,
+        }
     }
 
     /// Builder: attach a volatile (in-progress) speech callback.
@@ -48,7 +58,10 @@ impl StreamingTranscriber {
                     Ok(manager) => {
                         let mut state = match manager.create_state() {
                             Ok(s) => s,
-                            Err(e) => { log::error!("whisper state: {e}"); return; }
+                            Err(e) => {
+                                log::error!("whisper state: {e}");
+                                return;
+                            }
                         };
                         for samples in seg_rx.iter() {
                             let text = crate::transcription::whisper::WhisperManager::transcribe(
@@ -115,7 +128,8 @@ impl StreamingTranscriber {
                     speaking_samples_since_volatile += Vad::CHUNK_SIZE;
                     if let Some(ref on_vol) = on_volatile {
                         let time_elapsed = last_volatile_at.elapsed() >= volatile_interval;
-                        let samples_elapsed = speaking_samples_since_volatile >= volatile_sample_interval;
+                        let samples_elapsed =
+                            speaking_samples_since_volatile >= volatile_sample_interval;
                         if time_elapsed || samples_elapsed {
                             on_vol("...".to_string());
                             last_volatile_at = std::time::Instant::now();
@@ -146,7 +160,9 @@ mod tests {
     #[tokio::test]
     async fn silence_produces_no_transcription() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let on_final = move |text: String| { tx.send(text).ok(); };
+        let on_final = move |text: String| {
+            tx.send(text).ok();
+        };
         let transcriber = StreamingTranscriber::new_passthrough(Box::new(on_final));
         let silence: Vec<Vec<f32>> = (0..30).map(|_| vec![0.0f32; 1600]).collect();
         transcriber.run(stream::iter(silence)).await;
@@ -162,13 +178,16 @@ mod tests {
         let on_volatile = Box::new(move |text: String| {
             calls_clone.lock().unwrap().push(text);
         });
-        let transcriber = StreamingTranscriber::new_passthrough(on_final)
-            .with_volatile(on_volatile);
+        let transcriber =
+            StreamingTranscriber::new_passthrough(on_final).with_volatile(on_volatile);
 
         // 2 seconds of continuous speech-level audio (non-silence) at 16kHz
         let speech_chunk: Vec<f32> = (0..1600).map(|i| (i as f32 / 100.0).sin() * 0.5).collect();
         let chunks: Vec<Vec<f32>> = (0..200).map(|_| speech_chunk.clone()).collect();
         transcriber.run(futures::stream::iter(chunks)).await;
-        assert!(!calls.lock().unwrap().is_empty(), "volatile should have fired at least once");
+        assert!(
+            !calls.lock().unwrap().is_empty(),
+            "volatile should have fired at least once"
+        );
     }
 }

@@ -32,7 +32,12 @@ pub struct Utterance {
 
 impl Utterance {
     pub fn new(text: String, speaker: Speaker) -> Self {
-        Self { id: Uuid::new_v4(), text, speaker, timestamp: Utc::now() }
+        Self {
+            id: Uuid::new_v4(),
+            text,
+            speaker,
+            timestamp: Utc::now(),
+        }
     }
 }
 
@@ -92,7 +97,13 @@ pub struct KBResult {
 
 impl KBResult {
     pub fn new(text: String, source_file: String, header_context: String, score: f64) -> Self {
-        Self { id: Uuid::new_v4(), text, source_file, header_context, score }
+        Self {
+            id: Uuid::new_v4(),
+            text,
+            source_file,
+            header_context,
+            score,
+        }
     }
 }
 
@@ -156,12 +167,48 @@ pub struct MeetingTemplate {
 impl MeetingTemplate {
     pub fn built_ins() -> Vec<Self> {
         vec![
-            Self { id: Uuid::parse_str("00000000-0000-0000-0000-000000000000").unwrap(), name: "Generic".into(), icon: "doc.text".into(), system_prompt: GENERIC_PROMPT.into(), is_built_in: true },
-            Self { id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(), name: "1:1".into(), icon: "person.2".into(), system_prompt: ONE_ON_ONE_PROMPT.into(), is_built_in: true },
-            Self { id: Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(), name: "Customer Discovery".into(), icon: "magnifyingglass".into(), system_prompt: DISCOVERY_PROMPT.into(), is_built_in: true },
-            Self { id: Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap(), name: "Hiring".into(), icon: "person.badge.plus".into(), system_prompt: HIRING_PROMPT.into(), is_built_in: true },
-            Self { id: Uuid::parse_str("00000000-0000-0000-0000-000000000004").unwrap(), name: "Stand-Up".into(), icon: "arrow.up.circle".into(), system_prompt: STANDUP_PROMPT.into(), is_built_in: true },
-            Self { id: Uuid::parse_str("00000000-0000-0000-0000-000000000005").unwrap(), name: "Weekly Meeting".into(), icon: "calendar".into(), system_prompt: WEEKLY_PROMPT.into(), is_built_in: true },
+            Self {
+                id: Uuid::parse_str("00000000-0000-0000-0000-000000000000").unwrap(),
+                name: "Generic".into(),
+                icon: "doc.text".into(),
+                system_prompt: GENERIC_PROMPT.into(),
+                is_built_in: true,
+            },
+            Self {
+                id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+                name: "1:1".into(),
+                icon: "person.2".into(),
+                system_prompt: ONE_ON_ONE_PROMPT.into(),
+                is_built_in: true,
+            },
+            Self {
+                id: Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
+                name: "Customer Discovery".into(),
+                icon: "magnifyingglass".into(),
+                system_prompt: DISCOVERY_PROMPT.into(),
+                is_built_in: true,
+            },
+            Self {
+                id: Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap(),
+                name: "Hiring".into(),
+                icon: "person.badge.plus".into(),
+                system_prompt: HIRING_PROMPT.into(),
+                is_built_in: true,
+            },
+            Self {
+                id: Uuid::parse_str("00000000-0000-0000-0000-000000000004").unwrap(),
+                name: "Stand-Up".into(),
+                icon: "arrow.up.circle".into(),
+                system_prompt: STANDUP_PROMPT.into(),
+                is_built_in: true,
+            },
+            Self {
+                id: Uuid::parse_str("00000000-0000-0000-0000-000000000005").unwrap(),
+                name: "Weekly Meeting".into(),
+                icon: "calendar".into(),
+                system_prompt: WEEKLY_PROMPT.into(),
+                is_built_in: true,
+            },
         ]
     }
 }
@@ -176,7 +223,12 @@ pub struct TemplateSnapshot {
 
 impl From<&MeetingTemplate> for TemplateSnapshot {
     fn from(t: &MeetingTemplate) -> Self {
-        Self { id: t.id, name: t.name.clone(), icon: t.icon.clone(), system_prompt: t.system_prompt.clone() }
+        Self {
+            id: t.id,
+            name: t.name.clone(),
+            icon: t.icon.clone(),
+            system_prompt: t.system_prompt.clone(),
+        }
     }
 }
 

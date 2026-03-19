@@ -57,7 +57,9 @@ where
     let total = resp.content_length().unwrap_or(0);
     let mut stream = resp.bytes_stream();
     let tmp = dest.with_extension("tmp");
-    let mut file = tokio::fs::File::create(&tmp).await.map_err(|e| e.to_string())?;
+    let mut file = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let mut downloaded: u64 = 0;
     use futures::StreamExt;

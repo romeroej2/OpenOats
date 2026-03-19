@@ -9,10 +9,16 @@ pub struct Message {
 
 impl Message {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: content.into() }
+        Self {
+            role: "system".into(),
+            content: content.into(),
+        }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: content.into() }
+        Self {
+            role: "user".into(),
+            content: content.into(),
+        }
     }
 }
 
@@ -55,7 +61,12 @@ pub async fn complete(
     max_tokens: u32,
 ) -> Result<String, String> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let body = ChatRequest { model, messages: &messages, stream: false, max_tokens };
+    let body = ChatRequest {
+        model,
+        messages: &messages,
+        stream: false,
+        max_tokens,
+    };
 
     let mut req = Client::new()
         .post(&url)
@@ -72,7 +83,10 @@ pub async fn complete(
     }
 
     let parsed: CompletionResponse = resp.json().await.map_err(|e| e.to_string())?;
-    parsed.choices.into_iter().next()
+    parsed
+        .choices
+        .into_iter()
+        .next()
         .and_then(|c| c.message)
         .and_then(|m| m.content)
         .ok_or_else(|| "Empty LLM response".into())
@@ -93,7 +107,12 @@ where
     use futures::StreamExt;
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let body = ChatRequest { model, messages: &messages, stream: true, max_tokens };
+    let body = ChatRequest {
+        model,
+        messages: &messages,
+        stream: true,
+        max_tokens,
+    };
 
     let mut req = Client::new()
         .post(&url)
@@ -124,9 +143,14 @@ where
 
             if line.starts_with("data: ") {
                 let data = &line[6..];
-                if data == "[DONE]" { break; }
+                if data == "[DONE]" {
+                    break;
+                }
                 if let Ok(parsed) = serde_json::from_str::<CompletionResponse>(data) {
-                    if let Some(text) = parsed.choices.into_iter().next()
+                    if let Some(text) = parsed
+                        .choices
+                        .into_iter()
+                        .next()
                         .and_then(|c| c.delta)
                         .and_then(|d| d.content)
                     {

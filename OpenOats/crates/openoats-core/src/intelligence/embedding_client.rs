@@ -40,7 +40,12 @@ pub async fn embed(
     dimensions: Option<u32>,
 ) -> Result<Vec<Vec<f32>>, String> {
     let url = format!("{}/embeddings", base_url.trim_end_matches('/'));
-    let body = EmbedRequest { model, input: texts, input_type, output_dimension: dimensions };
+    let body = EmbedRequest {
+        model,
+        input: texts,
+        input_type,
+        output_dimension: dimensions,
+    };
 
     let mut req = Client::new()
         .post(&url)
@@ -53,8 +58,11 @@ pub async fn embed(
 
     let resp = req.send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("Embed HTTP {}: {}", resp.status(),
-            resp.text().await.unwrap_or_default()));
+        return Err(format!(
+            "Embed HTTP {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        ));
     }
 
     let parsed: EmbedResponse = resp.json().await.map_err(|e| e.to_string())?;
@@ -68,7 +76,11 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
     let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if mag_a == 0.0 || mag_b == 0.0 { 0.0 } else { dot / (mag_a * mag_b) }
+    if mag_a == 0.0 || mag_b == 0.0 {
+        0.0
+    } else {
+        dot / (mag_a * mag_b)
+    }
 }
 
 #[cfg(test)]
@@ -79,7 +91,10 @@ mod tests {
     fn cosine_identical_vectors() {
         let v = vec![1.0, 2.0, 3.0];
         let sim = cosine_similarity(&v, &v);
-        assert!((sim - 1.0).abs() < 1e-5, "identical vectors should have similarity 1.0, got {sim}");
+        assert!(
+            (sim - 1.0).abs() < 1e-5,
+            "identical vectors should have similarity 1.0, got {sim}"
+        );
     }
 
     #[test]
@@ -87,7 +102,10 @@ mod tests {
         let a = vec![1.0, 0.0];
         let b = vec![0.0, 1.0];
         let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 1e-5, "orthogonal vectors should have similarity 0.0, got {sim}");
+        assert!(
+            sim.abs() < 1e-5,
+            "orthogonal vectors should have similarity 0.0, got {sim}"
+        );
     }
 
     #[test]

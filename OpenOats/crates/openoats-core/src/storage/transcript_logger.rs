@@ -11,7 +11,10 @@ pub struct TranscriptLogger {
 impl TranscriptLogger {
     pub fn new(directory: PathBuf) -> Self {
         let _ = fs::create_dir_all(&directory);
-        Self { directory, current_file: None }
+        Self {
+            directory,
+            current_file: None,
+        }
     }
 
     pub fn with_default_path() -> Self {
@@ -36,7 +39,9 @@ impl TranscriptLogger {
     }
 
     pub fn append(&mut self, speaker: &str, text: &str, timestamp: DateTime<Utc>) {
-        let Some(ref mut file) = self.current_file else { return };
+        let Some(ref mut file) = self.current_file else {
+            return;
+        };
         let line = format!("[{}] {}: {}\n", timestamp.format("%H:%M:%S"), speaker, text);
         let _ = file.write_all(line.as_bytes());
     }

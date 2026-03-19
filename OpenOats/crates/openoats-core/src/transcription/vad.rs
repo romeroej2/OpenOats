@@ -14,7 +14,9 @@ impl Vad {
     pub const FLUSH_SAMPLES: usize = 48_000;
 
     pub fn new() -> Self {
-        Self { rms_threshold: 0.005 }
+        Self {
+            rms_threshold: 0.005,
+        }
     }
 
     /// Returns true if the chunk contains speech above the RMS threshold.
@@ -25,7 +27,9 @@ impl Vad {
 }
 
 impl Default for Vad {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
