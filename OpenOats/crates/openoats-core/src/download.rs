@@ -109,5 +109,6 @@ mod tests {
     #[test]
     fn model_url_base_points_to_hf() {
         assert!(model_url("base").contains("ggml-base.bin"));
+        assert!(!model_url("base").contains("ggml-base.en.bin"));
     }
 }
