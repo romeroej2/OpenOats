@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useOverlayKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { colors, typography, spacing } from "./theme";
 
 interface SuggestionPayload {
@@ -12,6 +13,7 @@ interface SuggestionPayload {
 
 export function OverlayApp() {
   const [suggestion, setSuggestion] = useState<SuggestionPayload | null>(null);
+  const [size, setSize] = useState({ width: 380, height: 160 });
   const dragStateRef = useRef<{
     pointerId: number;
     startPointerX: number;
@@ -19,9 +21,26 @@ export function OverlayApp() {
     startWindowX: number;
     startWindowY: number;
   } | null>(null);
+  const resizeStateRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+  } | null>(null);
   const dragHandleRef = useRef<HTMLDivElement | null>(null);
+  const resizeHandleRef = useRef<HTMLDivElement | null>(null);
   const pendingPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const pendingSizeRef = useRef<{ width: number; height: number } | null>(null);
   const frameRef = useRef<number | null>(null);
+
+  const dismiss = () => {
+    setSuggestion(null);
+    invoke("hide_overlay").catch(() => {});
+  };
+
+  // Keyboard shortcut for escape
+  useOverlayKeyboardShortcuts(dismiss);
 
   useEffect(() => {
     const html = document.documentElement;
@@ -87,13 +106,7 @@ export function OverlayApp() {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const dismiss = () => {
-    setSuggestion(null);
-    invoke("hide_overlay").catch(() => {});
-  };
-
   const stopDragging = (pointerId?: number) => {
-    const dragState = dragStateRef.current;
     dragStateRef.current = null;
     pendingPositionRef.current = null;
 
@@ -108,6 +121,19 @@ export function OverlayApp() {
       dragHandleRef.current.hasPointerCapture(pointerId)
     ) {
       dragHandleRef.current.releasePointerCapture(pointerId);
+    }
+  };
+
+  const stopResizing = (pointerId?: number) => {
+    resizeStateRef.current = null;
+    pendingSizeRef.current = null;
+
+    if (
+      resizeHandleRef.current &&
+      pointerId !== undefined &&
+      resizeHandleRef.current.hasPointerCapture(pointerId)
+    ) {
+      resizeHandleRef.current.releasePointerCapture(pointerId);
     }
   };
 
@@ -129,9 +155,7 @@ export function OverlayApp() {
   };
 
   const startDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) {
-      return;
-    }
+    if (e.button !== 0) return;
 
     const pointerId = e.pointerId;
     const startPointerX = e.screenX;
@@ -186,9 +210,48 @@ export function OverlayApp() {
     }
   };
 
+  const startResize = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+
+    const pointerId = e.pointerId;
+    resizeHandleRef.current = e.currentTarget;
+    e.currentTarget.setPointerCapture(pointerId);
+
+    resizeStateRef.current = {
+      pointerId,
+      startX: e.screenX,
+      startY: e.screenY,
+      startWidth: size.width,
+      startHeight: size.height,
+    };
+  };
+
+  const resize = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if ((e.buttons & 1) === 0) {
+      stopResizing(e.pointerId);
+      return;
+    }
+
+    const resizeState = resizeStateRef.current;
+    if (!resizeState || resizeState.pointerId !== e.pointerId) {
+      return;
+    }
+
+    const newWidth = Math.max(300, resizeState.startWidth + (e.screenX - resizeState.startX));
+    const newHeight = Math.max(100, resizeState.startHeight + (e.screenY - resizeState.startY));
+
+    setSize({ width: newWidth, height: newHeight });
+  };
+
+  const endResize = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (resizeStateRef.current?.pointerId === e.pointerId) {
+      stopResizing(e.pointerId);
+    }
+  };
+
   return (
     <div style={containerStyle}>
-      <div style={cardStyle}>
+      <div style={{ ...cardStyle, width: size.width, maxHeight: size.height }}>
         <div
           ref={dragHandleRef}
           style={headerStyle}
@@ -198,9 +261,7 @@ export function OverlayApp() {
           onPointerCancel={endDrag}
         >
           <div style={grabberStyle} />
-          <span style={headerLabelStyle}>
-            Suggestion
-          </span>
+          <span style={headerLabelStyle}>Suggestion</span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
           <div style={contentStyle}>
@@ -214,10 +275,35 @@ export function OverlayApp() {
             onClick={dismiss}
             onMouseDown={(e) => e.stopPropagation()}
             style={closeBtn}
-            title="Dismiss"
+            title="Dismiss (Esc)"
           >
             ×
           </button>
+        </div>
+
+        {/* Resize handle */}
+        <div
+          ref={resizeHandleRef}
+          onPointerDown={startResize}
+          onPointerMove={resize}
+          onPointerUp={endResize}
+          onPointerCancel={endResize}
+          style={{
+            position: "absolute",
+            right: 4,
+            bottom: 4,
+            width: 16,
+            height: 16,
+            cursor: "nwse-resize",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          title="Resize"
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <path d="M1 9L9 1M5 9L9 5M9 9L9 9" stroke={`${colors.text}40`} strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
         </div>
       </div>
     </div>
@@ -241,14 +327,14 @@ const cardStyle: React.CSSProperties = {
   border: `1px solid ${colors.overlay.border}`,
   borderRadius: 18,
   padding: "12px 16px 14px",
-  width: "min(640px, calc(100vw - 48px))",
-  maxHeight: "calc(100vh - 40px)",
+  minWidth: 300,
   overflow: "hidden",
   boxShadow: colors.overlay.shadow,
   cursor: "grab",
   userSelect: "none",
-  backdropFilter: "blur(16px) saturate(1.05)",
-  WebkitBackdropFilter: "blur(16px) saturate(1.05)",
+  backdropFilter: "blur(20px) saturate(1.1)",
+  WebkitBackdropFilter: "blur(20px) saturate(1.1)",
+  position: "relative",
 };
 
 const headerStyle: React.CSSProperties = {
@@ -288,7 +374,7 @@ const contentStyle: React.CSSProperties = {
 
 const lineStyle: React.CSSProperties = {
   margin: 0,
-  color: colors.overlay.text,
+  color: colors.text,
   fontSize: 15,
   lineHeight: 1.4,
   letterSpacing: "0.01em",
@@ -301,7 +387,7 @@ const closeBtn: React.CSSProperties = {
   border: "none",
   color: `${colors.text}66`,
   cursor: "pointer",
-  fontSize: 18,
+  fontSize: 20,
   fontWeight: 300,
   lineHeight: 1,
   padding: "0 4px",

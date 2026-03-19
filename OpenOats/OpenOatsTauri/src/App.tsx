@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Utterance, Suggestion, AppSettings } from "./types";
@@ -7,17 +7,11 @@ import { TranscriptView } from "./components/TranscriptView";
 import { SuggestionsView } from "./components/SuggestionsView";
 import { NotesView } from "./components/NotesView";
 import { SettingsView } from "./components/SettingsView";
-import { colors, styles, typography, spacing } from "./theme";
-
-// Design system colors
-// const colors = {
-//   background: "#111111",
-//   surface: "#1a1a1a",
-//   border: "#333333",
-//   text: "#eeeeee",
-//   textSecondary: "#888888",
-//   accent: "#2b7a78",
-// };
+import { SessionSidebar } from "./components/SessionSidebar";
+import { TranscriptSearch } from "./components/TranscriptSearch";
+import { ExportMenu } from "./components/ExportMenu";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { colors, typography, spacing } from "./theme";
 
 type ModelState = "checking" | "missing" | "downloading" | "ready";
 type Tab = "transcript" | "suggestions" | "notes" | "settings";
@@ -79,6 +73,16 @@ function App() {
   const [lastSuggestionCheckSurfaced, setLastSuggestionCheckSurfaced] = useState<boolean | null>(null);
   const [volatileYouText, setVolatileYouText] = useState("");
   const [volatileThemText, setVolatileThemText] = useState("");
+  
+  // New UX state
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [showExport, setShowExport] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<number[]>([]);
+  const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Load settings on mount
   useEffect(() => {
@@ -90,6 +94,25 @@ function App() {
   const handleSettingsChange = useCallback((updated: AppSettings) => {
     setSettings(updated);
   }, []);
+
+  // Keyboard shortcuts
+  useKeyboardShortcuts({
+    onStartStop: () => {
+      if (modelState === "ready") {
+        isRunning ? handleStop() : handleStart();
+      }
+    },
+    onFocusSearch: () => {
+      setShowSearch(true);
+      setTab("transcript");
+    },
+    onExportTranscript: () => {
+      if (utterances.length > 0) {
+        setShowExport(true);
+      }
+    },
+    onToggleSidebar: () => setSidebarOpen((prev) => !prev),
+  });
 
   // Check model and set up event listeners
   useEffect(() => {
@@ -118,7 +141,6 @@ function App() {
           },
         ]);
         
-        // Clear volatile text when finalized
         if (speaker === "you") {
           setVolatileYouText("");
         } else {
@@ -126,7 +148,6 @@ function App() {
         }
       }),
       
-      // Listen for volatile/live transcript updates
       listen<{ text: string; speaker: string }>("transcript-volatile", (e) => {
         const { text, speaker } = e.payload;
         if (speaker === "you") {
@@ -158,7 +179,6 @@ function App() {
             kbHits: e.payload.kbHits || [],
           },
         ]);
-        // Auto-switch to suggestions when one arrives
         setTab("suggestions");
       }),
 
@@ -178,6 +198,10 @@ function App() {
       listen<SuggestionCheckEvent>("suggestion-check-finished", (e) => {
         setLastSuggestionCheckAt(e.payload.checkedAt);
         setLastSuggestionCheckSurfaced(e.payload.surfaced);
+      }),
+
+      listen<{ you: number; them: number }>("audio-level", (e) => {
+        setAudioLevel(e.payload.you);
       }),
     ];
 
@@ -224,9 +248,38 @@ function App() {
     invoke("suggestion_feedback", { sessionId: currentSessionId, suggestionId: id, helpful: false }).catch(console.error);
   }, [currentSessionId]);
 
+  const handleSearch = (query: string) => {
+    setSearchQuery(query);
+    if (!query.trim()) {
+      setSearchResults([]);
+      setCurrentSearchIndex(0);
+      return;
+    }
+
+    const indices: number[] = [];
+    const lowerQuery = query.toLowerCase();
+    utterances.forEach((u, i) => {
+      if (u.text.toLowerCase().includes(lowerQuery)) {
+        indices.push(i);
+      }
+    });
+    setSearchResults(indices);
+    setCurrentSearchIndex(0);
+  };
+
+  const handleLoadSession = async (sessionId: string) => {
+    try {
+      const sessionData = await invoke<{ utterances: Utterance[] }>("load_session", { sessionId });
+      setUtterances(sessionData.utterances);
+      setCurrentSessionId(sessionId);
+      setTab("transcript");
+    } catch (err) {
+      console.error("Failed to load session:", err);
+    }
+  };
+
   const activeWhisperModel = resolveWhisperModel(settings);
 
-  // Loading states
   if (modelState === "checking") {
     return (
       <div style={centerStyle}>
@@ -245,10 +298,10 @@ function App() {
             Transcription Model Required
           </h3>
           <p style={{ color: colors.textSecondary, fontSize: 13, margin: "0 0 20px", lineHeight: 1.5 }}>
-            OpenOats needs {whisperModelLabel(activeWhisperModel)} to transcribe conversations locally for {settings?.transcriptionLocale || "the selected language"}.
+            OpenOats needs {whisperModelLabel(activeWhisperModel)} to transcribe conversations locally.
           </p>
           {modelError && (
-            <p style={{ color: "#c0392b", fontSize: 12, margin: "0 0 16px", lineHeight: 1.5 }}>
+            <p style={{ color: colors.error, fontSize: 12, margin: "0 0 16px", lineHeight: 1.5 }}>
               {modelError}
             </p>
           )}
@@ -264,35 +317,14 @@ function App() {
     return (
       <div style={centerStyle}>
         <div style={{ textAlign: "center", maxWidth: 280 }}>
-          <h3 style={{ color: colors.text, margin: "0 0 16px", fontSize: 16 }}>
-            🧠 Setting up Whisper
-          </h3>
+          <h3 style={{ color: colors.text, margin: "0 0 16px", fontSize: 16 }}>🧠 Setting up Whisper</h3>
           <div style={{ marginBottom: 12 }}>
-            <div
-              style={{
-                width: 260,
-                height: 6,
-                background: colors.surface,
-                borderRadius: 3,
-                overflow: "hidden",
-              }}
-            >
-              <div
-                style={{
-                  width: `${downloadProgress}%`,
-                  height: "100%",
-                  background: colors.accent,
-                  borderRadius: 3,
-                  transition: "width 0.3s",
-                }}
-              />
+            <div style={{ width: 260, height: 6, background: colors.surfaceElevated, borderRadius: 3, overflow: "hidden" }}>
+              <div style={{ width: `${downloadProgress}%`, height: "100%", background: colors.accent, borderRadius: 3, transition: "width 0.3s" }} />
             </div>
           </div>
           <p style={{ color: colors.textSecondary, fontSize: 12, margin: 0 }}>
             Downloading {activeWhisperModel}... {downloadProgress}%
-          </p>
-          <p style={{ color: colors.textSecondary, fontSize: 11, margin: "8px 0 0", opacity: 0.7 }}>
-            ~150 MB · 30 seconds remaining
           </p>
         </div>
       </div>
@@ -300,10 +332,7 @@ function App() {
   }
 
   const isLocalMode = settings?.llmProvider === "ollama" && settings?.embeddingProvider === "ollama";
-  const modelName =
-    settings?.llmProvider === "ollama"
-      ? settings.ollamaLlmModel || "Unknown"
-      : settings?.selectedModel || "Unknown";
+  const modelName = settings?.llmProvider === "ollama" ? settings.ollamaLlmModel || "Unknown" : settings?.selectedModel || "Unknown";
   const kbConnected = !!settings?.kbFolderPath;
 
   const tabs: { key: Tab; label: string; badge?: number }[] = [
@@ -314,16 +343,60 @@ function App() {
   ];
 
   return (
-    <div
-      style={{
-        height: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        background: colors.background,
-        color: colors.text,
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-      }}
-    >
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: colors.background, color: colors.text, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
+      {/* Session Sidebar */}
+      <SessionSidebar
+        currentSessionId={currentSessionId}
+        onSelectSession={handleLoadSession}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
+
+      {/* Search Bar */}
+      {showSearch && tab === "transcript" && (
+        <TranscriptSearch
+          onSearch={handleSearch}
+          onClose={() => setShowSearch(false)}
+          resultCount={searchResults.length}
+          currentIndex={currentSearchIndex}
+          onNext={() => setCurrentSearchIndex((i) => Math.min(i + 1, searchResults.length - 1))}
+          onPrev={() => setCurrentSearchIndex((i) => Math.max(i - 1, 0))}
+        />
+      )}
+
+      {/* Export Modal */}
+      {showExport && <ExportMenu utterances={utterances} onClose={() => setShowExport(false)} />}
+
+      {/* Main Toolbar */}
+      <div style={{ display: "flex", alignItems: "center", gap: spacing[2], padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.surface, borderBottom: `1px solid ${colors.border}` }}>
+        <button
+          onClick={() => setSidebarOpen(true)}
+          style={{ padding: `${spacing[2]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 6, fontSize: typography.md, cursor: "pointer", color: colors.text }}
+          title="Session History (Cmd/Ctrl+B)"
+        >
+          ☰
+        </button>
+        <div style={{ flex: 1 }} />
+        <div style={{ display: "flex", gap: spacing[2] }}>
+          <button
+            onClick={() => setShowSearch(true)}
+            disabled={utterances.length === 0}
+            style={{ padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 6, fontSize: typography.md, cursor: utterances.length === 0 ? "not-allowed" : "pointer", opacity: utterances.length === 0 ? 0.5 : 1, color: colors.text }}
+            title="Search (Cmd/Ctrl+F)"
+          >
+            🔍 Search
+          </button>
+          <button
+            onClick={() => setShowExport(true)}
+            disabled={utterances.length === 0}
+            style={{ padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 6, fontSize: typography.md, cursor: utterances.length === 0 ? "not-allowed" : "pointer", opacity: utterances.length === 0 ? 0.5 : 1, color: colors.text }}
+            title="Export (Cmd/Ctrl+E)"
+          >
+            📤 Export
+          </button>
+        </div>
+      </div>
+
       {/* Control Bar */}
       <ControlBar
         isRunning={isRunning}
@@ -333,21 +406,16 @@ function App() {
         whisperModel={activeWhisperModel}
         transcriptionLocale={settings?.transcriptionLocale || ""}
         kbConnected={kbConnected}
-        kbFileCount={0} // Would come from backend
+        kbFileCount={0}
         isLocalMode={isLocalMode}
         isSuggestionAnalyzing={isGeneratingSuggestion}
         lastSuggestionCheckAt={lastSuggestionCheckAt}
         lastSuggestionCheckSurfaced={lastSuggestionCheckSurfaced}
+        audioLevel={audioLevel}
       />
 
       {/* Tab Bar */}
-      <div
-        style={{
-          display: "flex",
-          borderBottom: `1px solid ${colors.border}`,
-          background: colors.surface,
-        }}
-      >
+      <div style={{ display: "flex", borderBottom: `1px solid ${colors.border}`, background: colors.surface }}>
         {tabs.map((t) => (
           <button
             key={t.key}
@@ -359,7 +427,7 @@ function App() {
               border: "none",
               borderBottom: tab === t.key ? `2px solid ${colors.accent}` : "2px solid transparent",
               cursor: "pointer",
-              fontSize: 13,
+              fontSize: typography.md,
               fontWeight: tab === t.key ? 600 : 400,
               display: "flex",
               alignItems: "center",
@@ -368,18 +436,7 @@ function App() {
           >
             {t.label}
             {t.badge !== undefined && t.badge > 0 && (
-              <span
-                style={{
-                  background: colors.accent,
-                  color: "#fff",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  padding: "2px 6px",
-                  borderRadius: 10,
-                  minWidth: 18,
-                  textAlign: "center",
-                }}
-              >
+              <span style={{ background: colors.accent, color: colors.textInverse, fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 10, minWidth: 18, textAlign: "center" }}>
                 {t.badge > 99 ? "99+" : t.badge}
               </span>
             )}
@@ -394,6 +451,9 @@ function App() {
             utterances={utterances}
             volatileYouText={volatileYouText}
             volatileThemText={volatileThemText}
+            searchQuery={searchQuery}
+            searchResults={searchResults}
+            currentSearchIndex={currentSearchIndex}
           />
         )}
         {tab === "suggestions" && (
@@ -409,35 +469,27 @@ function App() {
           />
         )}
         {tab === "settings" && (
-          <SettingsView
-            settings={settings}
-            onSettingsChange={handleSettingsChange}
-          />
+          <SettingsView settings={settings} onSettingsChange={handleSettingsChange} />
         )}
         {tab === "notes" && <NotesView sessionId={currentSessionId} />}
+      </div>
+
+      {/* Keyboard shortcuts hint */}
+      <div style={{ padding: `${spacing[1]}px ${spacing[3]}px`, background: colors.surfaceElevated, borderTop: `1px solid ${colors.border}`, fontSize: typography.xs, color: colors.textMuted, display: "flex", gap: spacing[4], justifyContent: "center" }}>
+        <span>Cmd/Ctrl+Shift+S: Start/Stop</span>
+        <span>Cmd/Ctrl+F: Search</span>
+        <span>Cmd/Ctrl+E: Export</span>
+        <span>Cmd/Ctrl+B: History</span>
+        <span>Esc: Close</span>
       </div>
     </div>
   );
 }
 
-// Loading spinner component
 function LoadingSpinner() {
   return (
-    <div
-      style={{
-        width: 32,
-        height: 32,
-        border: `3px solid ${colors.surfaceElevated}`,
-        borderTopColor: colors.accent,
-        borderRadius: "50%",
-        animation: "spin 1s linear infinite",
-      }}
-    >
-      <style>{`
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
+    <div style={{ width: 32, height: 32, border: `3px solid ${colors.surfaceElevated}`, borderTopColor: colors.accent, borderRadius: "50%", animation: "spin 1s linear infinite" }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }
@@ -472,7 +524,6 @@ const primaryBtn: React.CSSProperties = {
   cursor: "pointer",
   fontSize: 14,
   fontWeight: 600,
-  transition: "background 0.2s",
 };
 
 export default App;

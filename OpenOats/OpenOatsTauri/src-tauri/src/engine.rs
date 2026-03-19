@@ -1012,6 +1012,33 @@ pub fn delete_template(id: String, state: tauri::State<'_, Arc<AppState>>) -> Re
     Ok(())
 }
 
+#[tauri::command]
+pub async fn save_transcript(
+    app: AppHandle,
+    content: String,
+    default_name: String,
+) -> Result<(), String> {
+    use tauri_plugin_dialog::DialogExt;
+    
+    let file_path = tokio::task::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_file_name(&default_name)
+            .add_filter("Markdown", &["md"])
+            .add_filter("Text", &["txt"])
+            .add_filter("JSON", &["json"])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or("No file selected")?;
+    
+    let path = file_path.into_path().map_err(|e| e.to_string())?;
+    tokio::fs::write(&path, content).await.map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

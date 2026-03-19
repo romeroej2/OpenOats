@@ -6,6 +6,9 @@ interface Props {
   utterances: Utterance[];
   volatileYouText?: string;
   volatileThemText?: string;
+  searchQuery?: string;
+  searchResults?: number[];
+  currentSearchIndex?: number;
 }
 
 // Format timestamp to relative time or clock time
@@ -33,8 +36,52 @@ function groupByTimeBucket(utterances: Utterance[]): { time: string; items: Utte
   return buckets;
 }
 
+// Highlight search matches in text
+function HighlightText({ text, query, isCurrent }: { text: string; query?: string; isCurrent?: boolean }) {
+  if (!query || !query.trim()) {
+    return <>{text}</>;
+  }
+
+  const parts = text.split(new RegExp(`(${escapeRegExp(query)})`, "gi"));
+
+  return (
+    <>
+      {parts.map((part, i) => {
+        const isMatch = part.toLowerCase() === query.toLowerCase();
+        if (!isMatch) return part;
+        return (
+          <mark
+            key={i}
+            style={{
+              background: isCurrent ? `${colors.accent}40` : "#fef3c7",
+              color: colors.text,
+              padding: "0 2px",
+              borderRadius: 2,
+              fontWeight: isCurrent ? 600 : 400,
+            }}
+          >
+            {part}
+          </mark>
+        );
+      })}
+    </>
+  );
+}
+
+function escapeRegExp(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // Utterance bubble component
-function UtteranceBubble({ utterance }: { utterance: Utterance }) {
+function UtteranceBubble({
+  utterance,
+  isHighlighted,
+  searchQuery,
+}: {
+  utterance: Utterance;
+  isHighlighted?: boolean;
+  searchQuery?: string;
+}) {
   const isYou = utterance.speaker === "you";
 
   return (
@@ -44,6 +91,10 @@ function UtteranceBubble({ utterance }: { utterance: Utterance }) {
         gap: spacing[2],
         marginBottom: spacing[3],
         alignItems: "flex-start",
+        padding: isHighlighted ? `${spacing[2]}px` : 0,
+        background: isHighlighted ? `${colors.accent}10` : "transparent",
+        borderRadius: isHighlighted ? 6 : 0,
+        border: isHighlighted ? `1px solid ${colors.accent}30` : "none",
       }}
     >
       {/* Speaker label */}
@@ -64,22 +115,10 @@ function UtteranceBubble({ utterance }: { utterance: Utterance }) {
 
       {/* Content */}
       <div style={{ flex: 1 }}>
-        <span
-          style={{
-            fontSize: typography.md,
-            color: colors.text,
-            lineHeight: 1.5,
-          }}
-        >
-          {utterance.text}
+        <span style={{ fontSize: typography.md, color: colors.text, lineHeight: 1.5 }}>
+          <HighlightText text={utterance.text} query={searchQuery} />
         </span>
-        <span
-          style={{
-            fontSize: typography.xs,
-            color: colors.textMuted,
-            marginLeft: spacing[2],
-          }}
-        >
+        <span style={{ fontSize: typography.xs, color: colors.textMuted, marginLeft: spacing[2] }}>
           {formatTimestamp(utterance.timestamp)}
         </span>
       </div>
@@ -88,13 +127,7 @@ function UtteranceBubble({ utterance }: { utterance: Utterance }) {
 }
 
 // Volatile text indicator (live transcription)
-function VolatileIndicator({
-  text,
-  speaker,
-}: {
-  text: string;
-  speaker: "you" | "them";
-}) {
+function VolatileIndicator({ text, speaker }: { text: string; speaker: "you" | "them" }) {
   const isYou = speaker === "you";
 
   return (
@@ -122,13 +155,7 @@ function VolatileIndicator({
         {isYou ? "You" : "Them"}
       </div>
       <div style={{ flex: 1, display: "flex", alignItems: "center", gap: spacing[2] }}>
-        <span
-          style={{
-            fontSize: typography.md,
-            color: colors.textSecondary,
-            lineHeight: 1.5,
-          }}
-        >
+        <span style={{ fontSize: typography.md, color: colors.textSecondary, lineHeight: 1.5 }}>
           {text}
         </span>
         {/* Pulsing indicator */}
@@ -146,14 +173,31 @@ function VolatileIndicator({
   );
 }
 
-export function TranscriptView({ utterances, volatileYouText, volatileThemText }: Props) {
+export function TranscriptView({
+  utterances,
+  volatileYouText,
+  volatileThemText,
+  searchQuery,
+  searchResults = [],
+  currentSearchIndex = 0,
+}: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const highlightedRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom
+  // Auto-scroll to bottom only when not searching
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [utterances.length]);
+    if (!searchQuery) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [utterances.length, searchQuery]);
+
+  // Scroll to current search result
+  useEffect(() => {
+    if (searchResults.length > 0 && highlightedRef.current) {
+      highlightedRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [currentSearchIndex, searchResults]);
 
   // Empty state
   if (utterances.length === 0 && !volatileYouText && !volatileThemText) {
@@ -172,14 +216,14 @@ export function TranscriptView({ utterances, volatileYouText, volatileThemText }
       >
         <div
           style={{
-            width: 48,
-            height: 48,
-            borderRadius: 12,
-            background: `${colors.accent}12`,
+            width: 64,
+            height: 64,
+            borderRadius: 16,
+            background: `${colors.accent}15`,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            fontSize: 24,
+            fontSize: 32,
             marginBottom: spacing[3],
           }}
         >
@@ -189,28 +233,22 @@ export function TranscriptView({ utterances, volatileYouText, volatileThemText }
           style={{
             fontSize: typography.lg,
             fontWeight: 600,
-            color: colors.textSecondary,
+            color: colors.text,
             margin: `0 0 ${spacing[2]}px`,
           }}
         >
-          No transcript yet
+          Ready to capture
         </h4>
-        <p
-          style={{
-            fontSize: typography.md,
-            color: colors.textMuted,
-            margin: 0,
-            maxWidth: 260,
-            lineHeight: 1.5,
-          }}
-        >
-          Click Record to start capturing your conversation.
+        <p style={{ fontSize: typography.md, color: colors.textSecondary, margin: 0, maxWidth: 280, lineHeight: 1.5 }}>
+          Press <kbd style={{ padding: "2px 6px", background: colors.surfaceElevated, borderRadius: 4, fontFamily: "monospace" }}>Cmd+Shift+S</kbd> or click Record to start.
         </p>
       </div>
     );
   }
 
   const grouped = groupByTimeBucket(utterances);
+  let utteranceCounter = 0;
+
   return (
     <div
       ref={scrollRef}
@@ -221,10 +259,8 @@ export function TranscriptView({ utterances, volatileYouText, volatileThemText }
         background: colors.background,
       }}
     >
-      {/* Time buckets */}
       {grouped.map((bucket, bucketIndex) => (
         <div key={bucket.time}>
-          {/* Time header (show if not the first bucket) */}
           {bucketIndex > 0 && (
             <div
               style={{
@@ -249,21 +285,29 @@ export function TranscriptView({ utterances, volatileYouText, volatileThemText }
             </div>
           )}
 
-          {/* Utterances in this bucket */}
-          {bucket.items.map((utterance) => (
-            <UtteranceBubble key={utterance.id} utterance={utterance} />
-          ))}
+          {bucket.items.map((utterance) => {
+            const isHighlighted = searchResults[currentSearchIndex] === utteranceCounter;
+            const ref = isHighlighted ? highlightedRef : undefined;
+            utteranceCounter++;
+
+            return (
+              <div key={utterance.id} ref={ref}>
+                <UtteranceBubble
+                  utterance={utterance}
+                  isHighlighted={isHighlighted}
+                  searchQuery={searchQuery}
+                />
+              </div>
+            );
+          })}
         </div>
       ))}
 
-      {/* Volatile/live text */}
       {volatileYouText && <VolatileIndicator text={volatileYouText} speaker="you" />}
       {volatileThemText && <VolatileIndicator text={volatileThemText} speaker="them" />}
 
-      {/* Bottom anchor for auto-scroll */}
       <div ref={bottomRef} />
 
-      {/* Animations */}
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; transform: scale(1); }

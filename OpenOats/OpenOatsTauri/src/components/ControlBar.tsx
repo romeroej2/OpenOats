@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { WaveformVisualizer } from "./WaveformVisualizer";
 import { colors, typography, spacing } from "../theme";
-
-// Design system is now imported from theme.ts
 
 interface Props {
   isRunning: boolean;
@@ -18,6 +17,7 @@ interface Props {
   isSuggestionAnalyzing?: boolean;
   lastSuggestionCheckAt?: string | null;
   lastSuggestionCheckSurfaced?: boolean | null;
+  audioLevel?: number;
 }
 
 function formatRelativeTime(iso: string | null | undefined): string {
@@ -29,31 +29,6 @@ function formatRelativeTime(iso: string | null | undefined): string {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ago`;
-}
-
-// Audio level visualizer component
-function AudioLevelVisualizer({ level }: { level: number }) {
-  const bars = 5;
-  return (
-    <div style={{ display: "flex", gap: 2, alignItems: "center", height: 14 }}>
-      {Array.from({ length: bars }).map((_, i) => {
-        const threshold = i / bars;
-        const isActive = level > threshold;
-        return (
-          <div
-            key={i}
-            style={{
-              width: 3,
-              height: 4 + i * 2,
-              borderRadius: 1,
-              background: isActive ? `${colors.success}cc` : `${colors.textMuted}40`,
-              transition: "background 0.08s ease-out",
-            }}
-          />
-        );
-      })}
-    </div>
-  );
 }
 
 // Format seconds to MM:SS or HH:MM:SS
@@ -82,12 +57,12 @@ export function ControlBar({
   isSuggestionAnalyzing = false,
   lastSuggestionCheckAt = null,
   lastSuggestionCheckSurfaced = null,
+  audioLevel = 0,
 }: Props) {
   const [devices, setDevices] = useState<string[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("default");
   const [sysDevices, setSysDevices] = useState<string[]>([]);
   const [selectedSysDevice, setSelectedSysDevice] = useState<string>("default");
-  const [audioLevel, setAudioLevel] = useState(0);
   const [duration, setDuration] = useState(0);
   const durationRef = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -129,32 +104,6 @@ export function ControlBar({
     };
   }, [isRunning]);
 
-  useEffect(() => {
-    let active = true;
-    let unlistenFn: (() => void) | null = null;
-
-    if (isRunning) {
-      import("@tauri-apps/api/event").then(({ listen }) => {
-        listen<{ you: number; them: number }>("audio-level", (e) => {
-          if (active) setAudioLevel(e.payload.you);
-        }).then((f) => {
-          if (active) {
-            unlistenFn = f;
-          } else {
-            f(); // already cleaned up, immediately unlisten
-          }
-        });
-      });
-    } else {
-      setAudioLevel(0);
-    }
-
-    return () => {
-      active = false;
-      unlistenFn?.();
-    };
-  }, [isRunning]);
-
   const handleDeviceChange = async (device: string) => {
     setSelectedDevice(device);
     try {
@@ -184,9 +133,9 @@ export function ControlBar({
     alignItems: "center",
     gap: spacing[2],
     padding: `${spacing[2]}px ${spacing[3]}px`,
-    background: isRunning ? `${colors.error}15` : colors.success,
-    color: isRunning ? colors.error : colors.textInverse,
-    border: isRunning ? `1px solid ${colors.error}40` : "none",
+    background: isRunning ? `${colors.error}20` : colors.success,
+    color: isRunning ? colors.error : "#fff",
+    border: isRunning ? `1px solid ${colors.error}50` : "none",
     borderRadius: 20,
     fontSize: typography.md,
     fontWeight: 600,
@@ -225,7 +174,7 @@ export function ControlBar({
         disabled={isRunning}
         style={{
           padding: `${spacing[2]}px`,
-          background: colors.surfaceElevated,
+          background: colors.background,
           color: colors.text,
           border: `1px solid ${colors.border}`,
           borderRadius: 4,
@@ -237,14 +186,10 @@ export function ControlBar({
       >
         <option value="default">🎤 System Default</option>
         {devices.map((d) => (
-          <option key={d} value={d}>
-            {d}
-          </option>
+          <option key={d} value={d}>{d}</option>
         ))}
         {devices.length === 0 && (
-          <option value="" disabled>
-            No microphones found
-          </option>
+          <option value="" disabled>No microphones found</option>
         )}
       </select>
 
@@ -255,7 +200,7 @@ export function ControlBar({
         disabled={isRunning}
         style={{
           padding: `${spacing[2]}px`,
-          background: colors.surfaceElevated,
+          background: colors.background,
           color: colors.text,
           border: `1px solid ${colors.border}`,
           borderRadius: 4,
@@ -267,9 +212,7 @@ export function ControlBar({
       >
         <option value="default">🔊 System Default</option>
         {sysDevices.map((d) => (
-          <option key={d} value={d}>
-            {d}
-          </option>
+          <option key={d} value={d}>{d}</option>
         ))}
       </select>
 
@@ -277,17 +220,7 @@ export function ControlBar({
       <button onClick={isRunning ? onStop : onStart} disabled={disabled} style={buttonStyle}>
         {isRunning ? (
           <>
-            {/* Live indicator with pulse */}
-            <span
-              style={{
-                display: "inline-block",
-                width: 8,
-                height: 8,
-                borderRadius: "50%",
-                background: colors.error,
-                animation: "pulse 1.5s ease-in-out infinite",
-              }}
-            />
+            <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: colors.error, animation: "pulse 1.5s ease-in-out infinite" }} />
             <span>Stop</span>
           </>
         ) : (
@@ -302,20 +235,12 @@ export function ControlBar({
       {isRunning && (
         <div style={{ display: "flex", alignItems: "center", gap: spacing[3] }}>
           {/* Duration Timer */}
-          <span
-            style={{
-              fontSize: typography.md,
-              fontWeight: 600,
-              color: colors.text,
-              fontFamily: "SF Mono, Monaco, monospace",
-              letterSpacing: "0.5px",
-            }}
-          >
+          <span style={{ fontSize: typography.md, fontWeight: 600, color: colors.text, fontFamily: "SF Mono, Monaco, monospace", letterSpacing: "0.5px" }}>
             {formatDuration(duration)}
           </span>
 
-          {/* Audio Level */}
-          <AudioLevelVisualizer level={audioLevel} />
+          {/* Waveform Audio Visualizer */}
+          <WaveformVisualizer level={audioLevel} isActive={isRunning} />
 
           {/* Live Badge */}
           <span style={statusBadgeStyle(colors.success)}>
@@ -336,80 +261,33 @@ export function ControlBar({
             <span>KB {kbFileCount > 0 ? kbFileCount : ""}</span>
           </span>
         ) : (
-          <span
-            style={{
-              ...statusBadgeStyle(colors.textMuted),
-              opacity: 0.6,
-            }}
-          >
+          <span style={{ ...statusBadgeStyle(colors.textSecondary), opacity: 0.6 }}>
             <span>📁</span>
             <span>No KB</span>
           </span>
         )}
 
         {/* Mode Indicator */}
-        <span
-          style={statusBadgeStyle(isLocalMode ? colors.success : colors.you)}
-          title={isLocalMode ? "Local mode - no data leaves your device" : "Cloud mode - using external APIs"}
-        >
+        <span style={statusBadgeStyle(isLocalMode ? colors.success : colors.you)} title={isLocalMode ? "Local mode - no data leaves your device" : "Cloud mode - using external APIs"}>
           <span style={{ fontSize: 6 }}>●</span>
           <span>{isLocalMode ? "Local" : "Cloud"}</span>
         </span>
 
         {isRunning && (
-          <span
-            style={statusBadgeStyle(
-              isSuggestionAnalyzing
-                ? colors.them
-                : lastSuggestionCheckSurfaced
-                  ? colors.success
-                  : colors.textMuted
-            )}
-            title={
-              isSuggestionAnalyzing
-                ? "OpenOats is analyzing the recent conversation for suggestions."
-                : lastSuggestionCheckSurfaced
-                  ? "The last suggestion analysis surfaced a result."
-                  : "The last suggestion analysis finished without surfacing anything."
-            }
-          >
+          <span style={statusBadgeStyle(isSuggestionAnalyzing ? colors.them : lastSuggestionCheckSurfaced ? colors.success : colors.textSecondary)}>
             <span style={{ fontSize: 6 }}>{isSuggestionAnalyzing ? "●" : "○"}</span>
             <span>
-              {isSuggestionAnalyzing
-                ? "Analyzing"
-                : `Suggestions ${formatRelativeTime(lastSuggestionCheckAt)}`}
+              {isSuggestionAnalyzing ? "Analyzing" : `Suggestions ${formatRelativeTime(lastSuggestionCheckAt)}`}
             </span>
           </span>
         )}
 
         {/* Model Badge */}
-        <span
-          style={{
-            padding: `${spacing[1]}px ${spacing[2]}px`,
-            background: colors.surfaceElevated,
-            color: colors.textSecondary,
-            borderRadius: 12,
-            fontSize: typography.xs,
-            fontWeight: 500,
-            fontFamily: "SF Mono, Monaco, monospace",
-          }}
-          title="Active AI model"
-        >
+        <span style={{ padding: `${spacing[1]}px ${spacing[2]}px`, background: colors.background, color: colors.textSecondary, borderRadius: 12, fontSize: typography.xs, fontWeight: 500, fontFamily: "SF Mono, Monaco, monospace" }} title="Active AI model">
           {modelName.length > 20 ? modelName.split("/").pop() : modelName}
         </span>
 
-        <span
-          style={{
-            padding: `${spacing[1]}px ${spacing[2]}px`,
-            background: colors.surfaceElevated,
-            color: colors.them,
-            borderRadius: 12,
-            fontSize: typography.xs,
-            fontWeight: 500,
-            fontFamily: "SF Mono, Monaco, monospace",
-          }}
-          title="Active Whisper transcription model"
-        >
+        <span style={{ padding: `${spacing[1]}px ${spacing[2]}px`, background: colors.surfaceElevated, color: colors.them, borderRadius: 12, fontSize: typography.xs, fontWeight: 500, fontFamily: "SF Mono, Monaco, monospace" }} title="Active Whisper transcription model">
           {whisperModel} · {transcriptionLocale || "auto"}
         </span>
       </div>

@@ -39,6 +39,7 @@ pub fn run() {
             engine::delete_template,
             engine::list_sessions,
             engine::load_session,
+            engine::save_transcript,
         ])
         .setup(move |app| {
             if cfg!(debug_assertions) {

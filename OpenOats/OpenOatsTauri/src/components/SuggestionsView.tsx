@@ -97,63 +97,63 @@ function EmptyState({
       >
         <div
           style={{
-            minWidth: 48,
-            height: 48,
-            borderRadius: 12,
-            background: `${colors.accent}12`,
+            width: 80,
+            height: 80,
+            borderRadius: 20,
+            background: `linear-gradient(135deg, ${colors.accentMuted}, ${colors.accent}20)`,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            fontSize: typography.base,
-            fontWeight: 700,
-            color: colors.accent,
-            marginBottom: spacing[3],
-            padding: "0 12px",
+            fontSize: 36,
+            marginBottom: spacing[4],
+            boxShadow: `0 4px 16px ${colors.accent}20`,
           }}
         >
-          AI
+          📚
         </div>
         <h4
           style={{
-            fontSize: typography.lg,
+            fontSize: typography.xl,
             fontWeight: 600,
             color: colors.text,
             margin: `0 0 ${spacing[2]}px`,
           }}
         >
-          Suggestions are context-aware
+          Connect your knowledge base
         </h4>
         <p
           style={{
             fontSize: typography.md,
             color: colors.textSecondary,
             margin: `0 0 ${spacing[4]}px`,
-            maxWidth: 280,
-            lineHeight: 1.5,
+            maxWidth: 320,
+            lineHeight: 1.6,
           }}
         >
-          Connect a knowledge base for note-backed prompts. OpenOats can also surface smart questions when the conversation exposes missing information.
+          Add a folder of notes and OpenOats will surface relevant talking points during your calls.
         </p>
-        <div style={{ display: "flex", gap: spacing[2] }}>
-          <button
-            style={{
-              padding: `${spacing[2]}px ${spacing[3]}px`,
-              background: colors.accent,
-              color: colors.textInverse,
-              border: "none",
-              borderRadius: 6,
-              fontSize: typography.base,
-              cursor: "pointer",
-              fontWeight: 500,
-            }}
-            onClick={() => {
-              const event = new CustomEvent("open-settings", { detail: { tab: "general" } });
-              window.dispatchEvent(event);
-            }}
-          >
-            Choose KB Folder
-          </button>
-        </div>
+        <button
+          style={{
+            padding: `${spacing[3]}px ${spacing[4]}px`,
+            background: colors.accent,
+            color: colors.textInverse,
+            border: "none",
+            borderRadius: 8,
+            fontSize: typography.md,
+            cursor: "pointer",
+            fontWeight: 600,
+            boxShadow: `0 2px 8px ${colors.accent}40`,
+          }}
+          onClick={() => {
+            const event = new CustomEvent("open-settings", { detail: { tab: "general" } });
+            window.dispatchEvent(event);
+          }}
+        >
+          Choose KB Folder
+        </button>
+        <p style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: spacing[3] }}>
+          Or use without KB for smart questions only
+        </p>
       </div>
     );
   }
@@ -171,50 +171,52 @@ function EmptyState({
     >
       <div
         style={{
-          minWidth: 48,
-          height: 48,
-          borderRadius: 12,
-          background: `${colors.success}12`,
+          width: 80,
+          height: 80,
+          borderRadius: 20,
+          background: `linear-gradient(135deg, ${colors.success}15, ${colors.accent}10)`,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          fontSize: typography.base,
-          fontWeight: 700,
-          color: colors.success,
-          marginBottom: spacing[3],
-          padding: "0 12px",
+          fontSize: 36,
+          marginBottom: spacing[4],
+          boxShadow: `0 4px 16px ${colors.success}15`,
         }}
       >
-        KB
+        ✨
       </div>
       <h4
         style={{
-          fontSize: typography.lg,
+          fontSize: typography.xl,
           fontWeight: 600,
           color: colors.text,
           margin: `0 0 ${spacing[2]}px`,
         }}
       >
-        Listening for relevant moments...
+        Listening for insights...
       </h4>
       <p
         style={{
           fontSize: typography.md,
           color: colors.textSecondary,
           margin: `0 0 ${spacing[2]}px`,
-          maxWidth: 280,
-          lineHeight: 1.5,
+          maxWidth: 320,
+          lineHeight: 1.6,
         }}
       >
-        Suggestions appear when the other person mentions topics related to your knowledge base or leaves an important question unanswered.
+        Suggestions appear when the conversation matches topics in your knowledge base or when important questions go unanswered.
       </p>
       <span
         style={{
           fontSize: typography.sm,
-          color: colors.textMuted,
+          color: lastCheckSurfaced ? colors.success : colors.textMuted,
+          background: lastCheckSurfaced ? `${colors.success}10` : "transparent",
+          padding: `${spacing[1]}px ${spacing[2]}px`,
+          borderRadius: 6,
         }}
       >
-        Last checked: {formatRelativeTime(lastCheckedAt)} · {lastCheckSurfaced ? "Suggestion found recently" : kbFileCount > 0 ? `${kbFileCount} docs indexed` : "KB connected"}
+        {lastCheckSurfaced ? "✓ Found a suggestion recently" : `Last checked: ${formatRelativeTime(lastCheckedAt)}`}
+        {kbFileCount > 0 && ` · ${kbFileCount} docs indexed`}
       </span>
     </div>
   );
