@@ -4,6 +4,11 @@ import type { ApiKeys, AppSettings } from "../types";
 
 type Tab = "general" | "ai" | "advanced";
 
+interface SettingsViewProps {
+  settings?: AppSettings | null;
+  onSettingsChange?: (settings: AppSettings) => void;
+}
+
 // Design system constants
 const colors = {
   background: "#111111",
@@ -194,8 +199,8 @@ const styles = {
   },
 };
 
-export function SettingsView() {
-  const [settings, setSettings] = useState<AppSettings | null>(null);
+export function SettingsView({ settings: initialSettings = null, onSettingsChange }: SettingsViewProps) {
+  const [settings, setSettings] = useState<AppSettings | null>(initialSettings);
   const [apiKeys, setApiKeys] = useState<ApiKeys | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("general");
   const [saved, setSaved] = useState(false);
@@ -203,20 +208,33 @@ export function SettingsView() {
   const [kbFileCount, setKbFileCount] = useState<number>(0);
 
   useEffect(() => {
-    Promise.all([
-      invoke<AppSettings>("get_settings"),
-      invoke<ApiKeys>("get_api_keys"),
-    ])
-      .then(([loadedSettings, loadedKeys]) => {
+    invoke<ApiKeys>("get_api_keys")
+      .then(setApiKeys)
+      .catch((err) => setError(String(err)));
+  }, []);
+
+  useEffect(() => {
+    if (initialSettings) {
+      setSettings(initialSettings);
+      if (initialSettings.kbFolderPath) {
+        countKBFiles(initialSettings.kbFolderPath);
+      } else {
+        setKbFileCount(0);
+      }
+      return;
+    }
+
+    invoke<AppSettings>("get_settings")
+      .then((loadedSettings) => {
         setSettings(loadedSettings);
-        setApiKeys(loadedKeys);
-        // Count KB files if path exists
         if (loadedSettings.kbFolderPath) {
           countKBFiles(loadedSettings.kbFolderPath);
+        } else {
+          setKbFileCount(0);
         }
       })
       .catch((err) => setError(String(err)));
-  }, []);
+  }, [initialSettings]);
 
   const countKBFiles = async (path: string) => {
     try {
@@ -237,6 +255,7 @@ export function SettingsView() {
     try {
       await invoke("save_settings", { newSettings: updated });
       setSettings(updated);
+      onSettingsChange?.(updated);
       setError(null);
       flashSaved();
     } catch (err) {

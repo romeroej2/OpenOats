@@ -41,6 +41,10 @@ function App() {
       .catch(console.error);
   }, []);
 
+  const handleSettingsChange = useCallback((updated: AppSettings) => {
+    setSettings(updated);
+  }, []);
+
   // Check model and set up event listeners
   useEffect(() => {
     invoke<boolean>("check_model")
@@ -223,7 +227,10 @@ function App() {
   }
 
   const isLocalMode = settings?.llmProvider === "ollama" && settings?.embeddingProvider === "ollama";
-  const modelName = settings?.selectedModel || "Unknown";
+  const modelName =
+    settings?.llmProvider === "ollama"
+      ? settings.ollamaLlmModel || "Unknown"
+      : settings?.selectedModel || "Unknown";
   const kbConnected = !!settings?.kbFolderPath;
 
   const tabs: { key: Tab; label: string; badge?: number }[] = [
@@ -321,7 +328,12 @@ function App() {
             onCopy={handleSuggestionCopy}
           />
         )}
-        {tab === "settings" && <SettingsView />}
+        {tab === "settings" && (
+          <SettingsView
+            settings={settings}
+            onSettingsChange={handleSettingsChange}
+          />
+        )}
         {tab === "notes" && <NotesView sessionId={currentSessionId} />}
       </div>
     </div>
