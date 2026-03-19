@@ -1,0 +1,32 @@
+pub mod audio;
+pub mod engine;
+pub mod transcriber;
+
+use std::sync::Arc;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let state = Arc::new(engine::AppState::new());
+
+    tauri::Builder::default()
+        .manage(state)
+        .invoke_handler(tauri::generate_handler![
+            engine::check_model,
+            engine::get_model_path,
+            engine::start_transcription,
+            engine::stop_transcription,
+            engine::download_model,
+        ])
+        .setup(|app| {
+            if cfg!(debug_assertions) {
+                app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .build(),
+                )?;
+            }
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
