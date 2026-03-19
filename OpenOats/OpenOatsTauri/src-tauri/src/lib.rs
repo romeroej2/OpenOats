@@ -33,6 +33,8 @@ pub fn run() {
             engine::list_templates,
             engine::save_template,
             engine::delete_template,
+            engine::list_sessions,
+            engine::load_session,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

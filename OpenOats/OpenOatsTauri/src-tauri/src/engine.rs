@@ -646,6 +646,19 @@ pub async fn choose_folder(app: AppHandle) -> Option<String> {
 }
 
 #[tauri::command]
+pub fn list_sessions(state: tauri::State<'_, Arc<AppState>>) -> Vec<openoats_core::models::SessionIndex> {
+    state.session_store.lock().unwrap().load_session_index()
+}
+
+#[tauri::command]
+pub fn load_session(
+    id: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Vec<openoats_core::models::SessionRecord> {
+    state.session_store.lock().unwrap().load_transcript(&id)
+}
+
+#[tauri::command]
 pub fn list_templates(state: tauri::State<'_, Arc<AppState>>) -> Vec<MeetingTemplate> {
     state.template_store.lock().unwrap().templates().to_vec()
 }
