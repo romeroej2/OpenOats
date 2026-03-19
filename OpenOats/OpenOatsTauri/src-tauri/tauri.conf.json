@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "npm.cmd run dev",
+    "beforeBuildCommand": "npm.cmd run build"
   },
   "app": {
     "windows": [
@@ -19,19 +19,6 @@
         "resizable": true,
         "fullscreen": false,
         "contentProtected": false
-      },
-      {
-        "label": "overlay",
-        "title": "OpenOats Overlay",
-        "width": 380,
-        "height": 160,
-        "resizable": false,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "visible": false,
-        "contentProtected": false,
-        "skipTaskbar": true
       }
     ],
     "security": {
@@ -41,6 +28,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      }
+    },
     "macOS": {
       "entitlements": "OpenOats.entitlements",
       "minimumSystemVersion": "13.0",

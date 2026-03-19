@@ -26,11 +26,44 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex as AsyncMutex;
 
 const SUGGESTION_CONTEXT_WINDOW_SECS: i64 = 180;
+const OVERLAY_LABEL: &str = "overlay";
+const OVERLAY_SUGGESTION_EVENT: &str = "overlay-suggestion";
+
+fn ensure_overlay_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
+        return Ok(window);
+    }
+
+    let window = WebviewWindowBuilder::new(app, OVERLAY_LABEL, WebviewUrl::default())
+        .title("OpenOats Overlay")
+        .inner_size(380.0, 160.0)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .visible(false)
+        .skip_taskbar(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    Ok(window)
+}
+
+fn emit_overlay_suggestion(window: WebviewWindow, payload: SuggestionPayload) {
+    tauri::async_runtime::spawn(async move {
+        for delay_ms in [0_u64, 150, 500] {
+            if delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+            let _ = window.emit(OVERLAY_SUGGESTION_EVENT, &payload);
+        }
+    });
+}
 
 // ── Payloads ────────────────────────────────────────────────────────────────
 
@@ -55,7 +88,7 @@ pub struct AudioLevelPayload {
     pub them: f32,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SuggestionPayload {
     pub id: String,
@@ -84,6 +117,7 @@ pub struct AppState {
     pub system_audio_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub suggestion_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub poll_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    pub overlay_suggestion: Mutex<Option<SuggestionPayload>>,
     pub is_running: Mutex<bool>,
     pub mic_level: Arc<AtomicU32>,
     pub sys_level: Arc<AtomicU32>,
@@ -112,6 +146,7 @@ impl AppState {
             system_audio_task: Mutex::new(None),
             suggestion_task: Mutex::new(None),
             poll_task: Mutex::new(None),
+            overlay_suggestion: Mutex::new(None),
             is_running: Mutex::new(false),
             mic_level: Arc::new(AtomicU32::new(0)),
             sys_level: Arc::new(AtomicU32::new(0)),
@@ -360,6 +395,10 @@ pub fn start_transcription(
     };
     state.transcript_logger.lock().unwrap().start_session();
     state.suggestion_engine.blocking_lock().clear();
+    *state.overlay_suggestion.lock().unwrap() = None;
+    if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
+        let _ = overlay.hide();
+    }
 
     let model_str = model_path.to_string_lossy().into_owned();
     let app_clone = app.clone();
@@ -500,6 +539,7 @@ pub fn start_transcription(
         let suggestion_handle = tauri::async_runtime::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(suggestion_interval_secs));
+            let mut last_checked_utterance_id: Option<uuid::Uuid> = None;
             interval.tick().await;
 
             loop {
@@ -520,6 +560,13 @@ pub fn start_transcription(
                 if recent_buf.is_empty() {
                     continue;
                 }
+
+                let latest_utterance_id = recent_buf.last().map(|u| u.id);
+                if latest_utterance_id.is_none() || latest_utterance_id == last_checked_utterance_id
+                {
+                    continue;
+                }
+                last_checked_utterance_id = latest_utterance_id;
 
                 let transcript_window = recent_buf
                     .iter()
@@ -607,6 +654,10 @@ pub fn start_transcription(
                     .iter()
                     .filter(|u| matches!(u.speaker, Speaker::Them))
                     .collect::<Vec<_>>();
+                if recent_them.is_empty() || recent_buf.len() < 3 {
+                    suggestion_app.emit("suggestion-finished", ()).ok();
+                    continue;
+                }
 
                 let mut engine = suggestion_state.suggestion_engine.lock().await;
                 let suggestion = engine
@@ -634,9 +685,11 @@ pub fn start_transcription(
                         text: suggestion.text.clone(),
                         kb_hits: suggestion.kb_hits.clone(),
                     };
+                    *suggestion_state.overlay_suggestion.lock().unwrap() = Some(payload.clone());
                     suggestion_app.emit("suggestion", &payload).ok();
-                    if let Some(overlay) = suggestion_app.get_webview_window("overlay") {
+                    if let Ok(overlay) = ensure_overlay_window(&suggestion_app) {
                         let _ = overlay.show();
+                        emit_overlay_suggestion(overlay, payload.clone());
                     }
                 }
 
@@ -734,7 +787,10 @@ pub fn start_transcription(
 }
 
 #[tauri::command]
-pub fn stop_transcription(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+pub fn stop_transcription(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
     if let Some(handle) = state.audio_task.lock().unwrap().take() {
         handle.abort();
     }
@@ -749,6 +805,10 @@ pub fn stop_transcription(state: tauri::State<'_, Arc<AppState>>) -> Result<(), 
     }
     state.session_store.lock().unwrap().end_session();
     state.transcript_logger.lock().unwrap().end_session();
+    *state.overlay_suggestion.lock().unwrap() = None;
+    if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
+        let _ = overlay.hide();
+    }
     *state.is_running.lock().unwrap() = false;
     state.mic_level.store(0u32, Ordering::Relaxed);
     state.sys_level.store(0u32, Ordering::Relaxed);
@@ -918,24 +978,57 @@ pub fn suggestion_feedback(
 
 #[tauri::command]
 pub fn show_overlay(app: AppHandle) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("overlay") {
-        w.show().map_err(|e| e.to_string())?;
-        let _ = w.set_focus();
+    let w = ensure_overlay_window(&app)?;
+    w.show().map_err(|e| e.to_string())?;
+    let _ = w.set_focus();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_overlay_preview(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    id: String,
+    text: String,
+) -> Result<(), String> {
+    *state.overlay_suggestion.lock().unwrap() = Some(SuggestionPayload {
+        id,
+        kind: "preview".into(),
+        text,
+        kb_hits: Vec::new(),
+    });
+
+    let w = ensure_overlay_window(&app)?;
+    w.show().map_err(|e| e.to_string())?;
+    let _ = w.set_focus();
+    if let Some(payload) = state.overlay_suggestion.lock().unwrap().clone() {
+        emit_overlay_suggestion(w, payload);
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn hide_overlay(app: AppHandle) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("overlay") {
+pub fn hide_overlay(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    *state.overlay_suggestion.lock().unwrap() = None;
+    if let Some(w) = app.get_webview_window(OVERLAY_LABEL) {
         w.hide().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
+pub fn get_overlay_suggestion(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Option<SuggestionPayload> {
+    state.overlay_suggestion.lock().unwrap().clone()
+}
+
+#[tauri::command]
 pub fn set_overlay_position(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("overlay") {
+    if let Some(w) = app.get_webview_window(OVERLAY_LABEL) {
         w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
             .map_err(|e| e.to_string())?;
     }
@@ -944,7 +1037,7 @@ pub fn set_overlay_position(app: AppHandle, x: i32, y: i32) -> Result<(), String
 
 #[tauri::command]
 pub fn set_overlay_size(app: AppHandle, width: u32, height: u32) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("overlay") {
+    if let Some(w) = app.get_webview_window(OVERLAY_LABEL) {
         w.set_size(tauri::Size::Logical(tauri::LogicalSize {
             width: width as f64,
             height: height as f64,

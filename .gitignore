@@ -15,3 +15,4 @@ OpenOats/target/
 .claude/settings.local.json
 OpenOats/Cargo.lock
 OpenOats/package-lock.json
+OpenOats/OpenOatsTauri/.npm-cache/

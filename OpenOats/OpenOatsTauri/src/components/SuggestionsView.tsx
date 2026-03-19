@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emitTo } from "@tauri-apps/api/event";
 import type { Suggestion } from "../types";
 import { colors, typography, spacing } from "../theme";
 
@@ -408,8 +407,7 @@ export function SuggestionsView({
       kbHits: [],
     };
     onInjectTest?.(fake);
-    await invoke("show_overlay").catch(() => {});
-    await emitTo("overlay", "overlay-test-suggestion", { id: fake.id, text: fake.text }).catch(() => {});
+    await invoke("show_overlay_preview", { id: fake.id, text: fake.text }).catch(() => {});
   };
 
   if (suggestions.length === 0 && !isGenerating) {

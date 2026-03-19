@@ -47,6 +47,13 @@ OpenOats sits next to your call, transcribes both sides of the conversation in r
 
 Grab the latest release for your platform from the [Releases page](https://github.com/romeroej2/OpenOats/releases/latest).
 
+Windows releases are built automatically by GitHub Actions from `.github/workflows/windows-release.yml`. On every `v*` tag push, the pipeline publishes:
+
+- `OpenOats_*_x64-setup.exe` via NSIS for normal end users
+- `OpenOats_*_x64_en-US.msi` for managed or enterprise installs
+
+The Windows installer embeds the WebView2 bootstrapper so installs are more reliable on machines that do not already have the runtime preinstalled.
+
 Or build from source.
 
 ### Build from source
@@ -66,6 +73,8 @@ cd OpenOatsTauri
 npm install
 cargo tauri build
 ```
+
+On Windows PowerShell, prefer `npm.cmd ci` and `npx.cmd tauri build` if your global `npm` PowerShell shim is misconfigured.
 
 The installers are output to `OpenOatsTauri/src-tauri/target/release/bundle/`.
 

@@ -70,6 +70,13 @@ export function OverlayApp() {
     html.style.background = "transparent";
     html.style.colorScheme = "normal";
     document.body.style.background = "transparent";
+    invoke<SuggestionPayload | null>("get_overlay_suggestion")
+      .then((payload) => {
+        if (payload) {
+          setSuggestion(payload);
+        }
+      })
+      .catch(() => {});
     if (root) {
       root.style.background = "transparent";
       root.style.border = "none";
@@ -80,16 +87,12 @@ export function OverlayApp() {
       root.style.margin = "0";
     }
 
-    const unlisten1 = listen<SuggestionPayload>("suggestion", (e) => {
-      setSuggestion(e.payload);
-    });
-    const unlisten2 = listen<SuggestionPayload>("overlay-test-suggestion", (e) => {
+    const unlisten1 = listen<SuggestionPayload>("overlay-suggestion", (e) => {
       setSuggestion(e.payload);
     });
 
     return () => {
       unlisten1.then((f) => f());
-      unlisten2.then((f) => f());
       if (frameRef.current !== null) {
         cancelAnimationFrame(frameRef.current);
       }
