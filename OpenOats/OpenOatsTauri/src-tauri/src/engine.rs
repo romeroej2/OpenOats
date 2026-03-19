@@ -924,6 +924,7 @@ pub fn show_overlay(app: AppHandle) -> Result<(), String> {
             height: 160.0,
         }));
         w.show().map_err(|e| e.to_string())?;
+        let _ = w.set_focus();
     }
     Ok(())
 }
@@ -932,6 +933,15 @@ pub fn show_overlay(app: AppHandle) -> Result<(), String> {
 pub fn hide_overlay(app: AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("overlay") {
         w.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_overlay_position(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("overlay") {
+        w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

@@ -31,6 +31,7 @@ pub fn run() {
             engine::suggestion_feedback,
             engine::show_overlay,
             engine::hide_overlay,
+            engine::set_overlay_position,
             engine::set_content_protection,
             engine::choose_folder,
             engine::list_templates,
