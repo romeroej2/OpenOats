@@ -1,6 +1,4 @@
-pub mod audio;
-pub mod engine;
-pub mod transcriber;
+mod engine;
 
 use std::sync::Arc;
 
@@ -13,6 +11,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             engine::check_model,
             engine::get_model_path,
+            engine::get_settings,
+            engine::save_settings,
+            engine::list_mic_devices,
             engine::start_transcription,
             engine::stop_transcription,
             engine::download_model,
