@@ -1,11 +1,9 @@
 import { useState } from "react";
 import type { Suggestion } from "../types";
 
-// Design system
 const colors = {
   background: "#111111",
   surface: "#1a1a1a",
-  surfaceElevated: "#222222",
   border: "#333333",
   text: "#eeeeee",
   textSecondary: "#888888",
@@ -13,7 +11,6 @@ const colors = {
   accent: "#2b7a78",
   accentLight: "#3a9a98",
   success: "#27ae60",
-  you: "#5b8cbf",
   them: "#d2994d",
 };
 
@@ -38,6 +35,8 @@ interface Props {
   isGenerating?: boolean;
   kbConnected?: boolean;
   kbFileCount?: number;
+  lastCheckedAt?: string | null;
+  lastCheckSurfaced?: boolean | null;
   onFeedback?: (id: string, helpful: boolean) => void;
   onCopy?: (text: string) => void;
 }
@@ -48,7 +47,17 @@ interface ParsedBullet {
   detail?: string;
 }
 
-// Parse bullets from suggestion text
+function formatRelativeTime(iso: string | null | undefined): string {
+  if (!iso) return "Waiting for first analysis";
+  const deltaSeconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (deltaSeconds < 5) return "Just now";
+  if (deltaSeconds < 60) return `${deltaSeconds}s ago`;
+  const minutes = Math.floor(deltaSeconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
+}
+
 function parseBullets(text: string): ParsedBullet[] {
   const lines = text.split("\n");
   const bullets: ParsedBullet[] = [];
@@ -58,11 +67,10 @@ function parseBullets(text: string): ParsedBullet[] {
   for (const line of lines) {
     const trimmed = line.trim();
 
-    if (trimmed.startsWith("•") || trimmed.startsWith("-") || trimmed.startsWith("*")) {
-      // Save previous bullet
+    if (trimmed.startsWith("\u2022") || trimmed.startsWith("-") || trimmed.startsWith("*")) {
       if (currentHeadline) {
         bullets.push({
-          id: Math.random().toString(36).substr(2, 9),
+          id: Math.random().toString(36).slice(2, 11),
           headline: currentHeadline,
           detail: currentDetail || undefined,
         });
@@ -74,14 +82,14 @@ function parseBullets(text: string): ParsedBullet[] {
       if (detail) {
         currentDetail = currentDetail ? `${currentDetail} ${detail}` : detail;
       }
-    } else if (trimmed && trimmed !== "—" && currentHeadline) {
+    } else if (trimmed && trimmed !== "\u2014" && currentHeadline) {
       currentDetail = currentDetail ? `${currentDetail} ${trimmed}` : trimmed;
     }
   }
 
   if (currentHeadline) {
     bullets.push({
-      id: Math.random().toString(36).substr(2, 9),
+      id: Math.random().toString(36).slice(2, 11),
       headline: currentHeadline,
       detail: currentDetail || undefined,
     });
@@ -90,13 +98,16 @@ function parseBullets(text: string): ParsedBullet[] {
   return bullets;
 }
 
-// Empty state component
 function EmptyState({
   kbConnected,
   kbFileCount,
+  lastCheckedAt,
+  lastCheckSurfaced,
 }: {
   kbConnected: boolean;
   kbFileCount: number;
+  lastCheckedAt?: string | null;
+  lastCheckSurfaced?: boolean | null;
 }) {
   if (!kbConnected) {
     return (
@@ -112,18 +123,21 @@ function EmptyState({
       >
         <div
           style={{
-            width: 48,
+            minWidth: 48,
             height: 48,
             borderRadius: 12,
             background: `${colors.accent}15`,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            fontSize: 24,
+            fontSize: typography.base,
+            fontWeight: 700,
+            color: colors.accentLight,
             marginBottom: spacing[3],
+            padding: "0 12px",
           }}
         >
-          💡
+          AI
         </div>
         <h4
           style={{
@@ -159,7 +173,6 @@ function EmptyState({
               fontWeight: 500,
             }}
             onClick={() => {
-              // Open settings to KB section
               const event = new CustomEvent("open-settings", { detail: { tab: "general" } });
               window.dispatchEvent(event);
             }}
@@ -184,18 +197,21 @@ function EmptyState({
     >
       <div
         style={{
-          width: 48,
+          minWidth: 48,
           height: 48,
           borderRadius: 12,
           background: `${colors.success}15`,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          fontSize: 24,
+          fontSize: typography.base,
+          fontWeight: 700,
+          color: colors.success,
           marginBottom: spacing[3],
+          padding: "0 12px",
         }}
       >
-        🎧
+        KB
       </div>
       <h4
         style={{
@@ -224,13 +240,12 @@ function EmptyState({
           color: colors.textMuted,
         }}
       >
-        Last checked: Just now · {kbFileCount > 0 ? `${kbFileCount} docs indexed` : "KB connected"}
+        Last checked: {formatRelativeTime(lastCheckedAt)} · {lastCheckSurfaced ? "Suggestion found recently" : kbFileCount > 0 ? `${kbFileCount} docs indexed` : "KB connected"}
       </span>
     </div>
   );
 }
 
-// Individual bullet component
 function BulletRow({ bullet }: { bullet: ParsedBullet }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const hasDetail = !!bullet.detail;
@@ -287,7 +302,6 @@ function BulletRow({ bullet }: { bullet: ParsedBullet }) {
   );
 }
 
-// Suggestion card component
 function SuggestionCard({
   suggestion,
   isPrimary,
@@ -343,7 +357,6 @@ function SuggestionCard({
         {isSmartQuestion ? "Smart Question" : "Talking Point"}
       </div>
 
-      {/* Suggestion content */}
       {bullets.length > 0 ? (
         bullets.map((bullet) => <BulletRow key={bullet.id} bullet={bullet} />)
       ) : (
@@ -353,13 +366,14 @@ function SuggestionCard({
             color: colors.text,
             margin: 0,
             lineHeight: 1.5,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
           }}
         >
           {suggestion.text}
         </p>
       )}
 
-      {/* Source files */}
       {hasSources && (
         <div
           style={{
@@ -373,7 +387,7 @@ function SuggestionCard({
             color: colors.textMuted,
           }}
         >
-          <span>📄</span>
+          <span style={{ fontWeight: 600, color: colors.textSecondary }}>Docs</span>
           <span>
             {suggestion.kbHits.slice(0, 3).map((h) => h.sourceFile).join(" · ")}
             {suggestion.kbHits.length > 3 && ` +${suggestion.kbHits.length - 3} more`}
@@ -381,7 +395,6 @@ function SuggestionCard({
         </div>
       )}
 
-      {/* Actions */}
       <div
         style={{
           display: "flex",
@@ -416,7 +429,7 @@ function SuggestionCard({
             cursor: "pointer",
           }}
         >
-          ✕ Dismiss
+          Dismiss
         </button>
       </div>
     </div>
@@ -428,6 +441,8 @@ export function SuggestionsView({
   isGenerating = false,
   kbConnected = false,
   kbFileCount = 0,
+  lastCheckedAt = null,
+  lastCheckSurfaced = null,
   onFeedback,
   onCopy,
 }: Props) {
@@ -444,7 +459,6 @@ export function SuggestionsView({
     onCopy?.(text);
   };
 
-  // Empty state
   if (visibleSuggestions.length === 0 && !isGenerating) {
     return (
       <div
@@ -454,7 +468,12 @@ export function SuggestionsView({
           background: colors.background,
         }}
       >
-        <EmptyState kbConnected={kbConnected} kbFileCount={kbFileCount} />
+        <EmptyState
+          kbConnected={kbConnected}
+          kbFileCount={kbFileCount}
+          lastCheckedAt={lastCheckedAt}
+          lastCheckSurfaced={lastCheckSurfaced}
+        />
       </div>
     );
   }
@@ -468,7 +487,6 @@ export function SuggestionsView({
         background: colors.background,
       }}
     >
-      {/* Generating indicator */}
       {isGenerating && (
         <div
           style={{
@@ -497,7 +515,31 @@ export function SuggestionsView({
         </div>
       )}
 
-      {/* Suggestions list */}
+      {!isGenerating && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: spacing[2],
+            padding: `${spacing[2]}px ${spacing[3]}px`,
+            background: colors.surface,
+            border: `1px solid ${colors.border}`,
+            borderRadius: 8,
+            marginBottom: spacing[3],
+            fontSize: typography.sm,
+            color: colors.textSecondary,
+          }}
+        >
+          <span style={{ color: lastCheckSurfaced ? colors.success : colors.textMuted }}>
+            {lastCheckSurfaced ? "●" : "○"}
+          </span>
+          <span>
+            Last analysis: {formatRelativeTime(lastCheckedAt)}
+            {lastCheckSurfaced ? " · surfaced a suggestion" : " · no suggestion surfaced"}
+          </span>
+        </div>
+      )}
+
       {visibleSuggestions.length > 0 && (
         <div style={{ marginBottom: spacing[2] }}>
           <div
@@ -524,7 +566,6 @@ export function SuggestionsView({
         </div>
       )}
 
-      {/* Add animations */}
       <style>{`
         @keyframes slideIn {
           from {

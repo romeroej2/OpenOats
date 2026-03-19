@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -12,6 +12,7 @@ export function OverlayApp() {
 
   useEffect(() => {
     const root = document.getElementById("root");
+    const previousHtmlBackground = document.documentElement.style.background;
     const previousBodyBackground = document.body.style.background;
     const previousBodyOverflow = document.body.style.overflow;
     const previousRootWidth = root?.style.width ?? "";
@@ -21,6 +22,7 @@ export function OverlayApp() {
     const previousRootMinHeight = root?.style.minHeight ?? "";
     const previousRootDisplay = root?.style.display ?? "";
 
+    document.documentElement.style.background = "transparent";
     document.body.style.background = "transparent";
     document.body.style.overflow = "hidden";
 
@@ -38,6 +40,7 @@ export function OverlayApp() {
     });
 
     return () => {
+      document.documentElement.style.background = previousHtmlBackground;
       document.body.style.background = previousBodyBackground;
       document.body.style.overflow = previousBodyOverflow;
 
@@ -55,11 +58,7 @@ export function OverlayApp() {
   }, []);
 
   if (!suggestion) {
-    return (
-      <div style={containerStyle}>
-        <span style={{ color: "#555", fontSize: 13 }}>Waiting for suggestions…</span>
-      </div>
-    );
+    return null;
   }
 
   const dismiss = () => {
@@ -71,10 +70,12 @@ export function OverlayApp() {
     <div style={containerStyle}>
       <div style={cardStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-          <p style={{ margin: 0, fontSize: 13, color: "#eee", lineHeight: 1.5, flex: 1 }}>
+          <p style={{ margin: 0, fontSize: 13, color: "#eee", lineHeight: 1.5, flex: 1, whiteSpace: "pre-wrap" }}>
             {suggestion.text}
           </p>
-          <button onClick={dismiss} style={closeBtn} title="Dismiss">✕</button>
+          <button onClick={dismiss} style={closeBtn} title="Dismiss">
+            x
+          </button>
         </div>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import "./index.css";
+import "./App.css";
 import App from "./App.tsx";
 import { OverlayApp } from "./OverlayApp.tsx";
 

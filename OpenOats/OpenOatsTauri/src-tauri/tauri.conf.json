@@ -18,7 +18,7 @@
         "height": 600,
         "resizable": true,
         "fullscreen": false,
-        "contentProtected": true
+        "contentProtected": false
       },
       {
         "label": "overlay",
@@ -30,7 +30,7 @@
         "transparent": true,
         "alwaysOnTop": true,
         "visible": false,
-        "contentProtected": true,
+        "contentProtected": false,
         "skipTaskbar": true
       }
     ],

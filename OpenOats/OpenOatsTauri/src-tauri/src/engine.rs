@@ -24,6 +24,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
+const SUGGESTION_CONTEXT_WINDOW_SECS: i64 = 180;
+
 // ── Payloads ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Serialize)]
@@ -56,6 +58,13 @@ pub struct SuggestionPayload {
     pub kb_hits: Vec<openoats_core::models::KBResult>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuggestionCheckPayload {
+    pub checked_at: String,
+    pub surfaced: bool,
+}
+
 // ── AppState ────────────────────────────────────────────────────────────────
 
 pub struct AppState {
@@ -67,6 +76,7 @@ pub struct AppState {
     pub suggestion_engine: AsyncMutex<SuggestionEngine>,
     pub audio_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub system_audio_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    pub suggestion_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub poll_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub is_running: Mutex<bool>,
     pub mic_level: Arc<AtomicU32>,
@@ -91,6 +101,7 @@ impl AppState {
             settings: Mutex::new(settings),
             audio_task: Mutex::new(None),
             system_audio_task: Mutex::new(None),
+            suggestion_task: Mutex::new(None),
             poll_task: Mutex::new(None),
             is_running: Mutex::new(false),
             mic_level: Arc::new(AtomicU32::new(0)),
@@ -188,6 +199,16 @@ fn compute_rms(samples: &[f32]) -> f32 {
     mean_sq.sqrt().min(1.0)
 }
 
+fn push_recent_utterance(
+    buffer: &Arc<Mutex<Vec<openoats_core::models::Utterance>>>,
+    utterance: openoats_core::models::Utterance,
+) {
+    let cutoff = chrono::Utc::now() - chrono::Duration::seconds(SUGGESTION_CONTEXT_WINDOW_SECS);
+    let mut entries = buffer.lock().unwrap();
+    entries.push(utterance);
+    entries.retain(|entry| entry.timestamp >= cutoff);
+}
+
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -236,11 +257,16 @@ pub fn save_api_keys(new_keys: ApiKeysPayload) -> Result<(), String> {
 #[tauri::command]
 pub fn save_settings(
     new_settings: AppSettings,
+    app: AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
-) {
+) -> Result<(), String> {
     let mut s = state.settings.lock().unwrap();
     *s = new_settings;
     s.save();
+    let hide_from_screen_share = s.hide_from_screen_share;
+    drop(s);
+    set_content_protection(app, hide_from_screen_share)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -288,8 +314,9 @@ pub fn start_transcription(
     let device_name = settings.input_device_name.clone();
     let language = settings.transcription_locale
         .split('-').next().unwrap_or("en").to_string();
+    let suggestion_interval_secs = settings.suggestion_interval_seconds.max(30);
 
-    let them_utterances: Arc<Mutex<Vec<openoats_core::models::Utterance>>> =
+    let recent_utterances: Arc<Mutex<Vec<openoats_core::models::Utterance>>> =
         Arc::new(Mutex::new(Vec::new()));
 
     let handle = tauri::async_runtime::spawn(async move {
@@ -315,7 +342,7 @@ pub fn start_transcription(
         let them_state = Arc::clone(&state_clone);
         let them_model = model_str.clone();
         let them_lang = language.clone();
-        let them_utterances_spawn = Arc::clone(&them_utterances);
+        let recent_utterances_spawn = Arc::clone(&recent_utterances);
 
         let them_handle = tauri::async_runtime::spawn(async move {
             let sys = SystemAudioCapture::new(None);
@@ -334,7 +361,7 @@ pub fn start_transcription(
                 chunk
             });
 
-            let them_utterances_clone = Arc::clone(&them_utterances_spawn);
+            let recent_utterances_clone = Arc::clone(&recent_utterances_spawn);
             let app_sg = them_app.clone();
             let state_sg = Arc::clone(&them_state);
 
@@ -367,90 +394,8 @@ pub fn start_transcription(
                 state_sg.session_store.lock().unwrap().append_record(&record).ok();
                 state_sg.transcript_logger.lock().unwrap().append("Them", &text, chrono::Utc::now());
 
-                // Track recent them utterances (keep last 10)
-                {
-                    let mut buf = them_utterances_clone.lock().unwrap();
-                    buf.push(utterance.clone());
-                    if buf.len() > 10 { buf.remove(0); }
-                }
+                push_recent_utterance(&recent_utterances_clone, utterance.clone());
 
-                // Spawn async suggestion task
-                let app_inner = app_sg.clone();
-                let state_inner = Arc::clone(&state_sg);
-                let them_buf_inner = Arc::clone(&them_utterances_clone);
-                let utterance_owned = utterance;
-                tauri::async_runtime::spawn(async move {
-                    app_inner.emit("suggestion-generating", ()).ok();
-
-                    let settings = state_inner.settings.lock().unwrap().clone();
-                    let (embed_url, embed_key, embed_model) = embed_config(&settings);
-                    let (llm_url, llm_key) = llm_base_url_and_key(&settings);
-                    let llm_model = if settings.llm_provider == "ollama" {
-                        settings.ollama_llm_model.clone()
-                    } else {
-                        settings.selected_model.clone()
-                    };
-
-                    // Snapshot KB chunks while holding async lock, then release
-                    use openoats_core::intelligence::knowledge_base::search_chunks;
-                    let kb_snapshot = state_inner.knowledge_base.lock().await.chunks.clone();
-
-                    let embed_fn = {
-                        let url = embed_url.clone();
-                        let key = embed_key.clone();
-                        let model = embed_model.clone();
-                        move |texts: Vec<String>| {
-                            let url = url.clone(); let key = key.clone(); let model = model.clone();
-                            async move {
-                                openoats_core::intelligence::embedding_client::embed(
-                                    &url, key.as_deref(), &model, &texts, None, None,
-                                ).await
-                            }
-                        }
-                    };
-
-                    let search_fn = move |emb: &[f32]| -> Vec<openoats_core::models::KBResult> {
-                        search_chunks(&kb_snapshot, emb, 5, 0.4)
-                    };
-
-                    let complete_fn = {
-                        let url = llm_url.clone();
-                        let key = llm_key.clone();
-                        let model = llm_model.clone();
-                        move |messages: Vec<openoats_core::intelligence::llm_client::Message>| {
-                            let url = url.clone(); let key = key.clone(); let model = model.clone();
-                            async move {
-                                openoats_core::intelligence::llm_client::complete(
-                                    &url, key.as_deref(), &model, messages, 512,
-                                ).await
-                            }
-                        }
-                    };
-
-                    let recent_buf = them_buf_inner.lock().unwrap().clone();
-                    let recent_refs: Vec<&openoats_core::models::Utterance> = recent_buf.iter().collect();
-
-                    let mut engine = state_inner.suggestion_engine.lock().await;
-                    if let Some(suggestion) = engine.process_utterance(
-                        &utterance_owned,
-                        &recent_refs,
-                        embed_fn,
-                        search_fn,
-                        complete_fn,
-                    ).await {
-                        let payload = SuggestionPayload {
-                            id: suggestion.id.to_string(),
-                            kind: match suggestion.kind {
-                                openoats_core::models::SuggestionKind::KnowledgeBase => "knowledge_base".into(),
-                                openoats_core::models::SuggestionKind::SmartQuestion => "smart_question".into(),
-                            },
-                            text: suggestion.text.clone(),
-                            kb_hits: suggestion.kb_hits.clone(),
-                        };
-                        app_inner.emit("suggestion", &payload).ok();
-                    }
-                    app_inner.emit("suggestion-finished", ()).ok();
-                });
             };
             let app_vol_t = them_app.clone();
             let state_vol_t = Arc::clone(&them_state);
@@ -467,6 +412,134 @@ pub fn start_transcription(
             transcriber.run(them_stream_leveled).await;
         });
         *state_clone.system_audio_task.lock().unwrap() = Some(them_handle);
+
+        let suggestion_app = app_clone.clone();
+        let suggestion_state = Arc::clone(&state_clone);
+        let suggestion_recent_utterances = Arc::clone(&recent_utterances);
+        let suggestion_handle = tauri::async_runtime::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(suggestion_interval_secs));
+            interval.tick().await;
+
+            loop {
+                interval.tick().await;
+                if !*suggestion_state.is_running.lock().unwrap() {
+                    break;
+                }
+
+                let cutoff = chrono::Utc::now() - chrono::Duration::seconds(SUGGESTION_CONTEXT_WINDOW_SECS);
+                let recent_buf = suggestion_recent_utterances
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|u| u.timestamp >= cutoff)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if recent_buf.is_empty() {
+                    continue;
+                }
+
+                let transcript_window = recent_buf
+                    .iter()
+                    .map(|u| match u.speaker {
+                        Speaker::You => format!("You: {}", u.text),
+                        Speaker::Them => format!("Them: {}", u.text),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if transcript_window.trim().is_empty() {
+                    continue;
+                }
+
+                suggestion_app.emit("suggestion-generating", ()).ok();
+                suggestion_app.emit("suggestion-check-started", &SuggestionCheckPayload {
+                    checked_at: chrono::Utc::now().to_rfc3339(),
+                    surfaced: false,
+                }).ok();
+
+                let settings = suggestion_state.settings.lock().unwrap().clone();
+                let (embed_url, embed_key, embed_model) = embed_config(&settings);
+                let (llm_url, llm_key) = llm_base_url_and_key(&settings);
+                let llm_model = if settings.llm_provider == "ollama" {
+                    settings.ollama_llm_model.clone()
+                } else {
+                    settings.selected_model.clone()
+                };
+
+                use openoats_core::intelligence::knowledge_base::search_chunks;
+                let kb_snapshot = suggestion_state.knowledge_base.lock().await.chunks.clone();
+
+                let embed_fn = {
+                    let url = embed_url.clone();
+                    let key = embed_key.clone();
+                    let model = embed_model.clone();
+                    move |texts: Vec<String>| {
+                        let url = url.clone(); let key = key.clone(); let model = model.clone();
+                        async move {
+                            openoats_core::intelligence::embedding_client::embed(
+                                &url, key.as_deref(), &model, &texts, None, None,
+                            ).await
+                        }
+                    }
+                };
+
+                let search_fn = move |emb: &[f32]| -> Vec<openoats_core::models::KBResult> {
+                    search_chunks(&kb_snapshot, emb, 5, 0.4)
+                };
+
+                let complete_fn = {
+                    let url = llm_url.clone();
+                    let key = llm_key.clone();
+                    let model = llm_model.clone();
+                    move |messages: Vec<openoats_core::intelligence::llm_client::Message>| {
+                        let url = url.clone(); let key = key.clone(); let model = model.clone();
+                        async move {
+                            openoats_core::intelligence::llm_client::complete(
+                                &url, key.as_deref(), &model, messages, 512,
+                            ).await
+                        }
+                    }
+                };
+
+                let recent_them = recent_buf
+                    .iter()
+                    .filter(|u| matches!(u.speaker, Speaker::Them))
+                    .collect::<Vec<_>>();
+
+                let mut engine = suggestion_state.suggestion_engine.lock().await;
+                let suggestion = engine.process_transcript_window(
+                    &transcript_window,
+                    &recent_them,
+                    embed_fn,
+                    search_fn,
+                    complete_fn,
+                ).await;
+                let surfaced = suggestion.is_some();
+
+                if let Some(suggestion) = suggestion {
+                    let payload = SuggestionPayload {
+                        id: suggestion.id.to_string(),
+                        kind: match suggestion.kind {
+                            openoats_core::models::SuggestionKind::KnowledgeBase => "knowledge_base".into(),
+                            openoats_core::models::SuggestionKind::SmartQuestion => "smart_question".into(),
+                        },
+                        text: suggestion.text.clone(),
+                        kb_hits: suggestion.kb_hits.clone(),
+                    };
+                    if let Some(overlay) = suggestion_app.get_webview_window("overlay") {
+                        let _ = overlay.emit("suggestion", &payload);
+                        let _ = overlay.show();
+                    }
+                    suggestion_app.emit("suggestion", &payload).ok();
+                }
+
+                suggestion_app.emit("suggestion-check-finished", &SuggestionCheckPayload {
+                    checked_at: chrono::Utc::now().to_rfc3339(),
+                    surfaced,
+                }).ok();
+                suggestion_app.emit("suggestion-finished", ()).ok();
+            }
+        });
+        *state_clone.suggestion_task.lock().unwrap() = Some(suggestion_handle);
 
         // ── "You" mic capture ──────────────────────────────────────────────
         let mic = CpalMicCapture::new();
@@ -486,6 +559,15 @@ pub fn start_transcription(
             }
             let payload = TranscriptPayload { text: text.clone(), speaker: "you".into() };
             app_y.emit("transcript", &payload).ok();
+            push_recent_utterance(
+                &recent_utterances,
+                openoats_core::models::Utterance {
+                    id: uuid::Uuid::new_v4(),
+                    text: text.clone(),
+                    speaker: Speaker::You,
+                    timestamp: chrono::Utc::now(),
+                },
+            );
             let record = SessionRecord {
                 speaker: Speaker::You,
                 text: text.clone(),
@@ -525,6 +607,9 @@ pub fn stop_transcription(state: tauri::State<'_, Arc<AppState>>) -> Result<(), 
         handle.abort();
     }
     if let Some(handle) = state.system_audio_task.lock().unwrap().take() {
+        handle.abort();
+    }
+    if let Some(handle) = state.suggestion_task.lock().unwrap().take() {
         handle.abort();
     }
     if let Some(handle) = state.poll_task.lock().unwrap().take() {
@@ -682,6 +767,10 @@ pub fn suggestion_feedback(
 #[tauri::command]
 pub fn show_overlay(app: AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("overlay") {
+        let _ = w.set_size(tauri::Size::Logical(tauri::LogicalSize {
+            width: 380.0,
+            height: 160.0,
+        }));
         w.show().map_err(|e| e.to_string())?;
     }
     Ok(())
