@@ -1,3 +1,4 @@
+mod audio_macos;
 mod audio_windows;
 mod engine;
 

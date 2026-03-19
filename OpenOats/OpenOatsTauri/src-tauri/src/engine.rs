@@ -1,3 +1,10 @@
+// Platform-specific system audio capture.
+// On macOS: ScreenCaptureKit-based loopback.
+// On Windows: WASAPI loopback.
+// Other: no-op stub (from audio_windows non-Windows branch).
+#[cfg(target_os = "macos")]
+use crate::audio_macos::MacosAudioCapture as SystemAudioCapture;
+#[cfg(not(target_os = "macos"))]
 use crate::audio_windows::SystemAudioCapture;
 use openoats_core::{
     audio::{cpal_mic::CpalMicCapture, AudioCaptureService, MicCaptureService},

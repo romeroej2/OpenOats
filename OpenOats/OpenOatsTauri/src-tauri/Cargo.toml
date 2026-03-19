@@ -26,6 +26,13 @@ async-trait = "0.1"
 futures = "0.3"
 tokio-stream = "0.1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = "0.3"
+coreaudio-sys = { version = "0.2", features = ["audio_unit"] }
+objc2 = "0.5"
+objc2-foundation = "0.2"
+dispatch = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.54", features = [
     "Win32_Media_Audio",
