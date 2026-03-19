@@ -50,6 +50,7 @@ function App() {
           kbHits: [],
         }]);
         setTab("suggestions");
+        invoke("show_overlay").catch(() => {});
       }),
     ];
 

@@ -23,6 +23,9 @@ pub fn run() {
             engine::generate_notes,
             engine::index_kb,
             engine::update_kb_folder,
+            engine::show_overlay,
+            engine::hide_overlay,
+            engine::set_content_protection,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

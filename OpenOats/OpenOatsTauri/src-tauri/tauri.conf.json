@@ -12,11 +12,26 @@
   "app": {
     "windows": [
       {
-        "title": "OpenOats Tauri",
+        "label": "main",
+        "title": "OpenOats",
         "width": 800,
         "height": 600,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "contentProtected": true
+      },
+      {
+        "label": "overlay",
+        "title": "OpenOats Overlay",
+        "width": 380,
+        "height": 160,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "contentProtected": true,
+        "skipTaskbar": true
       }
     ],
     "security": {

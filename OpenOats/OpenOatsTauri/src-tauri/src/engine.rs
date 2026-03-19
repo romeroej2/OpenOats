@@ -414,6 +414,32 @@ pub fn update_kb_folder(
     s.save();
 }
 
+#[tauri::command]
+pub fn show_overlay(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("overlay") {
+        w.show().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn hide_overlay(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("overlay") {
+        w.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_content_protection(app: AppHandle, enabled: bool) -> Result<(), String> {
+    for label in ["main", "overlay"] {
+        if let Some(w) = app.get_webview_window(label) {
+            w.set_content_protected(enabled).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
