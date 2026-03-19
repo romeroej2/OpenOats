@@ -919,10 +919,6 @@ pub fn suggestion_feedback(
 #[tauri::command]
 pub fn show_overlay(app: AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("overlay") {
-        let _ = w.set_size(tauri::Size::Logical(tauri::LogicalSize {
-            width: 380.0,
-            height: 160.0,
-        }));
         w.show().map_err(|e| e.to_string())?;
         let _ = w.set_focus();
     }

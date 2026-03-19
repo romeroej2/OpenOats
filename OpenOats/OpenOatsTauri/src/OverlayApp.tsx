@@ -1,7 +1,8 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useOverlayKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { colors } from "./theme";
@@ -11,9 +12,29 @@ interface SuggestionPayload {
   text: string;
 }
 
+const DEFAULT_SIZE = { width: 380, height: 160 };
+const MIN_SIZE = { width: 300, height: 100 };
+const MAX_AUTO_WIDTH = 760;
+const MAX_AUTO_HEIGHT = 520;
+const SCREEN_MARGIN = 80;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getOverlayBounds() {
+  const screenWidth = window.screen.availWidth || window.innerWidth || DEFAULT_SIZE.width;
+  const screenHeight = window.screen.availHeight || window.innerHeight || DEFAULT_SIZE.height;
+
+  return {
+    maxWidth: Math.max(DEFAULT_SIZE.width, Math.min(MAX_AUTO_WIDTH, screenWidth - SCREEN_MARGIN)),
+    maxHeight: Math.max(DEFAULT_SIZE.height, Math.min(MAX_AUTO_HEIGHT, screenHeight - SCREEN_MARGIN)),
+  };
+}
+
 export function OverlayApp() {
   const [suggestion, setSuggestion] = useState<SuggestionPayload | null>(null);
-  const [size, setSize] = useState({ width: 380, height: 160 });
+  const [size, setSize] = useState(DEFAULT_SIZE);
   const dragStateRef = useRef<{
     pointerId: number;
     startPointerX: number;
@@ -31,15 +52,15 @@ export function OverlayApp() {
   const dragHandleRef = useRef<HTMLDivElement | null>(null);
   const resizeHandleRef = useRef<HTMLDivElement | null>(null);
   const pendingPositionRef = useRef<{ x: number; y: number } | null>(null);
-  const pendingSizeRef = useRef<{ width: number; height: number } | null>(null);
   const frameRef = useRef<number | null>(null);
+  const measureCardRef = useRef<HTMLDivElement | null>(null);
+  const manualSizeRef = useRef(DEFAULT_SIZE);
 
   const dismiss = () => {
     setSuggestion(null);
     invoke("hide_overlay").catch(() => {});
   };
 
-  // Keyboard shortcut for escape
   useOverlayKeyboardShortcuts(dismiss);
 
   useEffect(() => {
@@ -97,6 +118,35 @@ export function OverlayApp() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!suggestion) {
+      return;
+    }
+
+    getCurrentWindow()
+      .setSize(new LogicalSize(Math.round(size.width), Math.round(size.height)))
+      .catch(() => {});
+  }, [size, suggestion]);
+
+  useLayoutEffect(() => {
+    if (!suggestion || !measureCardRef.current) {
+      return;
+    }
+
+    const { maxWidth, maxHeight } = getOverlayBounds();
+    const measuredWidth = Math.ceil(measureCardRef.current.scrollWidth);
+    const measuredHeight = Math.ceil(measureCardRef.current.scrollHeight);
+
+    const nextSize = {
+      width: clamp(Math.max(manualSizeRef.current.width, measuredWidth), MIN_SIZE.width, maxWidth),
+      height: clamp(Math.max(manualSizeRef.current.height, measuredHeight), MIN_SIZE.height, maxHeight),
+    };
+
+    setSize((current) =>
+      current.width === nextSize.width && current.height === nextSize.height ? current : nextSize,
+    );
+  }, [suggestion]);
+
   if (!suggestion) {
     return null;
   }
@@ -105,6 +155,7 @@ export function OverlayApp() {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+  const { maxWidth } = getOverlayBounds();
 
   const stopDragging = (pointerId?: number) => {
     dragStateRef.current = null;
@@ -126,7 +177,6 @@ export function OverlayApp() {
 
   const stopResizing = (pointerId?: number) => {
     resizeStateRef.current = null;
-    pendingSizeRef.current = null;
 
     if (
       resizeHandleRef.current &&
@@ -167,24 +217,27 @@ export function OverlayApp() {
     const win = getCurrentWindow();
     win.setFocus().catch(() => {});
 
-    void win.outerPosition().then((position) => {
-      if (
-        !dragHandleRef.current?.hasPointerCapture(pointerId) ||
-        dragStateRef.current?.pointerId === pointerId
-      ) {
-        return;
-      }
+    void win
+      .outerPosition()
+      .then((position) => {
+        if (
+          !dragHandleRef.current?.hasPointerCapture(pointerId) ||
+          dragStateRef.current?.pointerId === pointerId
+        ) {
+          return;
+        }
 
-      dragStateRef.current = {
-        pointerId,
-        startPointerX,
-        startPointerY,
-        startWindowX: position.x,
-        startWindowY: position.y,
-      };
-    }).catch(() => {
-      stopDragging(pointerId);
-    });
+        dragStateRef.current = {
+          pointerId,
+          startPointerX,
+          startPointerY,
+          startWindowX: position.x,
+          startWindowY: position.y,
+        };
+      })
+      .catch(() => {
+        stopDragging(pointerId);
+      });
   };
 
   const dragOverlay = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -237,9 +290,19 @@ export function OverlayApp() {
       return;
     }
 
-    const newWidth = Math.max(300, resizeState.startWidth + (e.screenX - resizeState.startX));
-    const newHeight = Math.max(100, resizeState.startHeight + (e.screenY - resizeState.startY));
+    const { maxWidth, maxHeight } = getOverlayBounds();
+    const newWidth = clamp(
+      resizeState.startWidth + (e.screenX - resizeState.startX),
+      MIN_SIZE.width,
+      maxWidth,
+    );
+    const newHeight = clamp(
+      resizeState.startHeight + (e.screenY - resizeState.startY),
+      MIN_SIZE.height,
+      maxHeight,
+    );
 
+    manualSizeRef.current = { width: newWidth, height: newHeight };
     setSize({ width: newWidth, height: newHeight });
   };
 
@@ -251,7 +314,7 @@ export function OverlayApp() {
 
   return (
     <div style={containerStyle}>
-      <div style={{ ...cardStyle, width: size.width, maxHeight: size.height }}>
+      <div style={{ ...cardStyle, width: size.width, height: size.height }}>
         <div
           ref={dragHandleRef}
           style={headerStyle}
@@ -263,7 +326,7 @@ export function OverlayApp() {
           <div style={grabberStyle} />
           <span style={headerLabelStyle}>Suggestion</span>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div style={bodyStyle}>
           <div style={contentStyle}>
             {lines.map((line, index) => (
               <p key={`${suggestion.id}-${index}`} style={lineStyle}>
@@ -281,29 +344,46 @@ export function OverlayApp() {
           </button>
         </div>
 
-        {/* Resize handle */}
         <div
           ref={resizeHandleRef}
           onPointerDown={startResize}
           onPointerMove={resize}
           onPointerUp={endResize}
           onPointerCancel={endResize}
-          style={{
-            position: "absolute",
-            right: 4,
-            bottom: 4,
-            width: 16,
-            height: 16,
-            cursor: "nwse-resize",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
+          style={resizeHandleStyle}
           title="Resize"
         >
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
             <path d="M1 9L9 1M5 9L9 5M9 9L9 9" stroke={`${colors.text}40`} strokeWidth="1.5" strokeLinecap="round" />
           </svg>
+        </div>
+      </div>
+      <div style={measurementWrapperStyle}>
+        <div
+          ref={measureCardRef}
+          style={{
+            ...cardStyle,
+            width: "max-content",
+            height: "auto",
+            maxWidth: `${maxWidth}px`,
+          }}
+        >
+          <div style={headerStyle}>
+            <div style={grabberStyle} />
+            <span style={headerLabelStyle}>Suggestion</span>
+          </div>
+          <div style={bodyStyle}>
+            <div style={{ ...contentStyle, overflow: "visible" }}>
+              {lines.map((line, index) => (
+                <p key={`measure-${suggestion.id}-${index}`} style={lineStyle}>
+                  {line}
+                </p>
+              ))}
+            </div>
+            <button style={closeBtn} tabIndex={-1} aria-hidden="true">
+              ×
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -335,6 +415,8 @@ const cardStyle: React.CSSProperties = {
   backdropFilter: "blur(20px) saturate(1.1)",
   WebkitBackdropFilter: "blur(20px) saturate(1.1)",
   position: "relative",
+  display: "flex",
+  flexDirection: "column",
 };
 
 const headerStyle: React.CSSProperties = {
@@ -363,13 +445,25 @@ const headerLabelStyle: React.CSSProperties = {
   textTransform: "uppercase",
 };
 
+const bodyStyle: React.CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: 8,
+};
+
 const contentStyle: React.CSSProperties = {
   flex: 1,
   display: "flex",
   flexDirection: "column",
   gap: 8,
   minWidth: 0,
+  minHeight: 0,
   paddingRight: 4,
+  overflowY: "auto",
+  cursor: "text",
 };
 
 const lineStyle: React.CSSProperties = {
@@ -393,4 +487,24 @@ const closeBtn: React.CSSProperties = {
   padding: "0 4px",
   flexShrink: 0,
   transition: "color 0.2s",
+};
+
+const resizeHandleStyle: React.CSSProperties = {
+  position: "absolute",
+  right: 4,
+  bottom: 4,
+  width: 16,
+  height: 16,
+  cursor: "nwse-resize",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+};
+
+const measurementWrapperStyle: React.CSSProperties = {
+  position: "absolute",
+  left: -10000,
+  top: 0,
+  visibility: "hidden",
+  pointerEvents: "none",
 };

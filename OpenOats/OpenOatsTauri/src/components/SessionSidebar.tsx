@@ -10,8 +10,26 @@ interface Props {
   onClose: () => void;
 }
 
-function formatDate(iso: string): string {
-  const date = new Date(iso);
+type RawSessionRecord = SessionRecord & {
+  started_at?: string;
+  ended_at?: string | null;
+  utterance_count?: number;
+  has_notes?: boolean;
+};
+
+function parseSessionDate(value?: string | null): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getStartedAt(session: RawSessionRecord): string | null {
+  return session.startedAt ?? session.started_at ?? null;
+}
+
+function formatDate(value?: string | null): string {
+  const date = parseSessionDate(value);
+  if (!date) return "Unknown Date";
   const now = new Date();
   const isToday = date.toDateString() === now.toDateString();
   const isYesterday = new Date(now.getTime() - 86400000).toDateString() === date.toDateString();
@@ -21,12 +39,14 @@ function formatDate(iso: string): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+function formatTime(value?: string | null): string {
+  const date = parseSessionDate(value);
+  if (!date) return "Unknown time";
+  return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 export function SessionSidebar({ currentSessionId, onSelectSession, isOpen, onClose }: Props) {
-  const [sessions, setSessions] = useState<SessionRecord[]>([]);
+  const [sessions, setSessions] = useState<RawSessionRecord[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
 
@@ -37,8 +57,14 @@ export function SessionSidebar({ currentSessionId, onSelectSession, isOpen, onCl
   const loadSessions = async () => {
     setIsLoading(true);
     try {
-      const data = await invoke<SessionRecord[]>("list_sessions");
-      setSessions(data.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()));
+      const data = await invoke<RawSessionRecord[]>("list_sessions");
+      setSessions(
+        data.sort((a, b) => {
+          const aTime = parseSessionDate(getStartedAt(a))?.getTime() ?? 0;
+          const bTime = parseSessionDate(getStartedAt(b))?.getTime() ?? 0;
+          return bTime - aTime;
+        })
+      );
     } catch (err) {
       console.error("Failed to load sessions:", err);
     } finally {
@@ -48,21 +74,22 @@ export function SessionSidebar({ currentSessionId, onSelectSession, isOpen, onCl
 
   const filteredSessions = sessions.filter((s) => {
     const query = searchQuery.toLowerCase();
+    const startedAt = getStartedAt(s);
     return (
       (s.title?.toLowerCase() || "").includes(query) ||
-      formatDate(s.startedAt).toLowerCase().includes(query)
+      formatDate(startedAt).toLowerCase().includes(query)
     );
   });
 
   // Group by date
   const grouped = filteredSessions.reduce(
     (acc, session) => {
-      const date = formatDate(session.startedAt);
+      const date = formatDate(getStartedAt(session));
       if (!acc[date]) acc[date] = [];
       acc[date].push(session);
       return acc;
     },
-    {} as Record<string, SessionRecord[]>
+    {} as Record<string, RawSessionRecord[]>
   );
 
   return (
@@ -184,7 +211,12 @@ export function SessionSidebar({ currentSessionId, onSelectSession, isOpen, onCl
                 >
                   {date}
                 </div>
-                {dateSessions.map((session) => (
+                {dateSessions.map((session) => {
+                  const startedAt = getStartedAt(session);
+                  const timeLabel = formatTime(startedAt);
+                  const hasNotes = session.hasNotes ?? session.has_notes ?? false;
+                  const utteranceCount = session.utteranceCount ?? session.utterance_count ?? 0;
+                  return (
                   <button
                     key={session.id}
                     onClick={() => {
@@ -211,16 +243,16 @@ export function SessionSidebar({ currentSessionId, onSelectSession, isOpen, onCl
                         justifyContent: "space-between",
                       }}
                     >
-                      <span
-                        style={{
-                          fontSize: typography.md,
-                          fontWeight: 500,
-                          color: session.id === currentSessionId ? colors.accent : colors.text,
-                        }}
-                      >
-                        {session.title || `Session ${formatTime(session.startedAt)}`}
+                        <span
+                          style={{
+                            fontSize: typography.md,
+                            fontWeight: 500,
+                            color: session.id === currentSessionId ? colors.accent : colors.text,
+                          }}
+                        >
+                        {session.title || `Session ${timeLabel}`}
                       </span>
-                      {session.hasNotes && (
+                      {hasNotes && (
                         <span
                           style={{
                             fontSize: typography.xs,
@@ -238,10 +270,11 @@ export function SessionSidebar({ currentSessionId, onSelectSession, isOpen, onCl
                         marginTop: 2,
                       }}
                     >
-                      {formatTime(session.startedAt)} · {session.utteranceCount} messages
+                      {timeLabel} · {utteranceCount} messages
                     </div>
                   </button>
-                ))}
+                  );
+                })}
               </div>
             ))
           )}

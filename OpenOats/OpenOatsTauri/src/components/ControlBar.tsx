@@ -8,12 +8,8 @@ interface Props {
   onStart: () => void;
   onStop: () => void;
   disabled?: boolean;
-  modelName?: string;
-  whisperModel?: string;
-  transcriptionLocale?: string;
   kbConnected?: boolean;
   kbFileCount?: number;
-  isLocalMode?: boolean;
   isSuggestionAnalyzing?: boolean;
   lastSuggestionCheckAt?: string | null;
   lastSuggestionCheckSurfaced?: boolean | null;
@@ -31,12 +27,11 @@ function formatRelativeTime(iso: string | null | undefined): string {
   return `${hours}h ago`;
 }
 
-// Format seconds to MM:SS or HH:MM:SS
 function formatDuration(seconds: number): string {
   const hrs = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
-  
+
   if (hrs > 0) {
     return `${hrs}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   }
@@ -48,12 +43,8 @@ export function ControlBar({
   onStart,
   onStop,
   disabled,
-  modelName = "Unknown",
-  whisperModel = "base-en",
-  transcriptionLocale = "en-US",
   kbConnected = false,
   kbFileCount = 0,
-  isLocalMode = true,
   isSuggestionAnalyzing = false,
   lastSuggestionCheckAt = null,
   lastSuggestionCheckSurfaced = null,
@@ -80,7 +71,6 @@ export function ControlBar({
     });
   }, []);
 
-  // Handle recording duration
   useEffect(() => {
     if (isRunning) {
       durationRef.current = 0;
@@ -150,7 +140,7 @@ export function ControlBar({
     gap: spacing[1],
     padding: `${spacing[1]}px ${spacing[2]}px`,
     background: `${color}15`,
-    color: color,
+    color,
     borderRadius: 12,
     fontSize: typography.sm,
     fontWeight: 500,
@@ -167,7 +157,6 @@ export function ControlBar({
         borderBottom: `1px solid ${colors.border}`,
       }}
     >
-      {/* Microphone Selector */}
       <select
         value={selectedDevice}
         onChange={(e) => handleDeviceChange(e.target.value)}
@@ -184,16 +173,15 @@ export function ControlBar({
           opacity: isRunning ? 0.6 : 1,
         }}
       >
-        <option value="default">🎤 System Default</option>
+        <option value="default">Mic Default</option>
         {devices.map((d) => (
-          <option key={d} value={d}>{d}</option>
+          <option key={d} value={d}>
+            {d}
+          </option>
         ))}
-        {devices.length === 0 && (
-          <option value="" disabled>No microphones found</option>
-        )}
+        {devices.length === 0 && <option value="" disabled>No microphones found</option>}
       </select>
 
-      {/* System Audio Selector */}
       <select
         value={selectedSysDevice}
         onChange={(e) => handleSysDeviceChange(e.target.value)}
@@ -210,41 +198,55 @@ export function ControlBar({
           opacity: isRunning ? 0.6 : 1,
         }}
       >
-        <option value="default">🔊 System Default</option>
+        <option value="default">System Audio Default</option>
         {sysDevices.map((d) => (
-          <option key={d} value={d}>{d}</option>
+          <option key={d} value={d}>
+            {d}
+          </option>
         ))}
       </select>
 
-      {/* Main Control Button */}
       <button onClick={isRunning ? onStop : onStart} disabled={disabled} style={buttonStyle}>
         {isRunning ? (
           <>
-            <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: colors.error, animation: "pulse 1.5s ease-in-out infinite" }} />
+            <span
+              style={{
+                display: "inline-block",
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                background: colors.error,
+                animation: "pulse 1.5s ease-in-out infinite",
+              }}
+            />
             <span>Stop</span>
           </>
         ) : (
           <>
-            <span style={{ fontSize: 10 }}>⏺</span>
+            <span style={{ fontSize: 10 }}>Rec</span>
             <span>Record</span>
           </>
         )}
       </button>
 
-      {/* Recording Status Section */}
       {isRunning && (
         <div style={{ display: "flex", alignItems: "center", gap: spacing[3] }}>
-          {/* Duration Timer */}
-          <span style={{ fontSize: typography.md, fontWeight: 600, color: colors.text, fontFamily: "SF Mono, Monaco, monospace", letterSpacing: "0.5px" }}>
+          <span
+            style={{
+              fontSize: typography.md,
+              fontWeight: 600,
+              color: colors.text,
+              fontFamily: "SF Mono, Monaco, monospace",
+              letterSpacing: "0.5px",
+            }}
+          >
             {formatDuration(duration)}
           </span>
 
-          {/* Waveform Audio Visualizer */}
           <WaveformVisualizer level={audioLevel} isActive={isRunning} />
 
-          {/* Live Badge */}
           <span style={statusBadgeStyle(colors.success)}>
-            <span style={{ fontSize: 6 }}>●</span>
+            <span style={{ fontSize: 6 }}>o</span>
             <span>LIVE</span>
           </span>
         </div>
@@ -252,47 +254,36 @@ export function ControlBar({
 
       <div style={{ flex: 1 }} />
 
-      {/* Status Indicators */}
       <div style={{ display: "flex", alignItems: "center", gap: spacing[2] }}>
-        {/* KB Status */}
         {kbConnected ? (
           <span style={statusBadgeStyle(colors.accent)}>
-            <span>⚡</span>
-            <span>KB {kbFileCount > 0 ? kbFileCount : ""}</span>
+            <span>KB</span>
+            <span>{kbFileCount > 0 ? kbFileCount : ""}</span>
           </span>
         ) : (
           <span style={{ ...statusBadgeStyle(colors.textSecondary), opacity: 0.6 }}>
-            <span>📁</span>
             <span>No KB</span>
           </span>
         )}
 
-        {/* Mode Indicator */}
-        <span style={statusBadgeStyle(isLocalMode ? colors.success : colors.you)} title={isLocalMode ? "Local mode - no data leaves your device" : "Cloud mode - using external APIs"}>
-          <span style={{ fontSize: 6 }}>●</span>
-          <span>{isLocalMode ? "Local" : "Cloud"}</span>
-        </span>
-
         {isRunning && (
-          <span style={statusBadgeStyle(isSuggestionAnalyzing ? colors.them : lastSuggestionCheckSurfaced ? colors.success : colors.textSecondary)}>
-            <span style={{ fontSize: 6 }}>{isSuggestionAnalyzing ? "●" : "○"}</span>
+          <span
+            style={statusBadgeStyle(
+              isSuggestionAnalyzing
+                ? colors.them
+                : lastSuggestionCheckSurfaced
+                  ? colors.success
+                  : colors.textSecondary,
+            )}
+          >
+            <span style={{ fontSize: 6 }}>{isSuggestionAnalyzing ? "o" : "O"}</span>
             <span>
               {isSuggestionAnalyzing ? "Analyzing" : `Suggestions ${formatRelativeTime(lastSuggestionCheckAt)}`}
             </span>
           </span>
         )}
-
-        {/* Model Badge */}
-        <span style={{ padding: `${spacing[1]}px ${spacing[2]}px`, background: colors.background, color: colors.textSecondary, borderRadius: 12, fontSize: typography.xs, fontWeight: 500, fontFamily: "SF Mono, Monaco, monospace" }} title="Active AI model">
-          {modelName.length > 20 ? modelName.split("/").pop() : modelName}
-        </span>
-
-        <span style={{ padding: `${spacing[1]}px ${spacing[2]}px`, background: colors.surfaceElevated, color: colors.them, borderRadius: 12, fontSize: typography.xs, fontWeight: 500, fontFamily: "SF Mono, Monaco, monospace" }} title="Active Whisper transcription model">
-          {whisperModel} · {transcriptionLocale || "auto"}
-        </span>
       </div>
 
-      {/* Add pulse animation */}
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; transform: scale(1); }

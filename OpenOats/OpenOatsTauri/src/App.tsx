@@ -58,6 +58,12 @@ function whisperModelLabel(model: Exclude<WhisperModelId, "auto">): string {
   return labels[model];
 }
 
+function compactModelName(modelName: string): string {
+  if (!modelName) return "Unknown";
+  if (modelName.length <= 20) return modelName;
+  return modelName.split("/").pop() || modelName;
+}
+
 function App() {
   const [modelState, setModelState] = useState<ModelState>("checking");
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -400,12 +406,8 @@ function App() {
         isRunning={isRunning}
         onStart={handleStart}
         onStop={handleStop}
-        modelName={modelName}
-        whisperModel={activeWhisperModel}
-        transcriptionLocale={settings?.transcriptionLocale || ""}
         kbConnected={kbConnected}
         kbFileCount={0}
-        isLocalMode={isLocalMode}
         isSuggestionAnalyzing={isGeneratingSuggestion}
         lastSuggestionCheckAt={lastSuggestionCheckAt}
         lastSuggestionCheckSurfaced={lastSuggestionCheckSurfaced}
@@ -481,13 +483,69 @@ function App() {
         {tab === "notes" && <NotesView sessionId={currentSessionId} />}
       </div>
 
-      {/* Keyboard shortcuts hint */}
-      <div style={{ padding: `${spacing[1]}px ${spacing[3]}px`, background: colors.surfaceElevated, borderTop: `1px solid ${colors.border}`, fontSize: typography.xs, color: colors.textMuted, display: "flex", gap: spacing[4], justifyContent: "center" }}>
-        <span>Cmd/Ctrl+Shift+S: Start/Stop</span>
-        <span>Cmd/Ctrl+F: Search</span>
-        <span>Cmd/Ctrl+E: Export</span>
-        <span>Cmd/Ctrl+B: History</span>
-        <span>Esc: Close</span>
+      {/* Bottom Status Bar */}
+      <div
+        style={{
+          padding: `${spacing[1]}px ${spacing[3]}px`,
+          background: colors.surfaceElevated,
+          borderTop: `1px solid ${colors.border}`,
+          fontSize: typography.xs,
+          color: colors.textMuted,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: spacing[3],
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: spacing[2], flexWrap: "wrap" }}>
+          <span
+            style={{
+              padding: `${spacing[1]}px ${spacing[2]}px`,
+              background: `${(isLocalMode ? colors.success : colors.you)}15`,
+              color: isLocalMode ? colors.success : colors.you,
+              borderRadius: 12,
+              fontWeight: 600,
+            }}
+            title={isLocalMode ? "Local mode - no data leaves your device" : "Cloud mode - using external APIs"}
+          >
+            {isLocalMode ? "LLM Local" : "LLM Cloud"}
+          </span>
+          <span
+            style={{
+              padding: `${spacing[1]}px ${spacing[2]}px`,
+              background: colors.background,
+              color: colors.textSecondary,
+              borderRadius: 12,
+              fontWeight: 500,
+              fontFamily: "SF Mono, Monaco, monospace",
+            }}
+            title="Active AI model"
+          >
+            {compactModelName(modelName)}
+          </span>
+          <span
+            style={{
+              padding: `${spacing[1]}px ${spacing[2]}px`,
+              background: colors.surface,
+              color: colors.them,
+              borderRadius: 12,
+              fontWeight: 500,
+              fontFamily: "SF Mono, Monaco, monospace",
+            }}
+            title="Active Whisper transcription model"
+          >
+            {activeWhisperModel} | {settings?.transcriptionLocale || "auto"}
+          </span>
+        </div>
+
+        <div style={{ display: "flex", gap: spacing[4], flexWrap: "wrap", justifyContent: "center" }}>
+          <span>Cmd/Ctrl+Shift+S: Start/Stop</span>
+          <span>Cmd/Ctrl+F: Search</span>
+          <span>Cmd/Ctrl+E: Export</span>
+          <span>Cmd/Ctrl+B: History</span>
+          <span>Esc: Close</span>
+        </div>
       </div>
     </div>
   );
