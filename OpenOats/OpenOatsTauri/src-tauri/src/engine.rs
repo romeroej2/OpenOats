@@ -288,7 +288,7 @@ pub fn start_transcription(
         let them_utterances_spawn = Arc::clone(&them_utterances);
 
         tauri::async_runtime::spawn(async move {
-            let sys = SystemAudioCapture::new();
+            let sys = SystemAudioCapture::new(None);
             let them_stream = match sys.buffer_stream().await {
                 Ok(s) => s,
                 Err(e) => {

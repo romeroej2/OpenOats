@@ -236,7 +236,7 @@ export function SettingsView({ settings: initialSettings = null, onSettingsChang
       .catch((err) => setError(String(err)));
   }, [initialSettings]);
 
-  const countKBFiles = async (path: string) => {
+  const countKBFiles = async (_path: string) => {
     try {
       // This would need a Tauri command to count files
       // For now, we'll just set it to 0
@@ -702,7 +702,7 @@ export function SettingsView({ settings: initialSettings = null, onSettingsChang
               <select
                 value={settings.inputDeviceName || "default"}
                 onChange={(e) =>
-                  saveSettings({ ...settings, inputDeviceName: e.target.value === "default" ? undefined : e.target.value })
+                  saveSettings({ ...settings, inputDeviceName: e.target.value === "default" ? null : e.target.value })
                 }
                 style={styles.selectStyle}
               >

@@ -20,10 +20,12 @@ const colors = {
 
 type ModelState = "checking" | "missing" | "downloading" | "ready";
 type Tab = "transcript" | "suggestions" | "notes" | "settings";
+const TRANSCRIPTION_MODEL = "base-en";
 
 function App() {
   const [modelState, setModelState] = useState<ModelState>("checking");
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [modelError, setModelError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [utterances, setUtterances] = useState<Utterance[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -47,9 +49,12 @@ function App() {
 
   // Check model and set up event listeners
   useEffect(() => {
-    invoke<boolean>("check_model")
+    invoke<boolean>("check_model", { model: TRANSCRIPTION_MODEL })
       .then((ok) => setModelState(ok ? "ready" : "missing"))
-      .catch(() => setModelState("missing"));
+      .catch((err) => {
+        setModelError(String(err));
+        setModelState("missing");
+      });
 
     const unlisteners = [
       listen<{ text: string; speaker: string }>("transcript", (e) => {
@@ -89,6 +94,7 @@ function App() {
       listen("model-download-done", () => {
         setModelState("ready");
         setDownloadProgress(0);
+        setModelError(null);
       }),
 
       listen<{ id: string; text: string; kbHits?: any[] }>("suggestion", (e) => {
@@ -118,10 +124,12 @@ function App() {
   }, []);
 
   const handleDownload = async () => {
+    setModelError(null);
     setModelState("downloading");
     try {
-      await invoke("download_model");
+      await invoke("download_model", { model: TRANSCRIPTION_MODEL });
     } catch (e) {
+      setModelError(String(e));
       setModelState("missing");
     }
   };
@@ -179,6 +187,11 @@ function App() {
           <p style={{ color: colors.textSecondary, fontSize: 13, margin: "0 0 20px", lineHeight: 1.5 }}>
             OpenOats needs the Whisper speech recognition model to transcribe conversations locally.
           </p>
+          {modelError && (
+            <p style={{ color: "#c0392b", fontSize: 12, margin: "0 0 16px", lineHeight: 1.5 }}>
+              {modelError}
+            </p>
+          )}
           <button onClick={handleDownload} style={primaryBtn}>
             Download Model (~150 MB)
           </button>

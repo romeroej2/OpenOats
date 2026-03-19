@@ -30,6 +30,7 @@ const spacing = {
   2: 8,
   3: 12,
   4: 16,
+  6: 24,
 };
 
 interface Props {

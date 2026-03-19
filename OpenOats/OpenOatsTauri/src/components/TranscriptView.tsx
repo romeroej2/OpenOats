@@ -237,8 +237,6 @@ export function TranscriptView({ utterances, volatileYouText, volatileThemText }
   }
 
   const grouped = groupByTimeBucket(utterances);
-  const hasVolatile = !!volatileYouText || !!volatileThemText;
-
   return (
     <div
       ref={scrollRef}

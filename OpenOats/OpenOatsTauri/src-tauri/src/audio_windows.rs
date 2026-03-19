@@ -14,25 +14,33 @@ mod wasapi_impl {
     };
     use tokio::sync::mpsc;
     use windows::{
+        core::{PROPVARIANT, PWSTR},
+        Win32::Devices::Properties::DEVPROPKEY,
         Win32::Media::Audio::*,
         Win32::System::Com::*,
+        Win32::UI::Shell::PropertiesSystem::PROPERTYKEY,
     };
+    use windows::Win32::Devices::Properties::DEVPKEY_Device_FriendlyName;
+    use windows::Win32::System::Com::STGM_READ;
+    use windows::Win32::System::Variant::VT_LPWSTR;
 
     const TARGET_RATE: u32 = 16_000;
 
     pub struct WasapiLoopback {
         finished: Arc<AtomicBool>,
         audio_level: Arc<std::sync::Mutex<f32>>,
+        device_name: Option<String>,
     }
 
     unsafe impl Send for WasapiLoopback {}
     unsafe impl Sync for WasapiLoopback {}
 
     impl WasapiLoopback {
-        pub fn new() -> Self {
+        pub fn new(device_name: Option<&str>) -> Self {
             Self {
                 finished: Arc::new(AtomicBool::new(false)),
                 audio_level: Arc::new(std::sync::Mutex::new(0.0)),
+                device_name: device_name.map(str::to_owned),
             }
         }
     }
@@ -46,6 +54,7 @@ mod wasapi_impl {
         async fn buffer_stream(&self) -> Result<AudioStream, Box<dyn Error + Send + Sync>> {
             let finished = self.finished.clone();
             let level_arc = self.audio_level.clone();
+            let device_name_inner = self.device_name.clone();
             let (tx, rx) = mpsc::channel::<Vec<f32>>(200);
 
             std::thread::spawn(move || {
@@ -61,9 +70,21 @@ mod wasapi_impl {
                             Err(e) => { log::error!("WASAPI: enumerator: {e}"); return; }
                         };
 
-                    let device = match enumerator.GetDefaultAudioEndpoint(eRender, eConsole) {
-                        Ok(d) => d,
-                        Err(e) => { log::error!("WASAPI: GetDefaultAudioEndpoint: {e}"); return; }
+                    let device = if let Some(ref name) = device_name_inner {
+                        find_device_by_name(&enumerator, name)
+                            .unwrap_or_else(|| {
+                                log::warn!(
+                                    "System audio device '{}' not found, falling back to default", name
+                                );
+                                enumerator
+                                    .GetDefaultAudioEndpoint(eRender, eConsole)
+                                    .expect("no default render endpoint")
+                            })
+                    } else {
+                        match enumerator.GetDefaultAudioEndpoint(eRender, eConsole) {
+                            Ok(d) => d,
+                            Err(e) => { log::error!("WASAPI: GetDefaultAudioEndpoint: {e}"); return; }
+                        }
                     };
 
                     let audio_client: IAudioClient =
@@ -188,6 +209,48 @@ mod wasapi_impl {
         }).collect()
     }
 
+    fn property_key_from_devprop(key: DEVPROPKEY) -> PROPERTYKEY {
+        PROPERTYKEY {
+            fmtid: key.fmtid,
+            pid: key.pid,
+        }
+    }
+
+    unsafe fn friendly_name_from_propvariant(prop: &PROPVARIANT) -> Option<String> {
+        let raw = prop.as_raw();
+        let vt = raw.Anonymous.Anonymous.vt;
+        if vt != VT_LPWSTR.0 {
+            return None;
+        }
+
+        PWSTR(raw.Anonymous.Anonymous.Anonymous.pwszVal)
+            .to_string()
+            .ok()
+    }
+
+    /// Find a render device by its friendly name. Returns None if not found.
+    unsafe fn find_device_by_name(
+        enumerator: &IMMDeviceEnumerator,
+        name: &str,
+    ) -> Option<IMMDevice> {
+        let collection = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE).ok()?;
+        let count = collection.GetCount().ok()?;
+        let friendly_name_key = property_key_from_devprop(DEVPKEY_Device_FriendlyName);
+        for i in 0..count {
+            if let Ok(device) = collection.Item(i) {
+                if let Ok(store) = device.OpenPropertyStore(STGM_READ) {
+                    if let Ok(prop) = store.GetValue(&friendly_name_key) {
+                        let matched = friendly_name_from_propvariant(&prop).as_deref() == Some(name);
+                        if matched {
+                            return Some(device);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub use WasapiLoopback as SystemAudioCapture;
 }
 
@@ -200,7 +263,7 @@ mod wasapi_impl {
     pub struct SystemAudioCapture;
 
     impl SystemAudioCapture {
-        pub fn new() -> Self { Self }
+        pub fn new(_device_name: Option<&str>) -> Self { Self }
     }
 
     #[async_trait]
