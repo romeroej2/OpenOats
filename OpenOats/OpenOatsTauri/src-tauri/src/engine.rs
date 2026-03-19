@@ -31,7 +31,7 @@ pub struct AppState {
     pub transcript_logger: Mutex<TranscriptLogger>,
     pub knowledge_base: AsyncMutex<KnowledgeBase>,
     pub suggestion_engine: Mutex<SuggestionEngine>,
-    pub audio_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub audio_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub is_running: Mutex<bool>,
 }
 
@@ -153,14 +153,14 @@ pub fn start_transcription(
     let language = settings.transcription_locale
         .split('-').next().unwrap_or("en").to_string();
 
-    let handle = tokio::spawn(async move {
+    let handle = tauri::async_runtime::spawn(async move {
         // ── "Them" system audio (WASAPI loopback) ──────────────────────────
         let them_app = app_clone.clone();
         let them_state = Arc::clone(&state_clone);
         let them_model = model_str.clone();
         let them_lang = language.clone();
 
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let sys = SystemAudioCapture::new();
             let them_stream = match sys.buffer_stream().await {
                 Ok(s) => s,

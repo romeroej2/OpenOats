@@ -1,7 +1,7 @@
-use crate::models::{EnhancedNotes, SessionIndex, SessionRecord, SessionSidecar, TemplateSnapshot};
+use crate::models::{EnhancedNotes, SessionIndex, SessionRecord, SessionSidecar};
 use chrono::{DateTime, Utc};
 use serde_json;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 

@@ -42,7 +42,7 @@ impl TemplateStore {
             MeetingTemplate::built_ins()
         };
 
-        let mut store = Self { path, templates };
+        let store = Self { path, templates };
         store.save();
         store
     }
