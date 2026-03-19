@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Utterance, Suggestion, AppSettings } from "./types";
@@ -82,8 +82,6 @@ function App() {
   const [searchResults, setSearchResults] = useState<number[]>([]);
   const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-
   // Load settings on mount
   useEffect(() => {
     invoke<AppSettings>("get_settings")
@@ -269,8 +267,8 @@ function App() {
 
   const handleLoadSession = async (sessionId: string) => {
     try {
-      const sessionData = await invoke<{ utterances: Utterance[] }>("load_session", { sessionId });
-      setUtterances(sessionData.utterances);
+      const sessionData = await invoke<Utterance[]>("load_session", { id: sessionId });
+      setUtterances(sessionData);
       setCurrentSessionId(sessionId);
       setTab("transcript");
     } catch (err) {
@@ -465,7 +463,16 @@ function App() {
             lastCheckedAt={lastSuggestionCheckAt}
             lastCheckSurfaced={lastSuggestionCheckSurfaced}
             onDismiss={handleDismissSuggestion}
-            onInjectTest={(s) => setSuggestions((prev) => [...prev, { ...s, timestamp: new Date().toISOString() }])}
+            onInjectTest={(s) =>
+              setSuggestions((prev) => [
+                ...prev,
+                {
+                  ...s,
+                  kind: s.kind as Suggestion["kind"],
+                  timestamp: new Date().toISOString(),
+                },
+              ])
+            }
           />
         )}
         {tab === "settings" && (

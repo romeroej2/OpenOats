@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ApiKeys, AppSettings } from "../types";
-import { colors, typography, spacing, styles as themeStyles } from "../theme";
+import { colors, typography, spacing } from "../theme";
 
 type Tab = "general" | "ai" | "advanced";
 

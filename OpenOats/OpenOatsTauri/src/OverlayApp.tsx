@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useOverlayKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import { colors, typography, spacing } from "./theme";
+import { colors } from "./theme";
 
 interface SuggestionPayload {
   id: string;
