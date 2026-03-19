@@ -20,6 +20,7 @@ export function NotesView({ sessionId }: Props) {
   const [markdown, setMarkdown] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showThoughts, setShowThoughts] = useState(false);
 
   useEffect(() => {
     const unlisten = listen<string>("notes-chunk", (e) => {
@@ -33,6 +34,7 @@ export function NotesView({ sessionId }: Props) {
     setMarkdown("");
     setIsGenerating(true);
     setError(null);
+    setShowThoughts(false);
     try {
       await invoke("generate_notes", { sessionId, templateId: selectedTemplate });
     } catch (e) {
@@ -41,6 +43,9 @@ export function NotesView({ sessionId }: Props) {
       setIsGenerating(false);
     }
   };
+
+  const parsed = parseGeneratedNotes(markdown);
+  const displayedMarkdown = isGenerating ? markdown : parsed.visible;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 16 }}>
@@ -71,10 +76,41 @@ export function NotesView({ sessionId }: Props) {
 
       {error && <div style={{ color: "#e74c3c", fontSize: 13, marginBottom: 8 }}>{error}</div>}
 
-      {markdown ? (
-        <pre style={{ flex: 1, overflowY: "auto", fontSize: 13, color: "#ddd", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
-          {markdown}
-        </pre>
+      {!isGenerating && parsed.thoughts && (
+        <div style={{ marginBottom: 8, display: "flex", justifyContent: "flex-end" }}>
+          <button
+            onClick={() => setShowThoughts((prev) => !prev)}
+            style={{
+              padding: "4px 10px",
+              background: "transparent",
+              color: "#aaa",
+              border: "1px solid #444",
+              borderRadius: 4,
+              cursor: "pointer",
+              fontSize: 12,
+            }}
+          >
+            {showThoughts ? "Hide Thought" : "Show Thought"}
+          </button>
+        </div>
+      )}
+
+      {displayedMarkdown ? (
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          <pre style={{ fontSize: 13, color: "#ddd", whiteSpace: "pre-wrap", lineHeight: 1.6, margin: 0 }}>
+            {displayedMarkdown}
+          </pre>
+          {!isGenerating && showThoughts && parsed.thoughts && (
+            <div style={{ marginTop: 16, borderTop: "1px solid #333", paddingTop: 12 }}>
+              <div style={{ color: "#888", fontSize: 12, marginBottom: 8, textTransform: "uppercase" }}>
+                Thought
+              </div>
+              <pre style={{ fontSize: 12, color: "#999", whiteSpace: "pre-wrap", lineHeight: 1.6, margin: 0 }}>
+                {parsed.thoughts}
+              </pre>
+            </div>
+          )}
+        </div>
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#666", fontSize: 14 }}>
           {sessionId ? "Select a template and click Generate Notes" : "Start a session to generate notes"}
@@ -82,4 +118,21 @@ export function NotesView({ sessionId }: Props) {
       )}
     </div>
   );
+}
+
+function parseGeneratedNotes(markdown: string): { visible: string; thoughts: string | null } {
+  if (!markdown) {
+    return { visible: "", thoughts: null };
+  }
+
+  const thoughtMatch = markdown.match(/<think>([\s\S]*?)<\/think>/i);
+  const thoughts = thoughtMatch?.[1]?.trim() || null;
+
+  const visible = markdown
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<\|begin_of_box\|>/gi, "")
+    .replace(/<\|end_of_box\|>/gi, "")
+    .trim();
+
+  return { visible, thoughts };
 }

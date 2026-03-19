@@ -143,11 +143,22 @@ function App() {
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {tab === "transcript" && <TranscriptView utterances={utterances} />}
         {tab === "suggestions" && <SuggestionsView suggestions={suggestions} />}
-        {tab === "notes" && <NotesView sessionId={currentSessionId} />}
         {tab === "settings" && <SettingsView />}
+        <div style={notesPanelStyle(tab === "notes")}>
+          <NotesView sessionId={currentSessionId} />
+        </div>
       </div>
     </div>
   );
+}
+
+function notesPanelStyle(isActive: boolean): React.CSSProperties {
+  return {
+    flex: 1,
+    display: isActive ? "flex" : "none",
+    minHeight: 0,
+    overflow: "hidden",
+  };
 }
 
 const centerStyle: React.CSSProperties = {
