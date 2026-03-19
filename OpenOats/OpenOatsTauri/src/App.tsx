@@ -20,6 +20,10 @@ const colors = {
 
 type ModelState = "checking" | "missing" | "downloading" | "ready";
 type Tab = "transcript" | "suggestions" | "notes" | "settings";
+type SuggestionCheckEvent = {
+  checkedAt: string;
+  surfaced: boolean;
+};
 
 type WhisperModelId = "auto" | "tiny" | "tiny-en" | "base" | "base-en" | "small" | "small-en";
 
@@ -70,6 +74,8 @@ function App() {
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false);
+  const [lastSuggestionCheckAt, setLastSuggestionCheckAt] = useState<string | null>(null);
+  const [lastSuggestionCheckSurfaced, setLastSuggestionCheckSurfaced] = useState<boolean | null>(null);
   const [volatileYouText, setVolatileYouText] = useState("");
   const [volatileThemText, setVolatileThemText] = useState("");
 
@@ -153,7 +159,6 @@ function App() {
         ]);
         // Auto-switch to suggestions when one arrives
         setTab("suggestions");
-        invoke("show_overlay").catch(() => {});
       }),
 
       listen("suggestion-generating", () => {
@@ -162,6 +167,16 @@ function App() {
 
       listen("suggestion-finished", () => {
         setIsGeneratingSuggestion(false);
+      }),
+
+      listen<SuggestionCheckEvent>("suggestion-check-started", (e) => {
+        setLastSuggestionCheckAt(e.payload.checkedAt);
+        setLastSuggestionCheckSurfaced(false);
+      }),
+
+      listen<SuggestionCheckEvent>("suggestion-check-finished", (e) => {
+        setLastSuggestionCheckAt(e.payload.checkedAt);
+        setLastSuggestionCheckSurfaced(e.payload.surfaced);
       }),
     ];
 
@@ -324,6 +339,9 @@ function App() {
         kbConnected={kbConnected}
         kbFileCount={0} // Would come from backend
         isLocalMode={isLocalMode}
+        isSuggestionAnalyzing={isGeneratingSuggestion}
+        lastSuggestionCheckAt={lastSuggestionCheckAt}
+        lastSuggestionCheckSurfaced={lastSuggestionCheckSurfaced}
       />
 
       {/* Tab Bar */}
@@ -388,6 +406,8 @@ function App() {
             isGenerating={isGeneratingSuggestion}
             kbConnected={kbConnected}
             kbFileCount={0}
+            lastCheckedAt={lastSuggestionCheckAt}
+            lastCheckSurfaced={lastSuggestionCheckSurfaced}
             onFeedback={handleSuggestionFeedback}
             onCopy={handleSuggestionCopy}
           />

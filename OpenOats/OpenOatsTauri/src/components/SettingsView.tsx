@@ -801,6 +801,25 @@ export function SettingsView({ settings: initialSettings = null, onSettingsChang
                 {whisperModelOptions.find((option) => option.value === settings.whisperModel)?.description}. Effective model: `{resolveWhisperModel(settings.transcriptionLocale, settings.whisperModel)}`.
               </span>
             </div>
+            <div style={styles.fieldWrap}>
+              <label style={styles.labelStyle}>Suggestion Cadence</label>
+              <input
+                type="number"
+                min={30}
+                step={15}
+                value={settings.suggestionIntervalSeconds}
+                onChange={(e) =>
+                  saveSettings({
+                    ...settings,
+                    suggestionIntervalSeconds: Math.max(30, Number(e.target.value) || 30),
+                  })
+                }
+                style={styles.inputStyle}
+              />
+              <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                Generate suggestions from the recent conversation every N seconds instead of waiting for trigger phrases.
+              </span>
+            </div>
           </div>
 
           <div style={styles.divider} />

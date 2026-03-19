@@ -43,6 +43,20 @@ interface Props {
   kbConnected?: boolean;
   kbFileCount?: number;
   isLocalMode?: boolean;
+  isSuggestionAnalyzing?: boolean;
+  lastSuggestionCheckAt?: string | null;
+  lastSuggestionCheckSurfaced?: boolean | null;
+}
+
+function formatRelativeTime(iso: string | null | undefined): string {
+  if (!iso) return "Waiting";
+  const deltaSeconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (deltaSeconds < 5) return "Just now";
+  if (deltaSeconds < 60) return `${deltaSeconds}s ago`;
+  const minutes = Math.floor(deltaSeconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
 }
 
 // Audio level visualizer component
@@ -93,6 +107,9 @@ export function ControlBar({
   kbConnected = false,
   kbFileCount = 0,
   isLocalMode = true,
+  isSuggestionAnalyzing = false,
+  lastSuggestionCheckAt = null,
+  lastSuggestionCheckSurfaced = null,
 }: Props) {
   const [devices, setDevices] = useState<string[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("default");
@@ -320,6 +337,32 @@ export function ControlBar({
           <span style={{ fontSize: 6 }}>●</span>
           <span>{isLocalMode ? "Local" : "Cloud"}</span>
         </span>
+
+        {isRunning && (
+          <span
+            style={statusBadgeStyle(
+              isSuggestionAnalyzing
+                ? colors.them
+                : lastSuggestionCheckSurfaced
+                  ? colors.success
+                  : colors.textSecondary
+            )}
+            title={
+              isSuggestionAnalyzing
+                ? "OpenOats is analyzing the recent conversation for suggestions."
+                : lastSuggestionCheckSurfaced
+                  ? "The last suggestion analysis surfaced a result."
+                  : "The last suggestion analysis finished without surfacing anything."
+            }
+          >
+            <span style={{ fontSize: 6 }}>{isSuggestionAnalyzing ? "●" : "○"}</span>
+            <span>
+              {isSuggestionAnalyzing
+                ? "Analyzing"
+                : `Suggestions ${formatRelativeTime(lastSuggestionCheckAt)}`}
+            </span>
+          </span>
+        )}
 
         {/* Model Badge */}
         <span

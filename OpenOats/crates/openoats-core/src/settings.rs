@@ -46,6 +46,9 @@ pub struct AppSettings {
     #[serde(default = "default_openai_embed_model", alias = "open_ai_embed_model")]
     pub open_ai_embed_model: String,
 
+    #[serde(default = "default_suggestion_interval_seconds", alias = "suggestion_interval_seconds")]
+    pub suggestion_interval_seconds: u64,
+
     #[serde(default, alias = "kb_folder_path")]
     pub kb_folder_path: Option<String>,
 
@@ -117,6 +120,7 @@ impl Default for AppSettings {
             open_ai_llm_base_url: default_openai_llm_url(),
             open_ai_embed_base_url: default_openai_embed_url(),
             open_ai_embed_model: default_openai_embed_model(),
+            suggestion_interval_seconds: default_suggestion_interval_seconds(),
             kb_folder_path: None,
             notes_folder_path: default_notes_folder(),
             has_acknowledged_recording_consent: false,
@@ -138,6 +142,7 @@ fn default_ollama_embed_model() -> String { "nomic-embed-text".into() }
 fn default_openai_llm_url() -> String { "http://localhost:1234".into() }
 fn default_openai_embed_url() -> String { "http://localhost:8080".into() }
 fn default_openai_embed_model() -> String { "text-embedding-3-small".into() }
+fn default_suggestion_interval_seconds() -> u64 { 30 }
 fn default_true() -> bool { true }
 fn default_notes_folder() -> String {
     dirs::document_dir()
@@ -217,5 +222,17 @@ mod tests {
         s.save_to(path.clone());
         let s2 = AppSettings::load_from(path);
         assert_eq!(s2.system_audio_device_name.as_deref(), Some("Speakers (Realtek)"));
+    }
+
+    #[test]
+    fn suggestion_interval_defaults_and_persists() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = AppSettings::load_from(path.clone());
+        assert_eq!(s.suggestion_interval_seconds, 30);
+        s.suggestion_interval_seconds = 180;
+        s.save_to(path.clone());
+        let s2 = AppSettings::load_from(path);
+        assert_eq!(s2.suggestion_interval_seconds, 180);
     }
 }

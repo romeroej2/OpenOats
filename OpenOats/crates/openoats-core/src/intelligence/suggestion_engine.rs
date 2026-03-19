@@ -26,15 +26,15 @@ impl SuggestionEngine {
         }
     }
 
-    /// Process a "them" utterance through the suggestion pipeline.
+    /// Process a recent transcript window through the suggestion pipeline.
     /// Returns a Suggestion if one should be surfaced, None otherwise.
     ///
     /// `embed_fn`: takes a batch of texts, returns embeddings
     /// `search_fn`: takes query embedding, returns KB results
     /// `complete_fn`: takes messages, returns LLM completion text
-    pub async fn process_utterance<EmbedFn, EmbedFut, SearchFn, CompleteFn, CompleteFut>(
+    pub async fn process_transcript_window<EmbedFn, EmbedFut, SearchFn, CompleteFn, CompleteFut>(
         &mut self,
-        utterance: &Utterance,
+        transcript_window: &str,
         recent_them_utterances: &[&Utterance],
         embed_fn: EmbedFn,
         search_fn: SearchFn,
@@ -50,22 +50,15 @@ impl SuggestionEngine {
         self.utterance_count += 1;
 
         // Stage 1: Heuristic pre-filter
-        if !self.passes_prefilter(&utterance.text) {
+        if !self.passes_prefilter(transcript_window) {
             return None;
         }
 
-        // Stage 2: Trigger detection
-        if !self.has_trigger(&utterance.text) {
-            return None;
-        }
+        // Stage 2: Refresh conversation state from the current rolling window.
+        self.update_conversation_state(recent_them_utterances, &complete_fn).await;
 
-        // Stage 3: Update conversation state every 2-3 them utterances
-        if self.utterance_count % 3 == 0 {
-            self.update_conversation_state(recent_them_utterances, &complete_fn).await;
-        }
-
-        // Stage 4: KB retrieval
-        let queries = self.build_search_queries(&utterance.text);
+        // Stage 3: KB retrieval
+        let queries = self.build_search_queries(transcript_window);
         let mut kb_hits: Vec<KBResult> = Vec::new();
         for q in &queries {
             if let Ok(embeddings) = embed_fn(vec![q.clone()]).await {
@@ -82,18 +75,18 @@ impl SuggestionEngine {
 
         if kb_hits.is_empty() {
             return self
-                .maybe_surface_smart_question(&utterance.text, recent_them_utterances, &complete_fn)
+                .maybe_surface_smart_question(transcript_window, recent_them_utterances, &complete_fn)
                 .await;
         }
 
-        // Stage 5: LLM surfacing gate
-        let decision = self.run_surfacing_gate(&utterance.text, &kb_hits, &complete_fn).await?;
+        // Stage 4: LLM surfacing gate
+        let decision = self.run_surfacing_gate(transcript_window, &kb_hits, &complete_fn).await?;
 
         if !decision.should_surface {
             return None;
         }
 
-        let suggestion_text = self.synthesize_suggestion(&utterance.text, &kb_hits, &complete_fn).await?;
+        let suggestion_text = self.synthesize_suggestion(transcript_window, &kb_hits, &complete_fn).await?;
 
         // Track recent suggestions to avoid duplicates
         self.recent_suggestion_texts.push(suggestion_text.clone());
@@ -128,47 +121,10 @@ impl SuggestionEngine {
         true
     }
 
-    fn has_trigger(&self, text: &str) -> bool {
-        let lower = text.to_lowercase();
-        // Explicit questions
-        if lower.contains('?') { return true; }
-        let question_starters = [
-            "what ", "how ", "why ", "when ", "where ", "who ", "which ",
-            "can we", "can you", "could we", "could you", "would you",
-            "do we", "do you", "is there", "are there", "have we", "have you",
-        ];
-        if question_starters.iter().any(|w| lower.starts_with(w) || lower.contains(&format!(" {}", w))) {
-            return true;
-        }
-        // Decision points
-        let decision_words = ["should we", "pick between", "which option", "how do we", "what should", "best approach"];
-        if decision_words.iter().any(|w| lower.contains(w)) { return true; }
-        // Problem signals
-        let problem_words = ["problem", "challenge", "struggle", "difficult", "can't figure", "not sure how"];
-        if problem_words.iter().any(|w| lower.contains(w)) { return true; }
-        // Knowledge-gap signals that should route into smart-question generation
-        let knowledge_gap_words = [
-            "not clear",
-            "unclear",
-            "depends on",
-            "need to know",
-            "don't know",
-            "do not know",
-            "unknown",
-            "missing",
-            "haven't decided",
-            "have not decided",
-            "still figuring out",
-            "not sure yet",
-        ];
-        if knowledge_gap_words.iter().any(|w| lower.contains(w)) { return true; }
-        false
-    }
-
-    fn build_search_queries(&self, utterance: &str) -> Vec<String> {
-        let mut queries = vec![utterance.to_string()];
+    fn build_search_queries(&self, transcript_window: &str) -> Vec<String> {
+        let mut queries = vec![transcript_window.to_string()];
         if !self.conversation_state.current_topic.is_empty() {
-            queries.push(format!("{} {}", self.conversation_state.current_topic, utterance));
+            queries.push(format!("{} {}", self.conversation_state.current_topic, transcript_window));
         }
         if !self.conversation_state.short_summary.is_empty() {
             queries.push(self.conversation_state.short_summary.clone());
@@ -216,7 +172,7 @@ impl SuggestionEngine {
 
     async fn run_surfacing_gate<F, Fut>(
         &self,
-        utterance: &str,
+        transcript_window: &str,
         kb_hits: &[KBResult],
         complete_fn: &F,
     ) -> Option<SuggestionDecision>
@@ -232,7 +188,7 @@ impl SuggestionEngine {
 
         let prompt = format!(
             "Should we surface a suggestion based on this?\n\
-            Utterance: {utterance}\n\
+            Recent conversation:\n{transcript_window}\n\
             KB Context:\n{context}\n\
             Recent suggestions: {recent}\n\n\
             Return JSON: {{\"shouldSurface\": bool, \"confidence\": 0-1, \
@@ -265,7 +221,7 @@ impl SuggestionEngine {
 
     async fn synthesize_suggestion<F, Fut>(
         &self,
-        utterance: &str,
+        transcript_window: &str,
         kb_hits: &[KBResult],
         complete_fn: &F,
     ) -> Option<String>
@@ -280,7 +236,7 @@ impl SuggestionEngine {
         let prompt = format!(
             "Given this conversation moment and relevant knowledge, write a concise, \
             actionable suggestion (1-2 sentences) that would help the speaker respond effectively.\n\n\
-            What was said: {utterance}\n\nRelevant knowledge:\n{context}"
+            Recent conversation:\n{transcript_window}\n\nRelevant knowledge:\n{context}"
         );
 
         let messages = vec![
@@ -393,20 +349,9 @@ mod tests {
     }
 
     #[test]
-    fn has_trigger_detects_question_mark() {
+    fn prefilter_accepts_plain_substantive_statement() {
         let engine = SuggestionEngine::new();
-        assert!(engine.has_trigger("How should we approach this?"));
-    }
-
-    #[test]
-    fn has_trigger_detects_problem_signal() {
-        let engine = SuggestionEngine::new();
-        assert!(engine.has_trigger("We have a problem with the current architecture."));
-    }
-
-    #[test]
-    fn has_trigger_rejects_plain_statement() {
-        let engine = SuggestionEngine::new();
-        assert!(!engine.has_trigger("We are working on the feature today."));
+        let text = "Estamos revisando el alcance del proyecto y necesitamos ordenar las prioridades del cliente.";
+        assert!(engine.passes_prefilter(text));
     }
 }

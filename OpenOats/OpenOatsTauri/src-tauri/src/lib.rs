@@ -8,6 +8,7 @@ use std::sync::Arc;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = Arc::new(engine::AppState::new());
+    let setup_state = Arc::clone(&state);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -37,7 +38,7 @@ pub fn run() {
             engine::list_sessions,
             engine::load_session,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -45,6 +46,9 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            let hide_from_screen_share = setup_state.settings.lock().unwrap().hide_from_screen_share;
+            engine::set_content_protection(app.handle().clone(), hide_from_screen_share)
+                .map_err(|err| std::io::Error::other(err))?;
             Ok(())
         })
         .run(tauri::generate_context!())
