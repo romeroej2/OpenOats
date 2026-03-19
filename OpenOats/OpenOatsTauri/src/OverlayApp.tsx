@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { colors, typography, spacing } from "./theme";
 
 interface SuggestionPayload {
   id: string;
@@ -215,7 +216,7 @@ export function OverlayApp() {
             style={closeBtn}
             title="Dismiss"
           >
-            x
+            ×
           </button>
         </div>
       </div>
@@ -236,14 +237,14 @@ const containerStyle: React.CSSProperties = {
 };
 
 const cardStyle: React.CSSProperties = {
-  background: "linear-gradient(180deg, rgba(98, 98, 101, 0.84) 0%, rgba(112, 110, 106, 0.8) 100%)",
-  border: "none",
+  background: colors.overlay.background,
+  border: `1px solid ${colors.overlay.border}`,
   borderRadius: 18,
   padding: "12px 16px 14px",
   width: "min(640px, calc(100vw - 48px))",
   maxHeight: "calc(100vh - 40px)",
   overflow: "hidden",
-  boxShadow: "0 12px 28px rgba(0,0,0,0.16)",
+  boxShadow: colors.overlay.shadow,
   cursor: "grab",
   userSelect: "none",
   backdropFilter: "blur(16px) saturate(1.05)",
@@ -256,7 +257,7 @@ const headerStyle: React.CSSProperties = {
   gap: 8,
   marginBottom: 12,
   paddingBottom: 10,
-  borderBottom: "1px solid rgba(231, 198, 144, 0.16)",
+  borderBottom: `1px solid ${colors.overlay.border}`,
   cursor: "grab",
 };
 
@@ -264,12 +265,12 @@ const grabberStyle: React.CSSProperties = {
   width: 28,
   height: 4,
   borderRadius: 999,
-  background: "rgba(255,255,255,0.3)",
+  background: `${colors.text}30`,
   flexShrink: 0,
 };
 
 const headerLabelStyle: React.CSSProperties = {
-  color: "rgba(239, 210, 155, 0.92)",
+  color: colors.accent,
   fontSize: 11,
   fontWeight: 600,
   letterSpacing: "0.12em",
@@ -287,22 +288,23 @@ const contentStyle: React.CSSProperties = {
 
 const lineStyle: React.CSSProperties = {
   margin: 0,
-  color: "rgba(248,249,252,0.96)",
+  color: colors.overlay.text,
   fontSize: 15,
   lineHeight: 1.4,
   letterSpacing: "0.01em",
   whiteSpace: "pre-wrap",
   textWrap: "pretty",
-  textShadow: "0 1px 1px rgba(0,0,0,0.22)",
 };
 
 const closeBtn: React.CSSProperties = {
   background: "transparent",
   border: "none",
-  color: "rgba(255,255,255,0.66)",
+  color: `${colors.text}66`,
   cursor: "pointer",
-  fontSize: 16,
+  fontSize: 18,
+  fontWeight: 300,
   lineHeight: 1,
-  padding: "2px 0 0",
+  padding: "0 4px",
   flexShrink: 0,
+  transition: "color 0.2s",
 };

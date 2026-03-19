@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { colors, typography, spacing } from "../theme";
 
 const TEMPLATES = [
   { id: "00000000-0000-0000-0000-000000000000", name: "Generic" },
@@ -48,12 +49,20 @@ export function NotesView({ sessionId }: Props) {
   const displayedMarkdown = isGenerating ? markdown : parsed.visible;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 16 }}>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: spacing[4] }}>
+      <div style={{ display: "flex", gap: spacing[2], marginBottom: spacing[3] }}>
         <select
           value={selectedTemplate}
           onChange={(e) => setSelectedTemplate(e.target.value)}
-          style={{ flex: 1, padding: "4px 8px", background: "#1a1a1a", color: "#fff", border: "1px solid #444", borderRadius: 4 }}
+          style={{ 
+            flex: 1, 
+            padding: `${spacing[2]}px`, 
+            background: colors.surface, 
+            color: colors.text, 
+            border: `1px solid ${colors.border}`, 
+            borderRadius: 4,
+            fontSize: typography.md,
+          }}
         >
           {TEMPLATES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
@@ -61,33 +70,35 @@ export function NotesView({ sessionId }: Props) {
           onClick={handleGenerate}
           disabled={isGenerating || !sessionId}
           style={{
-            padding: "4px 16px",
-            background: "#8e44ad",
-            color: "#fff",
+            padding: `${spacing[2]}px ${spacing[4]}px`,
+            background: colors.accent,
+            color: colors.textInverse,
             border: "none",
             borderRadius: 4,
+            fontSize: typography.md,
             cursor: isGenerating || !sessionId ? "not-allowed" : "pointer",
             opacity: isGenerating || !sessionId ? 0.5 : 1,
+            fontWeight: 500,
           }}
         >
           {isGenerating ? "Generating…" : "Generate Notes"}
         </button>
       </div>
 
-      {error && <div style={{ color: "#e74c3c", fontSize: 13, marginBottom: 8 }}>{error}</div>}
+      {error && <div style={{ color: colors.error, fontSize: typography.md, marginBottom: spacing[2] }}>{error}</div>}
 
       {!isGenerating && parsed.thoughts && (
-        <div style={{ marginBottom: 8, display: "flex", justifyContent: "flex-end" }}>
+        <div style={{ marginBottom: spacing[2], display: "flex", justifyContent: "flex-end" }}>
           <button
             onClick={() => setShowThoughts((prev) => !prev)}
             style={{
-              padding: "4px 10px",
+              padding: `${spacing[1]}px ${spacing[2]}px`,
               background: "transparent",
-              color: "#aaa",
-              border: "1px solid #444",
+              color: colors.textMuted,
+              border: `1px solid ${colors.border}`,
               borderRadius: 4,
               cursor: "pointer",
-              fontSize: 12,
+              fontSize: typography.sm,
             }}
           >
             {showThoughts ? "Hide Thought" : "Show Thought"}
@@ -97,22 +108,22 @@ export function NotesView({ sessionId }: Props) {
 
       {displayedMarkdown ? (
         <div style={{ flex: 1, overflowY: "auto" }}>
-          <pre style={{ fontSize: 13, color: "#ddd", whiteSpace: "pre-wrap", lineHeight: 1.6, margin: 0 }}>
+          <pre style={{ fontSize: typography.md, color: colors.text, whiteSpace: "pre-wrap", lineHeight: 1.6, margin: 0 }}>
             {displayedMarkdown}
           </pre>
           {!isGenerating && showThoughts && parsed.thoughts && (
-            <div style={{ marginTop: 16, borderTop: "1px solid #333", paddingTop: 12 }}>
-              <div style={{ color: "#888", fontSize: 12, marginBottom: 8, textTransform: "uppercase" }}>
+            <div style={{ marginTop: spacing[4], borderTop: `1px solid ${colors.border}`, paddingTop: spacing[3] }}>
+              <div style={{ color: colors.textMuted, fontSize: typography.xs, marginBottom: spacing[2], textTransform: "uppercase", letterSpacing: "1px", fontWeight: 600 }}>
                 Thought
               </div>
-              <pre style={{ fontSize: 12, color: "#999", whiteSpace: "pre-wrap", lineHeight: 1.6, margin: 0 }}>
+              <pre style={{ fontSize: typography.sm, color: colors.textSecondary, whiteSpace: "pre-wrap", lineHeight: 1.6, margin: 0 }}>
                 {parsed.thoughts}
               </pre>
             </div>
           )}
         </div>
       ) : (
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#666", fontSize: 14 }}>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: colors.textMuted, fontSize: typography.md }}>
           {sessionId ? "Select a template and click Generate Notes" : "Start a session to generate notes"}
         </div>
       )}

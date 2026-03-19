@@ -1,36 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { colors, typography, spacing } from "../theme";
 
-// Design system
-const colors = {
-  background: "#111111",
-  surface: "#1a1a1a",
-  surfaceElevated: "#222222",
-  border: "#333333",
-  text: "#eeeeee",
-  textSecondary: "#888888",
-  accent: "#2b7a78",
-  success: "#27ae60",
-  error: "#c0392b",
-  warning: "#f39c12",
-  you: "#5b8cbf",
-  them: "#d2994d",
-};
-
-const typography = {
-  xs: 10,
-  sm: 11,
-  base: 12,
-  md: 13,
-  lg: 14,
-};
-
-const spacing = {
-  1: 4,
-  2: 8,
-  3: 12,
-  4: 16,
-};
+// Design system is now imported from theme.ts
 
 interface Props {
   isRunning: boolean;
@@ -74,7 +46,7 @@ function AudioLevelVisualizer({ level }: { level: number }) {
               width: 3,
               height: 4 + i * 2,
               borderRadius: 1,
-              background: isActive ? `${colors.success}cc` : `${colors.textSecondary}20`,
+              background: isActive ? `${colors.success}cc` : `${colors.textMuted}40`,
               transition: "background 0.08s ease-out",
             }}
           />
@@ -212,9 +184,9 @@ export function ControlBar({
     alignItems: "center",
     gap: spacing[2],
     padding: `${spacing[2]}px ${spacing[3]}px`,
-    background: isRunning ? `${colors.error}20` : colors.success,
-    color: isRunning ? colors.error : "#fff",
-    border: isRunning ? `1px solid ${colors.error}50` : "none",
+    background: isRunning ? `${colors.error}15` : colors.success,
+    color: isRunning ? colors.error : colors.textInverse,
+    border: isRunning ? `1px solid ${colors.error}40` : "none",
     borderRadius: 20,
     fontSize: typography.md,
     fontWeight: 600,
@@ -253,7 +225,7 @@ export function ControlBar({
         disabled={isRunning}
         style={{
           padding: `${spacing[2]}px`,
-          background: colors.background,
+          background: colors.surfaceElevated,
           color: colors.text,
           border: `1px solid ${colors.border}`,
           borderRadius: 4,
@@ -283,7 +255,7 @@ export function ControlBar({
         disabled={isRunning}
         style={{
           padding: `${spacing[2]}px`,
-          background: colors.background,
+          background: colors.surfaceElevated,
           color: colors.text,
           border: `1px solid ${colors.border}`,
           borderRadius: 4,
@@ -366,7 +338,7 @@ export function ControlBar({
         ) : (
           <span
             style={{
-              ...statusBadgeStyle(colors.textSecondary),
+              ...statusBadgeStyle(colors.textMuted),
               opacity: 0.6,
             }}
           >
@@ -391,7 +363,7 @@ export function ControlBar({
                 ? colors.them
                 : lastSuggestionCheckSurfaced
                   ? colors.success
-                  : colors.textSecondary
+                  : colors.textMuted
             )}
             title={
               isSuggestionAnalyzing
@@ -414,7 +386,7 @@ export function ControlBar({
         <span
           style={{
             padding: `${spacing[1]}px ${spacing[2]}px`,
-            background: colors.background,
+            background: colors.surfaceElevated,
             color: colors.textSecondary,
             borderRadius: 12,
             fontSize: typography.xs,
@@ -429,7 +401,7 @@ export function ControlBar({
         <span
           style={{
             padding: `${spacing[1]}px ${spacing[2]}px`,
-            background: colors.background,
+            background: colors.surfaceElevated,
             color: colors.them,
             borderRadius: 12,
             fontSize: typography.xs,

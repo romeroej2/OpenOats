@@ -1,32 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { Utterance } from "../types";
-
-// Design system
-const colors = {
-  background: "#111111",
-  surface: "#1a1a1a",
-  border: "#333333",
-  text: "#eeeeee",
-  textSecondary: "#888888",
-  textMuted: "#666666",
-  you: "#5b8cbf",
-  them: "#d2994d",
-};
-
-const typography = {
-  xs: 10,
-  sm: 11,
-  base: 12,
-  md: 13,
-  lg: 14,
-};
-
-const spacing = {
-  1: 4,
-  2: 8,
-  3: 12,
-  4: 16,
-};
+import { colors, typography, spacing } from "../theme";
 
 interface Props {
   utterances: Utterance[];
@@ -201,7 +175,7 @@ export function TranscriptView({ utterances, volatileYouText, volatileThemText }
             width: 48,
             height: 48,
             borderRadius: 12,
-            background: `${colors.textMuted}15`,
+            background: `${colors.accent}12`,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ApiKeys, AppSettings } from "../types";
+import { colors, typography, spacing, styles as themeStyles } from "../theme";
 
 type Tab = "general" | "ai" | "advanced";
 
@@ -52,196 +53,6 @@ interface SettingsViewProps {
   onSettingsChange?: (settings: AppSettings) => void;
 }
 
-// Design system constants
-const colors = {
-  background: "#111111",
-  surface: "#1a1a1a",
-  surfaceElevated: "#222222",
-  border: "#333333",
-  text: "#eeeeee",
-  textSecondary: "#888888",
-  textMuted: "#666666",
-  accent: "#2b7a78",
-  accentLight: "#3a9a98",
-  success: "#27ae60",
-  error: "#c0392b",
-  warning: "#f39c12",
-  you: "#5b8cbf",
-  them: "#d2994d",
-};
-
-const typography = {
-  xs: 10,
-  sm: 11,
-  base: 12,
-  md: 13,
-  lg: 14,
-  xl: 15,
-};
-
-const spacing = {
-  1: 4,
-  2: 8,
-  3: 12,
-  4: 16,
-  5: 20,
-  6: 24,
-};
-
-const styles = {
-  container: {
-    padding: spacing[4],
-    overflowY: "auto" as const,
-    height: "100%",
-    backgroundColor: colors.background,
-  },
-  header: {
-    margin: `0 0 ${spacing[4]}px`,
-    color: colors.text,
-    fontSize: typography.lg,
-    fontWeight: 600,
-  },
-  tabs: {
-    display: "flex" as const,
-    gap: spacing[1],
-    marginBottom: spacing[4],
-    borderBottom: `1px solid ${colors.border}`,
-    paddingBottom: spacing[1],
-  },
-  tab: (isActive: boolean): React.CSSProperties => ({
-    padding: `${spacing[2]}px ${spacing[3]}px`,
-    background: "transparent",
-    border: "none",
-    borderBottom: isActive ? `2px solid ${colors.accent}` : "2px solid transparent",
-    color: isActive ? colors.accent : colors.textSecondary,
-    fontSize: typography.base,
-    fontWeight: isActive ? 600 : 400,
-    cursor: "pointer",
-    transition: "all 0.2s",
-  }),
-  section: {
-    marginBottom: spacing[5],
-  },
-  sectionTitle: {
-    color: colors.textSecondary,
-    fontSize: typography.xs,
-    textTransform: "uppercase" as const,
-    letterSpacing: "1.5px",
-    margin: `0 0 ${spacing[2]}px`,
-    fontWeight: 600,
-  },
-  sectionDescription: {
-    color: colors.textMuted,
-    fontSize: typography.sm,
-    margin: `0 0 ${spacing[3]}px`,
-    lineHeight: 1.5,
-  },
-  fieldWrap: {
-    marginBottom: spacing[3],
-  },
-  labelStyle: {
-    display: "block" as const,
-    fontSize: typography.base,
-    color: colors.textSecondary,
-    marginBottom: spacing[1],
-    fontWeight: 500,
-  },
-  inputStyle: {
-    width: "100%",
-    padding: `${spacing[2]}px`,
-    background: colors.surface,
-    color: colors.text,
-    border: `1px solid ${colors.border}`,
-    borderRadius: 4,
-    fontSize: typography.md,
-    boxSizing: "border-box" as const,
-    fontFamily: "inherit",
-  },
-  selectStyle: {
-    width: "100%",
-    padding: `${spacing[2]}px`,
-    background: colors.surface,
-    color: colors.text,
-    border: `1px solid ${colors.border}`,
-    borderRadius: 4,
-    fontSize: typography.md,
-    cursor: "pointer",
-  },
-  checkboxStyle: {
-    display: "flex",
-    alignItems: "center",
-    gap: spacing[2],
-    cursor: "pointer",
-  },
-  checkboxInput: {
-    width: 16,
-    height: 16,
-    accentColor: colors.accent,
-  },
-  checkboxLabel: {
-    fontSize: typography.base,
-    color: colors.text,
-  },
-  button: {
-    padding: `${spacing[2]}px ${spacing[3]}px`,
-    background: colors.accent,
-    color: "#fff",
-    border: "none",
-    borderRadius: 4,
-    fontSize: typography.base,
-    cursor: "pointer",
-    transition: "background 0.2s",
-  },
-  buttonSecondary: {
-    padding: `${spacing[2]}px ${spacing[3]}px`,
-    background: "transparent",
-    color: colors.textSecondary,
-    border: `1px solid ${colors.border}`,
-    borderRadius: 4,
-    fontSize: typography.base,
-    cursor: "pointer",
-  },
-  statusBadge: (type: "success" | "warning" | "error"): React.CSSProperties => ({
-    display: "inline-flex",
-    alignItems: "center",
-    gap: spacing[1],
-    padding: `${spacing[1]}px ${spacing[2]}px`,
-    background: type === "success" ? `${colors.success}20` : type === "warning" ? `${colors.warning}20` : `${colors.error}20`,
-    color: type === "success" ? colors.success : type === "warning" ? colors.warning : colors.error,
-    borderRadius: 4,
-    fontSize: typography.sm,
-  }),
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: spacing[3],
-  },
-  aiModeCard: (isSelected: boolean): React.CSSProperties => ({
-    padding: spacing[3],
-    background: isSelected ? `${colors.accent}15` : colors.surface,
-    border: `1px solid ${isSelected ? colors.accent : colors.border}`,
-    borderRadius: 8,
-    cursor: "pointer",
-    transition: "all 0.2s",
-  }),
-  aiModeTitle: {
-    fontSize: typography.md,
-    fontWeight: 600,
-    color: colors.text,
-    marginBottom: spacing[1],
-  },
-  aiModeDesc: {
-    fontSize: typography.sm,
-    color: colors.textMuted,
-    lineHeight: 1.4,
-  },
-  divider: {
-    height: 1,
-    background: colors.border,
-    margin: `${spacing[4]}px 0`,
-  },
-};
-
 export function SettingsView({ settings: initialSettings = null, onSettingsChange }: SettingsViewProps) {
   const [settings, setSettings] = useState<AppSettings | null>(initialSettings);
   const [apiKeys, setApiKeys] = useState<ApiKeys | null>(null);
@@ -292,8 +103,6 @@ export function SettingsView({ settings: initialSettings = null, onSettingsChang
 
   const countKBFiles = async (_path: string) => {
     try {
-      // This would need a Tauri command to count files
-      // For now, we'll just set it to 0
       setKbFileCount(0);
     } catch {
       setKbFileCount(0);
@@ -379,6 +188,161 @@ export function SettingsView({ settings: initialSettings = null, onSettingsChang
   }
 
   const isLocalMode = settings.llmProvider === "ollama" && settings.embeddingProvider === "ollama";
+
+  // Local styles for SettingsView
+  const styles = {
+    container: {
+      padding: spacing[4],
+      overflowY: "auto" as const,
+      height: "100%",
+      backgroundColor: colors.background,
+    },
+    header: {
+      margin: `0 0 ${spacing[4]}px`,
+      color: colors.text,
+      fontSize: typography.lg,
+      fontWeight: 600,
+    },
+    tabs: {
+      display: "flex" as const,
+      gap: spacing[1],
+      marginBottom: spacing[4],
+      borderBottom: `1px solid ${colors.border}`,
+      paddingBottom: spacing[1],
+    },
+    tab: (isActive: boolean): React.CSSProperties => ({
+      padding: `${spacing[2]}px ${spacing[3]}px`,
+      background: "transparent",
+      border: "none",
+      borderBottom: isActive ? `2px solid ${colors.accent}` : "2px solid transparent",
+      color: isActive ? colors.accent : colors.textSecondary,
+      fontSize: typography.base,
+      fontWeight: isActive ? 600 : 400,
+      cursor: "pointer",
+      transition: "all 0.2s",
+    }),
+    section: {
+      marginBottom: spacing[5],
+    },
+    sectionTitle: {
+      color: colors.textSecondary,
+      fontSize: typography.xs,
+      textTransform: "uppercase" as const,
+      letterSpacing: "1.5px",
+      margin: `0 0 ${spacing[2]}px`,
+      fontWeight: 600,
+    },
+    sectionDescription: {
+      color: colors.textMuted,
+      fontSize: typography.sm,
+      margin: `0 0 ${spacing[3]}px`,
+      lineHeight: 1.5,
+    },
+    fieldWrap: {
+      marginBottom: spacing[3],
+    },
+    labelStyle: {
+      display: "block" as const,
+      fontSize: typography.base,
+      color: colors.textSecondary,
+      marginBottom: spacing[1],
+      fontWeight: 500,
+    },
+    inputStyle: {
+      width: "100%",
+      padding: `${spacing[2]}px`,
+      background: colors.surface,
+      color: colors.text,
+      border: `1px solid ${colors.border}`,
+      borderRadius: 4,
+      fontSize: typography.md,
+      boxSizing: "border-box" as const,
+      fontFamily: "inherit",
+    },
+    selectStyle: {
+      width: "100%",
+      padding: `${spacing[2]}px`,
+      background: colors.surface,
+      color: colors.text,
+      border: `1px solid ${colors.border}`,
+      borderRadius: 4,
+      fontSize: typography.md,
+      cursor: "pointer",
+    },
+    checkboxStyle: {
+      display: "flex",
+      alignItems: "center",
+      gap: spacing[2],
+      cursor: "pointer",
+    },
+    checkboxInput: {
+      width: 16,
+      height: 16,
+      accentColor: colors.accent,
+    },
+    checkboxLabel: {
+      fontSize: typography.base,
+      color: colors.text,
+    },
+    button: {
+      padding: `${spacing[2]}px ${spacing[3]}px`,
+      background: colors.accent,
+      color: colors.textInverse,
+      border: "none",
+      borderRadius: 4,
+      fontSize: typography.base,
+      cursor: "pointer",
+      transition: "background 0.2s",
+    },
+    buttonSecondary: {
+      padding: `${spacing[2]}px ${spacing[3]}px`,
+      background: "transparent",
+      color: colors.textSecondary,
+      border: `1px solid ${colors.border}`,
+      borderRadius: 4,
+      fontSize: typography.base,
+      cursor: "pointer",
+    },
+    statusBadge: (type: "success" | "warning" | "error"): React.CSSProperties => ({
+      display: "inline-flex",
+      alignItems: "center",
+      gap: spacing[1],
+      padding: `${spacing[1]}px ${spacing[2]}px`,
+      background: type === "success" ? `${colors.success}15` : type === "warning" ? `${colors.warning}15` : `${colors.error}15`,
+      color: type === "success" ? colors.success : type === "warning" ? colors.warning : colors.error,
+      borderRadius: 4,
+      fontSize: typography.sm,
+    }),
+    grid: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: spacing[3],
+    },
+    aiModeCard: (isSelected: boolean): React.CSSProperties => ({
+      padding: spacing[3],
+      background: isSelected ? `${colors.accent}10` : colors.surface,
+      border: `1px solid ${isSelected ? colors.accent : colors.border}`,
+      borderRadius: 8,
+      cursor: "pointer",
+      transition: "all 0.2s",
+    }),
+    aiModeTitle: {
+      fontSize: typography.md,
+      fontWeight: 600,
+      color: colors.text,
+      marginBottom: spacing[1],
+    },
+    aiModeDesc: {
+      fontSize: typography.sm,
+      color: colors.textMuted,
+      lineHeight: 1.4,
+    },
+    divider: {
+      height: 1,
+      background: colors.border,
+      margin: `${spacing[4]}px 0`,
+    },
+  };
 
   return (
     <div style={styles.container}>

@@ -7,16 +7,17 @@ import { TranscriptView } from "./components/TranscriptView";
 import { SuggestionsView } from "./components/SuggestionsView";
 import { NotesView } from "./components/NotesView";
 import { SettingsView } from "./components/SettingsView";
+import { colors, styles, typography, spacing } from "./theme";
 
 // Design system colors
-const colors = {
-  background: "#111111",
-  surface: "#1a1a1a",
-  border: "#333333",
-  text: "#eeeeee",
-  textSecondary: "#888888",
-  accent: "#2b7a78",
-};
+// const colors = {
+//   background: "#111111",
+//   surface: "#1a1a1a",
+//   border: "#333333",
+//   text: "#eeeeee",
+//   textSecondary: "#888888",
+//   accent: "#2b7a78",
+// };
 
 type ModelState = "checking" | "missing" | "downloading" | "ready";
 type Tab = "transcript" | "suggestions" | "notes" | "settings";
@@ -426,7 +427,7 @@ function LoadingSpinner() {
       style={{
         width: 32,
         height: 32,
-        border: `3px solid ${colors.surface}`,
+        border: `3px solid ${colors.surfaceElevated}`,
         borderTopColor: colors.accent,
         borderRadius: "50%",
         animation: "spin 1s linear infinite",
@@ -465,7 +466,7 @@ const iconContainerStyle: React.CSSProperties = {
 const primaryBtn: React.CSSProperties = {
   padding: "10px 24px",
   background: colors.accent,
-  color: "#fff",
+  color: colors.textInverse,
   border: "none",
   borderRadius: 6,
   cursor: "pointer",

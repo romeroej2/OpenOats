@@ -1,36 +1,8 @@
-import { useState } from "react"; // used by BulletRow
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo } from "@tauri-apps/api/event";
 import type { Suggestion } from "../types";
-
-const colors = {
-  background: "#111111",
-  surface: "#1a1a1a",
-  border: "#333333",
-  text: "#eeeeee",
-  textSecondary: "#888888",
-  textMuted: "#666666",
-  accent: "#2b7a78",
-  accentLight: "#3a9a98",
-  success: "#27ae60",
-  them: "#d2994d",
-};
-
-const typography = {
-  xs: 10,
-  sm: 11,
-  base: 12,
-  md: 13,
-  lg: 14,
-};
-
-const spacing = {
-  1: 4,
-  2: 8,
-  3: 12,
-  4: 16,
-  6: 24,
-};
+import { colors, typography, spacing } from "../theme";
 
 interface Props {
   suggestions: Suggestion[];
@@ -128,13 +100,13 @@ function EmptyState({
             minWidth: 48,
             height: 48,
             borderRadius: 12,
-            background: `${colors.accent}15`,
+            background: `${colors.accent}12`,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             fontSize: typography.base,
             fontWeight: 700,
-            color: colors.accentLight,
+            color: colors.accent,
             marginBottom: spacing[3],
             padding: "0 12px",
           }}
@@ -167,7 +139,7 @@ function EmptyState({
             style={{
               padding: `${spacing[2]}px ${spacing[3]}px`,
               background: colors.accent,
-              color: "#fff",
+              color: colors.textInverse,
               border: "none",
               borderRadius: 6,
               fontSize: typography.base,
@@ -202,7 +174,7 @@ function EmptyState({
           minWidth: 48,
           height: 48,
           borderRadius: 12,
-          background: `${colors.success}15`,
+          background: `${colors.success}12`,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -345,8 +317,8 @@ function SuggestionCard({
           gap: spacing[1],
           padding: `${spacing[1]}px ${spacing[2]}px`,
           borderRadius: 999,
-          background: isSmartQuestion ? `${colors.them}20` : `${colors.accent}15`,
-          color: isSmartQuestion ? colors.them : colors.accentLight,
+          background: isSmartQuestion ? `${colors.them}15` : `${colors.accent}12`,
+          color: isSmartQuestion ? colors.them : colors.accent,
           fontSize: typography.xs,
           fontWeight: 600,
           textTransform: "uppercase",
