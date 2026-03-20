@@ -121,6 +121,7 @@ function App() {
   const [searchResults, setSearchResults] = useState<number[]>([]);
   const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [audioLevelThem, setAudioLevelThem] = useState(0);
   const [isSettingUpStt, setIsSettingUpStt] = useState(false);
   const [sttSetupMessage, setSttSetupMessage] = useState("");
   // Load settings on mount
@@ -262,6 +263,7 @@ function App() {
 
       listen<{ you: number; them: number }>("audio-level", (e) => {
         setAudioLevel(e.payload.you);
+        setAudioLevelThem(e.payload.them);
       }),
     ];
 
@@ -489,6 +491,7 @@ function App() {
         lastSuggestionCheckAt={lastSuggestionCheckAt}
         lastSuggestionCheckSurfaced={lastSuggestionCheckSurfaced}
         audioLevel={audioLevel}
+        audioLevelThem={audioLevelThem}
       />
 
       {/* Tab Bar */}
