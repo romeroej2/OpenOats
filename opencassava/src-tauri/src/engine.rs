@@ -20,7 +20,10 @@ use opencassava_core::{
         session_store::SessionStore, template_store::TemplateStore,
         transcript_logger::TranscriptLogger,
     },
-    transcription::streaming_transcriber::StreamingTranscriber,
+    transcription::{
+        faster_whisper::{self, FasterWhisperConfig},
+        streaming_transcriber::{StreamingTranscriber, SttBackend},
+    },
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -88,6 +91,27 @@ pub struct ApiKeysPayload {
 pub struct AudioLevelPayload {
     pub you: f32,
     pub them: f32,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SttStatusPayload {
+    pub selected_provider: String,
+    pub effective_provider: String,
+    pub selected_model: String,
+    pub effective_model: String,
+    pub selected_provider_ready: bool,
+    pub ready: bool,
+    pub using_fallback: bool,
+    pub download_required: bool,
+    pub message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SttSetupStatusPayload {
+    pub stage: String,
+    pub message: String,
 }
 
 #[derive(Clone, Serialize, serde::Deserialize)]
@@ -168,8 +192,44 @@ impl AppState {
         }
     }
 
-    pub fn model_path_for(_app: &AppHandle, model: &str) -> Result<PathBuf, String> {
-        Ok(Self::persistent_data_dir().join(opencassava_core::download::model_filename(model)))
+    pub fn whisper_models_dir() -> PathBuf {
+        Self::persistent_data_dir().join("stt").join("whisper-rs")
+    }
+
+    pub fn legacy_whisper_model_path(model: &str) -> PathBuf {
+        Self::persistent_data_dir().join(opencassava_core::download::model_filename(model))
+    }
+
+    pub fn whisper_model_path_for(_app: &AppHandle, model: &str) -> Result<PathBuf, String> {
+        let provider_path = Self::whisper_models_dir().join(opencassava_core::download::model_filename(model));
+        if provider_path.exists() {
+            Ok(provider_path)
+        } else {
+            let legacy_path = Self::legacy_whisper_model_path(model);
+            if legacy_path.exists() {
+                Ok(legacy_path)
+            } else {
+                Ok(provider_path)
+            }
+        }
+    }
+
+    pub fn faster_whisper_root() -> PathBuf {
+        Self::persistent_data_dir().join("stt").join("faster-whisper")
+    }
+
+    pub fn faster_whisper_config(settings: &AppSettings) -> FasterWhisperConfig {
+        let runtime_root = Self::faster_whisper_root();
+        FasterWhisperConfig {
+            worker_script_path: runtime_root.join("worker.py"),
+            requirements_path: runtime_root.join("requirements.txt"),
+            venv_path: runtime_root.join("venv"),
+            models_dir: runtime_root.join("models"),
+            runtime_root,
+            model: settings.faster_whisper_model.clone(),
+            device: settings.faster_whisper_device.clone(),
+            compute_type: settings.faster_whisper_compute_type.clone(),
+        }
     }
 }
 
@@ -218,6 +278,106 @@ fn resolve_whisper_model(settings: &AppSettings) -> &'static str {
             "base"
         }
     }
+}
+
+fn selected_stt_provider(settings: &AppSettings) -> &str {
+    match settings.stt_provider.trim() {
+        "faster-whisper" => "faster-whisper",
+        _ => "whisper-rs",
+    }
+}
+
+fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPayload {
+    let selected_provider = selected_stt_provider(settings).to_string();
+    let whisper_model = resolve_whisper_model(settings).to_string();
+    let whisper_model_path =
+        AppState::whisper_model_path_for(app, &whisper_model).unwrap_or_else(|_| PathBuf::new());
+    let whisper_ready = download::model_exists(&whisper_model_path);
+
+    if selected_provider == "faster-whisper" {
+        let config = AppState::faster_whisper_config(settings);
+        let selected_ready =
+            faster_whisper::health_check(&config).is_ok() && faster_whisper::model_storage_exists(&config);
+
+        if selected_ready {
+            return SttStatusPayload {
+                selected_provider,
+                effective_provider: "faster-whisper".into(),
+                selected_model: config.model.clone(),
+                effective_model: config.model.clone(),
+                selected_provider_ready: true,
+                ready: true,
+                using_fallback: false,
+                download_required: false,
+                message: format!("faster-whisper is ready with {}.", config.model),
+            };
+        }
+
+        if whisper_ready {
+            return SttStatusPayload {
+                selected_provider,
+                effective_provider: "whisper-rs".into(),
+                selected_model: config.model.clone(),
+                effective_model: whisper_model,
+                selected_provider_ready: false,
+                ready: true,
+                using_fallback: true,
+                download_required: true,
+                message: "faster-whisper is unavailable. Falling back to whisper-rs.".into(),
+            };
+        }
+
+        return SttStatusPayload {
+            selected_provider,
+            effective_provider: "faster-whisper".into(),
+            selected_model: config.model.clone(),
+            effective_model: config.model.clone(),
+            selected_provider_ready: false,
+            ready: false,
+            using_fallback: false,
+            download_required: true,
+            message: "faster-whisper needs setup before transcription can start.".into(),
+        };
+    }
+
+    SttStatusPayload {
+        selected_provider,
+        effective_provider: "whisper-rs".into(),
+        selected_model: whisper_model.clone(),
+        effective_model: whisper_model.clone(),
+        selected_provider_ready: whisper_ready,
+        ready: whisper_ready,
+        using_fallback: false,
+        download_required: !whisper_ready,
+        message: if whisper_ready {
+            format!("whisper-rs is ready with {}.", whisper_model)
+        } else {
+            "whisper-rs model is missing and needs download.".into()
+        },
+    }
+}
+
+fn resolve_stt_backend(
+    app: &AppHandle,
+    settings: &AppSettings,
+) -> Result<(SttBackend, String, SttStatusPayload), String> {
+    let status = resolve_stt_status(app, settings);
+
+    if !status.ready {
+        return Err(status.message.clone());
+    }
+
+    let language = resolve_transcription_language(settings, &status.effective_model);
+    let backend = if status.effective_provider == "faster-whisper" {
+        SttBackend::FasterWhisper(AppState::faster_whisper_config(settings))
+    } else {
+        let model_path = AppState::whisper_model_path_for(app, &status.effective_model)?
+            .to_string_lossy()
+            .into_owned();
+        SttBackend::WhisperRs { model_path }
+    };
+
+    Ok((backend, language, status))
 }
 
 fn resolve_transcription_language(settings: &AppSettings, model: &str) -> String {
@@ -314,13 +474,22 @@ fn push_recent_utterance(
 
 #[tauri::command]
 pub fn check_model(app: AppHandle, model: String) -> Result<bool, String> {
-    let path = AppState::model_path_for(&app, &model)?;
+    let path = AppState::whisper_model_path_for(&app, &model)?;
     Ok(download::model_exists(&path))
 }
 
 #[tauri::command]
 pub fn get_model_path(app: AppHandle, model: String) -> Result<String, String> {
-    AppState::model_path_for(&app, &model).map(|p| p.to_string_lossy().into_owned())
+    AppState::whisper_model_path_for(&app, &model).map(|p| p.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn get_stt_status(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<SttStatusPayload, String> {
+    let settings = state.settings.lock().unwrap().clone();
+    Ok(resolve_stt_status(&app, &settings))
 }
 
 #[tauri::command]
@@ -394,11 +563,7 @@ pub fn start_transcription(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
-    let whisper_model = resolve_whisper_model(&settings);
-    let model_path = AppState::model_path_for(&app, whisper_model)?;
-    if !download::model_exists(&model_path) {
-        return Err("Whisper model not found. Download it first.".into());
-    }
+    let (backend, language, stt_status) = resolve_stt_backend(&app, &settings)?;
 
     let mut running = state.is_running.lock().unwrap();
     if *running {
@@ -434,13 +599,11 @@ pub fn start_transcription(
         let _ = overlay.hide();
     }
 
-    let model_str = model_path.to_string_lossy().into_owned();
     let app_clone = app.clone();
     let state_clone = Arc::clone(&state);
 
     let device_name = settings.input_device_name.clone();
     let sys_device_name = settings.system_audio_device_name.clone();
-    let language = resolve_transcription_language(&settings, whisper_model);
     let suggestion_interval_secs = settings.suggestion_interval_seconds.max(30);
     let suggestion_context_window_secs =
         (suggestion_interval_secs.saturating_mul(2).min(180)) as i64;
@@ -473,7 +636,7 @@ pub fn start_transcription(
         // ── "Them" system audio (WASAPI loopback) ──────────────────────────
         let them_app = app_clone.clone();
         let them_state = Arc::clone(&state_clone);
-        let them_model = model_str.clone();
+        let them_backend = backend.clone();
         let them_lang = language.clone();
         let recent_utterances_spawn = Arc::clone(&recent_utterances);
 
@@ -570,7 +733,8 @@ pub fn start_transcription(
                     )
                     .ok();
             };
-            let transcriber = StreamingTranscriber::new(them_model, them_lang, Box::new(on_them))
+            let transcriber =
+                StreamingTranscriber::new(them_backend, them_lang, Box::new(on_them))
                 .with_volatile(Box::new(on_them_vol))
                 .with_stop_signal(Arc::clone(&them_state.stop_requested));
             transcriber.run(them_stream_leveled).await;
@@ -813,6 +977,7 @@ pub fn start_transcription(
         };
 
         app_clone.emit("whisper-ready", ()).ok();
+        app_clone.emit("stt-status", &stt_status).ok();
         let app_vol_y = app_clone.clone();
         let state_vol_y = Arc::clone(&state_clone);
         let on_you_vol = move |_text: String| {
@@ -831,7 +996,7 @@ pub fn start_transcription(
                 )
                 .ok();
         };
-        let transcriber = StreamingTranscriber::new(model_str, language, Box::new(on_you))
+        let transcriber = StreamingTranscriber::new(backend, language, Box::new(on_you))
             .with_volatile(Box::new(on_you_vol))
             .with_stop_signal(Arc::clone(&state_clone.stop_requested));
         transcriber.run(mic_stream_leveled).await;
@@ -883,7 +1048,7 @@ pub async fn stop_transcription(
 
 #[tauri::command]
 pub async fn download_model(app: AppHandle, model: String) -> Result<(), String> {
-    let model_path = AppState::model_path_for(&app, &model)?;
+    let model_path = AppState::whisper_model_path_for(&app, &model)?;
     let app_clone = app.clone();
     let model_clone = model.clone();
     download::download_model(&model_clone, model_path, move |pct| {
@@ -892,6 +1057,71 @@ pub async fn download_model(app: AppHandle, model: String) -> Result<(), String>
     .await?;
     app.emit("model-download-done", ()).ok();
     Ok(())
+}
+
+#[tauri::command]
+pub async fn download_stt_model(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let settings = state.settings.lock().unwrap().clone();
+    let selected_provider = selected_stt_provider(&settings).to_string();
+
+    if selected_provider == "faster-whisper" {
+        let config = AppState::faster_whisper_config(&settings);
+        app.emit(
+            "stt-setup-status",
+            &SttSetupStatusPayload {
+                stage: "prepare".into(),
+                message: "Preparing faster-whisper runtime directories...".into(),
+            },
+        )
+        .ok();
+        app.emit("model-download-progress", 5).ok();
+        app.emit(
+            "stt-setup-status",
+            &SttSetupStatusPayload {
+                stage: "venv".into(),
+                message: "Creating and updating the Python environment...".into(),
+            },
+        )
+        .ok();
+        faster_whisper::install_runtime(&config)?;
+        app.emit("model-download-progress", 35).ok();
+        app.emit(
+            "stt-setup-status",
+            &SttSetupStatusPayload {
+                stage: "health".into(),
+                message: "Validating the faster-whisper worker...".into(),
+            },
+        )
+        .ok();
+        faster_whisper::health_check(&config)?;
+        app.emit("model-download-progress", 60).ok();
+        app.emit(
+            "stt-setup-status",
+            &SttSetupStatusPayload {
+                stage: "model".into(),
+                message: format!("Downloading or loading faster-whisper model {}...", config.model),
+            },
+        )
+        .ok();
+        faster_whisper::ensure_model(&config)?;
+        app.emit("model-download-progress", 100).ok();
+        app.emit(
+            "stt-setup-status",
+            &SttSetupStatusPayload {
+                stage: "done".into(),
+                message: "faster-whisper is ready.".into(),
+            },
+        )
+        .ok();
+        app.emit("model-download-done", ()).ok();
+        return Ok(());
+    }
+
+    let model = resolve_whisper_model(&settings).to_string();
+    download_model(app, model).await
 }
 
 #[tauri::command]

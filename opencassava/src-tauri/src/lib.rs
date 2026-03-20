@@ -16,6 +16,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             engine::check_model,
             engine::get_model_path,
+            engine::get_stt_status,
             engine::get_settings,
             engine::get_api_keys,
             engine::save_settings,
@@ -25,6 +26,7 @@ pub fn run() {
             engine::start_transcription,
             engine::stop_transcription,
             engine::download_model,
+            engine::download_stt_model,
             engine::generate_notes,
             engine::index_kb,
             engine::update_kb_folder,

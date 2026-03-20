@@ -1,7 +1,7 @@
 use crate::transcription::vad::Vad;
 use futures::Stream;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::AtomicBool,
     Arc,
 };
 use std::sync::mpsc;
@@ -9,20 +9,26 @@ use std::sync::mpsc;
 pub type OnFinal = Box<dyn Fn(String) + Send + 'static>;
 pub type OnVolatile = Box<dyn Fn(String) + Send + 'static>;
 
+#[derive(Clone)]
+pub enum SttBackend {
+    WhisperRs { model_path: String },
+    FasterWhisper(crate::transcription::faster_whisper::FasterWhisperConfig),
+    Passthrough,
+}
+
 pub struct StreamingTranscriber {
     on_final: OnFinal,
-    /// Optional: path to whisper model. If None, transcriber runs in passthrough mode (VAD only).
-    model_path: Option<String>,
+    backend: SttBackend,
     language: String,
     on_volatile: Option<OnVolatile>,
     stop_signal: Option<Arc<AtomicBool>>,
 }
 
 impl StreamingTranscriber {
-    pub fn new(model_path: String, language: String, on_final: OnFinal) -> Self {
+    pub fn new(backend: SttBackend, language: String, on_final: OnFinal) -> Self {
         Self {
             on_final,
-            model_path: Some(model_path),
+            backend,
             language,
             on_volatile: None,
             stop_signal: None,
@@ -33,7 +39,7 @@ impl StreamingTranscriber {
     pub fn new_passthrough(on_final: OnFinal) -> Self {
         Self {
             on_final,
-            model_path: None,
+            backend: SttBackend::Passthrough,
             language: "en".into(),
             on_volatile: None,
             stop_signal: None,
@@ -61,8 +67,7 @@ impl StreamingTranscriber {
         let on_final = self.on_final;
         let on_volatile = self.on_volatile;
         let language = self.language.clone();
-        let model_path = self.model_path.clone();
-        let stop_signal = self.stop_signal.clone();
+        let backend = self.backend.clone();
 
         // Run Whisper on a blocking thread-pool thread so that joining it is
         // async-friendly. Using std::thread::join() inside an async fn would
@@ -70,31 +75,53 @@ impl StreamingTranscriber {
         // return before the drain completes and letting is_running flip to
         // false while segments are still being transcribed.
         let whisper_task = tokio::task::spawn_blocking(move || {
-            if let Some(path) = model_path {
-                match crate::transcription::whisper::WhisperManager::new(&path, &language) {
-                    Ok(manager) => {
-                        let mut state = match manager.create_state() {
-                            Ok(s) => s,
-                            Err(e) => {
-                                log::error!("whisper state: {e}");
-                                return;
-                            }
-                        };
-                        for samples in seg_rx.iter() {
-                            let text = crate::transcription::whisper::WhisperManager::transcribe(
-                                &mut state, &samples, &language,
-                            );
-                            if !text.is_empty() {
-                                log::info!("[transcriber] {}", &text[..text.len().min(80)]);
-                                on_final(text);
+            match backend {
+                SttBackend::WhisperRs { model_path } => {
+                    match crate::transcription::whisper::WhisperManager::new(&model_path, &language)
+                    {
+                        Ok(manager) => {
+                            let mut state = match manager.create_state() {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    log::error!("whisper state: {e}");
+                                    return;
+                                }
+                            };
+                            for samples in seg_rx.iter() {
+                                let text =
+                                    crate::transcription::whisper::WhisperManager::transcribe(
+                                        &mut state, &samples, &language,
+                                    );
+                                if !text.is_empty() {
+                                    log::info!("[transcriber] {}", &text[..text.len().min(80)]);
+                                    on_final(text);
+                                }
                             }
                         }
+                        Err(e) => log::error!("Failed to load whisper model: {e}"),
                     }
-                    Err(e) => log::error!("Failed to load whisper model: {e}"),
+                }
+                SttBackend::FasterWhisper(config) => {
+                    match crate::transcription::faster_whisper::FasterWhisperWorker::spawn(&config) {
+                        Ok(mut worker) => {
+                            for samples in seg_rx.iter() {
+                                match worker.transcribe(&samples, &language) {
+                                    Ok(text) if !text.is_empty() => {
+                                        log::info!("[transcriber] {}", &text[..text.len().min(80)]);
+                                        on_final(text);
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => log::error!("faster-whisper transcribe error: {e}"),
+                                }
+                            }
+                        }
+                        Err(e) => log::error!("Failed to launch faster-whisper worker: {e}"),
+                    }
+                }
+                SttBackend::Passthrough => {
+                    for _ in seg_rx.iter() {}
                 }
             }
-            // passthrough mode: drain and discard
-            for _ in seg_rx.iter() {}
         });
 
         let mut vad = Vad::new();

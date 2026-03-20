@@ -27,6 +27,10 @@ export interface AppSettings {
   transcriptionLocale: string;
   transcriptionModel: string;
   whisperModel: string;
+  sttProvider: string;
+  fasterWhisperModel: string;
+  fasterWhisperComputeType: string;
+  fasterWhisperDevice: string;
   inputDeviceName: string | null;
   systemAudioDeviceName: string | null;
   llmProvider: string;
@@ -50,6 +54,18 @@ export interface ApiKeys {
   voyageApiKey: string;
   openAiLlmApiKey: string;
   openAiEmbedApiKey: string;
+}
+
+export interface SttStatus {
+  selectedProvider: string;
+  effectiveProvider: string;
+  selectedModel: string;
+  effectiveModel: string;
+  selectedProviderReady: boolean;
+  ready: boolean;
+  usingFallback: boolean;
+  downloadRequired: boolean;
+  message: string;
 }
 
 export interface SessionRecord {

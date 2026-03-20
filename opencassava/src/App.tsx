@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Utterance, Suggestion, AppSettings, EnhancedNotes, SessionDetails } from "./types";
+import type { Utterance, Suggestion, AppSettings, EnhancedNotes, SessionDetails, SttStatus } from "./types";
 import { ControlBar } from "./components/ControlBar";
 import { TranscriptView } from "./components/TranscriptView";
 import { SuggestionsView } from "./components/SuggestionsView";
@@ -18,6 +18,10 @@ type Tab = "transcript" | "suggestions" | "notes" | "settings";
 type SuggestionCheckEvent = {
   checkedAt: string;
   surfaced: boolean;
+};
+type SttSetupStatusEvent = {
+  stage: string;
+  message: string;
 };
 
 type WhisperModelId =
@@ -62,19 +66,8 @@ function resolveWhisperModel(settings: AppSettings | null): Exclude<WhisperModel
   }
 }
 
-function whisperModelLabel(model: Exclude<WhisperModelId, "auto">): string {
-  const labels: Record<Exclude<WhisperModelId, "auto">, string> = {
-    tiny: "Whisper tiny (multilingual)",
-    "tiny-en": "Whisper tiny-en (English)",
-    base: "Whisper base (multilingual)",
-    "base-en": "Whisper base-en (English)",
-    small: "Whisper small (multilingual)",
-    "small-en": "Whisper small-en (English)",
-    medium: "Whisper medium (multilingual)",
-    "medium-en": "Whisper medium-en (English)",
-    "large-v3-turbo": "Whisper large-v3-turbo (multilingual)",
-  };
-  return labels[model];
+function sttProviderLabel(provider: string): string {
+  return provider === "faster-whisper" ? "faster-whisper" : "whisper-rs";
 }
 
 function compactModelName(modelName: string): string {
@@ -113,6 +106,7 @@ function App() {
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>();
   const [currentSessionNotes, setCurrentSessionNotes] = useState<EnhancedNotes | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
   const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false);
   const [lastSuggestionCheckAt, setLastSuggestionCheckAt] = useState<string | null>(null);
   const [lastSuggestionCheckSurfaced, setLastSuggestionCheckSurfaced] = useState<boolean | null>(null);
@@ -127,6 +121,8 @@ function App() {
   const [searchResults, setSearchResults] = useState<number[]>([]);
   const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [isSettingUpStt, setIsSettingUpStt] = useState(false);
+  const [sttSetupMessage, setSttSetupMessage] = useState("");
   // Load settings on mount
   useEffect(() => {
     invoke<AppSettings>("get_settings")
@@ -136,6 +132,18 @@ function App() {
 
   const handleSettingsChange = useCallback((updated: AppSettings) => {
     setSettings(updated);
+  }, []);
+
+  const refreshSttStatus = useCallback(async () => {
+    try {
+      const status = await invoke<SttStatus>("get_stt_status");
+      setSttStatus(status);
+      setModelError(null);
+      setModelState(status.ready ? "ready" : "missing");
+    } catch (err) {
+      setModelError(String(err));
+      setModelState("missing");
+    }
   }, []);
 
   // Keyboard shortcuts
@@ -157,20 +165,13 @@ function App() {
     onToggleSidebar: () => setSidebarOpen((prev) => !prev),
   });
 
-  // Check model whenever settings change
+  // Check STT readiness whenever settings change
   useEffect(() => {
     if (!settings) {
       return;
     }
-
-    const transcriptionModel = resolveWhisperModel(settings);
-    invoke<boolean>("check_model", { model: transcriptionModel })
-      .then((ok) => setModelState(ok ? "ready" : "missing"))
-      .catch((err) => {
-        setModelError(String(err));
-        setModelState("missing");
-      });
-  }, [settings]);
+    refreshSttStatus();
+  }, [refreshSttStatus, settings]);
 
   // Register event listeners once on mount — listeners don't depend on settings
   // and must not re-register on settings changes (would cause duplicate events).
@@ -214,6 +215,17 @@ function App() {
         setModelState("ready");
         setDownloadProgress(0);
         setModelError(null);
+        setIsSettingUpStt(false);
+        setSttSetupMessage("");
+        refreshSttStatus().catch(console.error);
+      }),
+
+      listen<SttStatus>("stt-status", (e) => {
+        setSttStatus(e.payload);
+      }),
+
+      listen<SttSetupStatusEvent>("stt-setup-status", (e) => {
+        setSttSetupMessage(e.payload.message);
       }),
 
       listen<{ id: string; kind?: "knowledge_base" | "smart_question"; text: string; kbHits?: any[] }>("suggestion", (e) => {
@@ -256,16 +268,20 @@ function App() {
     return () => {
       unlisteners.forEach((p) => p.then((f) => f()));
     };
-  }, []);
+  }, [refreshSttStatus]);
 
   const handleDownload = async () => {
     setModelError(null);
     setModelState("downloading");
+    setIsSettingUpStt(true);
+    setSttSetupMessage("Starting speech-to-text setup...");
     try {
-      await invoke("download_model", { model: resolveWhisperModel(settings) });
+      await invoke("download_stt_model");
+      await refreshSttStatus();
     } catch (e) {
       setModelError(String(e));
       setModelState("missing");
+      setIsSettingUpStt(false);
     }
   };
 
@@ -329,12 +345,14 @@ function App() {
   };
 
   const activeWhisperModel = resolveWhisperModel(settings);
+  const activeSttProvider = sttStatus?.effectiveProvider || settings?.sttProvider || "whisper-rs";
+  const activeSttModel = sttStatus?.effectiveModel || activeWhisperModel;
 
   if (modelState === "checking") {
     return (
       <div style={centerStyle}>
         <LoadingSpinner />
-        <p style={{ color: colors.textSecondary, marginTop: 16 }}>Checking model...</p>
+        <p style={{ color: colors.textSecondary, marginTop: 16 }}>Checking speech-to-text...</p>
       </div>
     );
   }
@@ -345,10 +363,10 @@ function App() {
         <div style={{ textAlign: "center", maxWidth: 320 }}>
           <div style={iconContainerStyle}>🧠</div>
           <h3 style={{ color: colors.text, margin: "0 0 8px", fontSize: 16 }}>
-            Transcription Model Required
+            Transcription Setup Required
           </h3>
           <p style={{ color: colors.textSecondary, fontSize: 13, margin: "0 0 20px", lineHeight: 1.5 }}>
-            OpenCassava needs {whisperModelLabel(activeWhisperModel)} to transcribe conversations locally.
+            {sttStatus?.message || `OpenCassava needs ${sttProviderLabel(settings?.sttProvider || "whisper-rs")} to be ready before transcription can start.`}
           </p>
           {modelError && (
             <p style={{ color: colors.error, fontSize: 12, margin: "0 0 16px", lineHeight: 1.5 }}>
@@ -356,7 +374,9 @@ function App() {
             </p>
           )}
           <button onClick={handleDownload} style={primaryBtn}>
-            Download {activeWhisperModel} (~150 MB)
+            {settings?.sttProvider === "faster-whisper"
+              ? "Set up faster-whisper"
+              : `Download ${activeWhisperModel} (~150 MB)`}
           </button>
         </div>
       </div>
@@ -367,15 +387,22 @@ function App() {
     return (
       <div style={centerStyle}>
         <div style={{ textAlign: "center", maxWidth: 280 }}>
-          <h3 style={{ color: colors.text, margin: "0 0 16px", fontSize: 16 }}>🧠 Setting up Whisper</h3>
+          <h3 style={{ color: colors.text, margin: "0 0 16px", fontSize: 16 }}>🧠 Setting up Speech-to-Text</h3>
           <div style={{ marginBottom: 12 }}>
             <div style={{ width: 260, height: 6, background: colors.surfaceElevated, borderRadius: 3, overflow: "hidden" }}>
               <div style={{ width: `${downloadProgress}%`, height: "100%", background: colors.accent, borderRadius: 3, transition: "width 0.3s" }} />
             </div>
           </div>
           <p style={{ color: colors.textSecondary, fontSize: 12, margin: 0 }}>
-            Downloading {activeWhisperModel}... {downloadProgress}%
+            {settings?.sttProvider === "faster-whisper"
+              ? `Preparing faster-whisper... ${downloadProgress}%`
+              : `Downloading ${activeWhisperModel}... ${downloadProgress}%`}
           </p>
+          {sttSetupMessage && (
+            <p style={{ color: colors.textMuted, fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
+              {sttSetupMessage}
+            </p>
+          )}
         </div>
       </div>
     );
@@ -528,7 +555,13 @@ function App() {
           />
         )}
         {tab === "settings" && (
-          <SettingsView settings={settings} onSettingsChange={handleSettingsChange} />
+          <SettingsView
+            settings={settings}
+            onSettingsChange={handleSettingsChange}
+            sttStatus={sttStatus}
+            onSetupStt={handleDownload}
+            isSettingUpStt={isSettingUpStt}
+          />
         )}
         {tab === "notes" && (
           <NotesView
@@ -589,9 +622,10 @@ function App() {
               fontWeight: 500,
               fontFamily: "SF Mono, Monaco, monospace",
             }}
-            title="Active Whisper transcription model"
+            title="Active speech-to-text backend"
           >
-            {activeWhisperModel} | {transcriptionLocaleLabel(settings?.transcriptionLocale)}
+            {sttProviderLabel(activeSttProvider)} | {activeSttModel} | {transcriptionLocaleLabel(settings?.transcriptionLocale)}
+            {sttStatus?.usingFallback ? " | fallback" : ""}
           </span>
         </div>
 

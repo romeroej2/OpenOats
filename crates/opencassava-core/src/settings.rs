@@ -19,6 +19,27 @@ pub struct AppSettings {
     #[serde(default = "default_whisper_model", alias = "whisper_model")]
     pub whisper_model: String,
 
+    #[serde(default = "default_stt_provider", alias = "stt_provider")]
+    pub stt_provider: String,
+
+    #[serde(
+        default = "default_faster_whisper_model",
+        alias = "faster_whisper_model"
+    )]
+    pub faster_whisper_model: String,
+
+    #[serde(
+        default = "default_faster_whisper_compute_type",
+        alias = "faster_whisper_compute_type"
+    )]
+    pub faster_whisper_compute_type: String,
+
+    #[serde(
+        default = "default_faster_whisper_device",
+        alias = "faster_whisper_device"
+    )]
+    pub faster_whisper_device: String,
+
     #[serde(default, alias = "system_audio_device_name")]
     pub system_audio_device_name: Option<String>,
 
@@ -114,6 +135,10 @@ impl Default for AppSettings {
             transcription_model: default_transcription_model(),
             input_device_name: None,
             whisper_model: default_whisper_model(),
+            stt_provider: default_stt_provider(),
+            faster_whisper_model: default_faster_whisper_model(),
+            faster_whisper_compute_type: default_faster_whisper_compute_type(),
+            faster_whisper_device: default_faster_whisper_device(),
             system_audio_device_name: None,
             llm_provider: default_llm_provider(),
             embedding_provider: default_embedding_provider(),
@@ -134,6 +159,18 @@ impl Default for AppSettings {
 }
 
 fn default_whisper_model() -> String {
+    "auto".into()
+}
+fn default_stt_provider() -> String {
+    "whisper-rs".into()
+}
+fn default_faster_whisper_model() -> String {
+    "base".into()
+}
+fn default_faster_whisper_compute_type() -> String {
+    "default".into()
+}
+fn default_faster_whisper_device() -> String {
     "auto".into()
 }
 fn default_model() -> String {
@@ -242,6 +279,34 @@ mod tests {
         s.save_to(path.clone());
         let s2 = AppSettings::load_from(path);
         assert_eq!(s2.whisper_model, "base");
+    }
+
+    #[test]
+    fn stt_provider_defaults_to_whisper_rs() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+        let s = AppSettings::load_from(path);
+        assert_eq!(s.stt_provider, "whisper-rs");
+        assert_eq!(s.faster_whisper_model, "base");
+        assert_eq!(s.faster_whisper_compute_type, "default");
+        assert_eq!(s.faster_whisper_device, "auto");
+    }
+
+    #[test]
+    fn stt_provider_persists_and_reloads() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = AppSettings::load_from(path.clone());
+        s.stt_provider = "faster-whisper".into();
+        s.faster_whisper_model = "small".into();
+        s.faster_whisper_compute_type = "int8".into();
+        s.faster_whisper_device = "cpu".into();
+        s.save_to(path.clone());
+        let s2 = AppSettings::load_from(path);
+        assert_eq!(s2.stt_provider, "faster-whisper");
+        assert_eq!(s2.faster_whisper_model, "small");
+        assert_eq!(s2.faster_whisper_compute_type, "int8");
+        assert_eq!(s2.faster_whisper_device, "cpu");
     }
 
     #[test]

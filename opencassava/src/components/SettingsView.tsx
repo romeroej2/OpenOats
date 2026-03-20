@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ApiKeys, AppSettings } from "../types";
+import type { ApiKeys, AppSettings, SttStatus } from "../types";
 import { colors, typography, spacing } from "../theme";
 
 type Tab = "general" | "ai" | "advanced";
@@ -25,6 +25,32 @@ const whisperModelOptions = [
   { value: "small", label: "Small", description: "Recommended multilingual balance with automatic language detection" },
   { value: "medium", label: "Medium", description: "Higher accuracy, more CPU/RAM" },
   { value: "large-v3-turbo", label: "Large v3 Turbo", description: "Best local multilingual accuracy, heaviest option" },
+];
+
+const sttProviderOptions = [
+  { value: "whisper-rs", label: "whisper-rs", description: "Current in-process local transcription with ggml Whisper models." },
+  { value: "faster-whisper", label: "faster-whisper", description: "Bundled worker-based backend with app-managed Python runtime." },
+];
+
+const fasterWhisperModelOptions = [
+  { value: "tiny", label: "Tiny" },
+  { value: "base", label: "Base" },
+  { value: "small", label: "Small" },
+  { value: "medium", label: "Medium" },
+  { value: "large-v3", label: "Large v3" },
+];
+
+const fasterWhisperComputeTypeOptions = [
+  { value: "default", label: "Default" },
+  { value: "int8", label: "INT8" },
+  { value: "float16", label: "Float16" },
+  { value: "float32", label: "Float32" },
+];
+
+const fasterWhisperDeviceOptions = [
+  { value: "auto", label: "Auto" },
+  { value: "cpu", label: "CPU" },
+  { value: "cuda", label: "CUDA" },
 ];
 
 function resolveWhisperModel(
@@ -61,9 +87,18 @@ function resolveWhisperModel(
 interface SettingsViewProps {
   settings?: AppSettings | null;
   onSettingsChange?: (settings: AppSettings) => void;
+  sttStatus?: SttStatus | null;
+  onSetupStt?: () => void;
+  isSettingUpStt?: boolean;
 }
 
-export function SettingsView({ settings: initialSettings = null, onSettingsChange }: SettingsViewProps) {
+export function SettingsView({
+  settings: initialSettings = null,
+  onSettingsChange,
+  sttStatus = null,
+  onSetupStt,
+  isSettingUpStt = false,
+}: SettingsViewProps) {
   const [settings, setSettings] = useState<AppSettings | null>(initialSettings);
   const [apiKeys, setApiKeys] = useState<ApiKeys | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("general");
@@ -742,6 +777,25 @@ export function SettingsView({ settings: initialSettings = null, onSettingsChang
           <div style={styles.section}>
             <h4 style={styles.sectionTitle}>Transcription</h4>
             <div style={styles.fieldWrap}>
+              <label style={styles.labelStyle}>STT Provider</label>
+              <select
+                value={settings.sttProvider}
+                onChange={(e) =>
+                  saveSettings({ ...settings, sttProvider: e.target.value })
+                }
+                style={styles.selectStyle}
+              >
+                {sttProviderOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                {sttProviderOptions.find((option) => option.value === settings.sttProvider)?.description}
+              </span>
+            </div>
+            <div style={styles.fieldWrap}>
               <label style={styles.labelStyle}>Language / Locale</label>
               <select
                 value={settings.transcriptionLocale}
@@ -757,28 +811,104 @@ export function SettingsView({ settings: initialSettings = null, onSettingsChang
                 ))}
               </select>
               <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
-                OpenCassava will download and use {resolveWhisperModel(settings.transcriptionLocale, settings.whisperModel)}. Choose Auto Detect for mixed English/Spanish conversations.
+                {settings.sttProvider === "faster-whisper"
+                  ? `OpenCassava will use faster-whisper ${settings.fasterWhisperModel}. Choose Auto Detect for mixed English/Spanish conversations.`
+                  : `OpenCassava will download and use ${resolveWhisperModel(settings.transcriptionLocale, settings.whisperModel)}. Choose Auto Detect for mixed English/Spanish conversations.`}
               </span>
             </div>
-            <div style={styles.fieldWrap}>
-              <label style={styles.labelStyle}>Whisper Model</label>
-              <select
-                value={settings.whisperModel}
-                onChange={(e) =>
-                  saveSettings({ ...settings, whisperModel: e.target.value })
-                }
-                style={styles.selectStyle}
-              >
-                {whisperModelOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
-                {whisperModelOptions.find((option) => option.value === settings.whisperModel)?.description}. Effective model: `{resolveWhisperModel(settings.transcriptionLocale, settings.whisperModel)}`.
-              </span>
-            </div>
+            {settings.sttProvider === "whisper-rs" ? (
+              <div style={styles.fieldWrap}>
+                <label style={styles.labelStyle}>Whisper Model</label>
+                <select
+                  value={settings.whisperModel}
+                  onChange={(e) =>
+                    saveSettings({ ...settings, whisperModel: e.target.value })
+                  }
+                  style={styles.selectStyle}
+                >
+                  {whisperModelOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                  {whisperModelOptions.find((option) => option.value === settings.whisperModel)?.description}. Effective model: `{resolveWhisperModel(settings.transcriptionLocale, settings.whisperModel)}`.
+                </span>
+              </div>
+            ) : (
+              <>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>faster-whisper Model</label>
+                  <select
+                    value={settings.fasterWhisperModel}
+                    onChange={(e) =>
+                      saveSettings({ ...settings, fasterWhisperModel: e.target.value })
+                    }
+                    style={styles.selectStyle}
+                  >
+                    {fasterWhisperModelOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div style={styles.grid}>
+                  <div style={styles.fieldWrap}>
+                    <label style={styles.labelStyle}>Device</label>
+                    <select
+                      value={settings.fasterWhisperDevice}
+                      onChange={(e) =>
+                        saveSettings({ ...settings, fasterWhisperDevice: e.target.value })
+                      }
+                      style={styles.selectStyle}
+                    >
+                      {fasterWhisperDeviceOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={styles.fieldWrap}>
+                    <label style={styles.labelStyle}>Compute Type</label>
+                    <select
+                      value={settings.fasterWhisperComputeType}
+                      onChange={(e) =>
+                        saveSettings({ ...settings, fasterWhisperComputeType: e.target.value })
+                      }
+                      style={styles.selectStyle}
+                    >
+                      {fasterWhisperComputeTypeOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
+            {sttStatus && (
+              <div style={{ marginTop: spacing[2], display: "flex", flexDirection: "column", gap: spacing[2] }}>
+                <span style={styles.statusBadge(sttStatus.ready ? (sttStatus.usingFallback ? "warning" : "success") : "error")}>
+                  <span>{sttStatus.message}</span>
+                </span>
+                <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
+                  Active backend: `{sttStatus.effectiveProvider}` using `{sttStatus.effectiveModel}`.
+                </span>
+                {settings.sttProvider === "faster-whisper" && (
+                  <button
+                    style={styles.button}
+                    onClick={() => onSetupStt?.()}
+                    disabled={isSettingUpStt}
+                  >
+                    {isSettingUpStt ? "Setting up faster-whisper..." : sttStatus.selectedProviderReady ? "Reinstall faster-whisper" : "Set up faster-whisper"}
+                  </button>
+                )}
+              </div>
+            )}
             <div style={styles.fieldWrap}>
               <label style={styles.labelStyle}>Suggestion Cadence</label>
               <input
