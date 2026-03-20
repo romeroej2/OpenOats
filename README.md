@@ -1,5 +1,9 @@
 # OpenCassava
 
+<p align="center">
+  <img src="assets/opencassava_logo.png" width="128" alt="OpenCassava Logo" />
+</p>
+
 **A meeting note-taker that talks back — now on Windows and Mac.**
 
 <p align="center">
@@ -16,7 +20,7 @@ OpenCassava sits next to your call, transcribes both sides of the conversation i
 For first-time setup with LM Studio, start here: [LM Studio Setup Guide](docs/lm-studio-setup.md)
 
 <p align="center">
-  <img src="assets/screenshot.png" width="360" alt="OpenOats during a call — suggestions drawn from your own notes appear at the top, live transcript below" />
+  <img src="assets/image.png" width="360" alt="OpenCassava during a call — suggestions drawn from your own notes appear at the top, live transcript below" />
 </p>
 
 ---
