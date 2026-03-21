@@ -52,7 +52,7 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
   const [lastRegenAt, setLastRegenAt] = useState<Date | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [historyViewIndex, setHistoryViewIndex] = useState<number | null>(null);
-  const [secondsSinceRegen, setSecondsSinceRegen] = useState<number | null>(null);
+  const [_secondsSinceRegen, setSecondsSinceRegen] = useState<number | null>(null);
 
   // Refs to avoid stale closures in interval
   const isGeneratingRef = useRef(isGenerating);
