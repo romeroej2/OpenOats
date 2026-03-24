@@ -17,8 +17,8 @@ Diarization is a no-op for Whisper and FasterWhisper backends and degrades grace
 ## Architecture
 
 ```
-System audio → VAD → segment
-                        ├─ worker.transcribe(samples) → text
+System audio → VAD → segment (≥1 s)
+                        ├─ worker.transcribe(samples) → text (non-empty guard)
                         └─ worker.speaker_id(samples)  → "speaker_0" | "speaker_1" | …
                                                               ↓
                                               participant_label: "Speaker 1" | "Speaker 2" | …
@@ -26,51 +26,97 @@ System audio → VAD → segment
                                               TranscriptPayload + SessionRecord
 ```
 
+Mic and system audio use **separate** Parakeet worker processes (`warmed_parakeet_mic` and `warmed_parakeet_sys`). Each has its own module-level state. There is no shared state and no concurrency concern between the two streams.
+
 ---
 
 ## Components
 
 ### 1. Python Worker (`parakeet_worker.py`)
 
-**New command: `speaker_id`**
-
-- Loads `nvidia/titanet-large` via `nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained()` on first call (downloaded during `ensure_model`, ~80 MB)
-- Writes samples to a temp WAV at 16 kHz, extracts a 192-d embedding
-- Compares embedding to all entries in `SPEAKER_ANCHORS` dict using cosine similarity
-- If best match ≥ threshold (0.7): returns that speaker's stable ID and performs an online anchor update: `anchor = 0.9 * anchor + 0.1 * new_embedding`
-- If no match: registers a new anchor entry and returns a new ID (`"speaker_0"`, `"speaker_1"`, …)
-- Returns JSON: `{"ok": true, "result": {"speaker_id": "speaker_0"}}`
-
-**New command: `clear_speakers`**
-
-- Resets `SPEAKER_ANCHORS` to `{}`
-- Returns `{"ok": true, "result": {"cleared": true}}`
-
-**`ensure_model` update**
-
-- After loading the ASR model, also calls `EncDecSpeakerLabelModel.from_pretrained("nvidia/titanet-large")` so the download happens at install time, not at first recording
-
-**Error handling**
-
-- If TitaNet fails to load, logs a warning and returns `{"ok": false, "error": "..."}` — does not affect ASR
-
 **Module-level state**
 
 ```python
 SPEAKER_ANCHORS: dict[str, np.ndarray] = {}   # speaker_id → mean embedding
-TITANET_MODEL = None                            # loaded lazily, cached
+SPEAKER_COUNTER: int = 0                        # incremented when a new anchor is created
+TITANET_MODEL = None                            # loaded lazily, cached after first load
 COSINE_THRESHOLD = 0.7
+MIN_SPEAKER_ID_SAMPLES = 16_000                 # 1.0 s at 16 kHz — shorter segments are skipped
 ```
 
 ---
 
-### 2. Rust `ParakeetWorker` (`parakeet.rs`)
+**New command: `speaker_id`**
 
-Two new methods following the existing `send_request` pattern:
+Input: `{"command": "speaker_id", "samples": [...], "model": "...", "device": "..."}`
+
+Steps:
+1. If `len(samples) < MIN_SPEAKER_ID_SAMPLES`: return `{"ok": true, "result": {"speaker_id": null}}` — segment too short to embed reliably.
+2. Load TitaNet if not already cached (see below).
+3. Write samples to a temp WAV at 16 kHz, extract a 192-d embedding via `TITANET_MODEL.get_embedding()`.
+4. Compare embedding to all entries in `SPEAKER_ANCHORS` using cosine similarity.
+5. If best match ≥ `COSINE_THRESHOLD`: return that speaker's stable ID and update its anchor online: `anchor = 0.9 * anchor + 0.1 * new_embedding`.
+6. If no match: increment `SPEAKER_COUNTER`, store new anchor as `f"speaker_{SPEAKER_COUNTER - 1}"`, return new ID.
+7. Return `{"ok": true, "result": {"speaker_id": "speaker_N"}}`.
+
+On any exception: return `{"ok": false, "error": "..."}` — does not affect ASR.
+
+**`speaker_id` MUST NOT be called for silent or noise-only audio.** The Rust caller is responsible for ensuring `transcribe()` returned non-empty text before calling `speaker_id`.
+
+---
+
+**New command: `clear_speakers`**
+
+Resets both `SPEAKER_ANCHORS` and `SPEAKER_COUNTER`:
+
+```python
+SPEAKER_ANCHORS.clear()
+SPEAKER_COUNTER = 0
+```
+
+Returns `{"ok": true, "result": {"cleared": true}}`.
+
+---
+
+**`ensure_model` update**
+
+The `diarization_enabled` flag is passed in the `ensure_model` payload:
+
+```json
+{"command": "ensure_model", "model": "...", "device": "...", "diarization_enabled": true}
+```
+
+If `diarization_enabled` is `true`: after loading the ASR model, also call `EncDecSpeakerLabelModel.from_pretrained("nvidia/titanet-large")` and cache it in `TITANET_MODEL`. This download (~80 MB) is covered by the existing install log streaming UI and the pre-warm loading indicator. If `diarization_enabled` is `false`: TitaNet is not downloaded. This avoids ~80 MB of unnecessary downloads.
+
+If TitaNet fails to load during `ensure_model`, log a warning and continue — ASR model loading is not affected.
+
+---
+
+### 2. Rust `ParakeetConfig` + `ParakeetWorker` (`parakeet.rs`)
+
+**`ParakeetConfig` gains one new field:**
 
 ```rust
-pub fn speaker_id(&mut self, samples: &[f32]) -> Result<String, String>
-// Returns stable speaker ID, e.g. "speaker_0"
+pub diarization_enabled: bool,
+```
+
+Set in `AppState::parakeet_config()` alongside `language`:
+```rust
+diarization_enabled: settings.diarization_enabled,
+```
+
+This threads `diarization_enabled` into both the free function `ensure_model` and the worker method, without requiring call-site changes beyond `parakeet_config()`.
+
+**Free function `ensure_model` — no signature change needed.** It already receives `config: &ParakeetConfig`, so the internal call becomes `worker.ensure_model(config.diarization_enabled)?`.
+
+**`ParakeetWorker` — new and updated methods:**
+
+```rust
+/// Updated signature — diarization_enabled controls TitaNet download.
+pub fn ensure_model(&mut self, diarization_enabled: bool) -> Result<(), String>
+
+/// Returns stable speaker ID (e.g. "speaker_0"), or None if segment was too short.
+pub fn speaker_id(&mut self, samples: &[f32]) -> Result<Option<String>, String>
 
 pub fn clear_speakers(&mut self) -> Result<(), String>
 ```
@@ -84,28 +130,51 @@ pub fn clear_speakers(&mut self) -> Result<(), String>
 ```rust
 pub type OnFinal = Box<dyn Fn(String, Option<String>) + Send + 'static>;
 // (text, speaker_id)
+// speaker_id is None when: non-Parakeet backend, diarization disabled,
+// segment too short, or speaker_id call failed.
 ```
 
-`None` for Whisper and FasterWhisper backends. `Some("speaker_0")` for Parakeet when diarization is enabled.
+**All call sites that construct an `OnFinal` closure must be updated to accept two arguments.** The affected locations are:
 
-**Parakeet branch update**
+1. `engine.rs` — `on_them` closure (system audio stream)
+2. `engine.rs` — `on_you` closure (mic stream) — always receives `None`, second arg ignored: `|text, _speaker_id| { ... }`
+3. `streaming_transcriber.rs` tests — update to: `|text, _speaker_id| { tx.send(text).ok(); }`
 
-After `worker.transcribe(samples)` returns non-empty text:
-1. If `diarization_enabled`, call `worker.speaker_id(samples)`
-2. On success, pass `Some(speaker_id)` to `on_final`
-3. On error, log warning, pass `None`
-4. `on_final` always fires — transcription is never blocked by speaker ID failure
+Whisper and FasterWhisper branches in `streaming_transcriber.rs` always pass `None` as the second argument. This is enforced inside the transcriber — callers do not need to know which backend is active.
 
-**New field**
+**Parakeet branch update — ordering is strict:**
+
+```
+1. worker.transcribe(samples) → text
+2. if text.is_empty() → on_final(text, None); continue   ← guard: skip speaker_id
+3. if diarization_enabled:
+       worker.speaker_id(samples) → Ok(Some(id)) | Ok(None) | Err(_)
+       on_final(text, speaker_id_result.ok().flatten())
+   else:
+       on_final(text, None)
+```
+
+`speaker_id` is **never** called if `transcribe()` returned empty text.
+
+**`clear_speakers` at session start**
+
+`StreamingTranscriber` gains a `clear_speakers_on_start: bool` field. When `true` and backend is Parakeet, `worker.clear_speakers()` is called inside the `spawn_blocking` closure in `run()`, immediately after the worker is obtained (either taken from `prewarmed_parakeet` or freshly spawned via `ParakeetWorker::spawn`) and `ensure_model` succeeds — before the `for samples in seg_rx.iter()` loop begins.
+
+The mutable `worker` is already available at that point in the blocking thread (the existing code calls `worker.ensure_model()` there). `clear_speakers` is called right after `ensure_model` succeeds, using the same `&mut worker`. No additional locking or ownership change is required.
+
+The Them-stream transcriber is constructed with `clear_speakers_on_start: true`. The You-stream transcriber with `false`.
+
+**`diarization_enabled` field**
 
 ```rust
 pub struct StreamingTranscriber {
     // ...existing fields...
     diarization_enabled: bool,
+    clear_speakers_on_start: bool,
 }
 ```
 
-Builder method: `.with_diarization(enabled: bool)`.
+Builder methods: `.with_diarization(enabled: bool)`, `.with_clear_speakers_on_start(enabled: bool)`.
 
 ---
 
@@ -113,24 +182,53 @@ Builder method: `.with_diarization(enabled: bool)`.
 
 **`on_them` closure update**
 
-Receives `(text, speaker_id: Option<String>)`. Maps to participant fields:
+Receives `(text, speaker_id: Option<String>)`. Maps to participant fields via helper:
 
-| `speaker_id`   | `participant_id` | `participant_label` |
-|----------------|-----------------|---------------------|
-| `Some("speaker_0")` | `"speaker_0"` | `"Speaker 1"` |
-| `Some("speaker_1")` | `"speaker_1"` | `"Speaker 2"` |
-| `Some("speaker_N")` | `"speaker_N"` | `"Speaker N+1"` |
-| `None`         | `"remote_1"`    | `"Speaker A"` (existing fallback) |
+```rust
+fn speaker_id_to_label(id: &str) -> (String, String) {
+    // Expected format: "speaker_N" where N is a non-negative integer.
+    // Returns (participant_id, participant_label).
+    // If format is unexpected, returns ("remote_1", "Speaker A") as fallback.
+    if let Some(n_str) = id.strip_prefix("speaker_") {
+        if let Ok(n) = n_str.parse::<usize>() {
+            return (id.to_string(), format!("Speaker {}", n + 1));
+        }
+    }
+    ("remote_1".to_string(), "Speaker A".to_string())
+}
+```
 
-Helper: `fn speaker_id_to_label(id: &str) -> String` — parses the trailing integer from the ID.
+| `speaker_id`        | `participant_id` | `participant_label` |
+|---------------------|-----------------|---------------------|
+| `Some("speaker_0")` | `"speaker_0"`   | `"Speaker 1"`       |
+| `Some("speaker_1")` | `"speaker_1"`   | `"Speaker 2"`       |
+| `Some("speaker_N")` | `"speaker_N"`   | `"Speaker N+1"`     |
+| `None`              | `"remote_1"`    | `"Speaker A"` (existing fallback) |
+| Unrecognised format | `"remote_1"`    | `"Speaker A"` (fallback) |
 
-**Session start**
+**`on_you` closure update**
 
-At the same point `suggestion_engine.clear()` is called, also call `parakeet_worker.clear_speakers()` on both the mic and sys workers (if taken from the pre-warm pool). This ensures the anchor table resets between sessions.
+Updated to accept the new `(text, Option<String>)` signature; the second argument is always ignored.
 
 **`StreamingTranscriber` construction**
 
-Pass `settings.diarization_enabled` to `.with_diarization()` on the Them-stream transcriber. The You-stream transcriber always gets `diarization_enabled: false`.
+The Them-stream transcriber:
+```rust
+StreamingTranscriber::new(...)
+    .with_diarization(settings.diarization_enabled)
+    .with_clear_speakers_on_start(true)
+```
+
+The You-stream transcriber:
+```rust
+StreamingTranscriber::new(...)
+    .with_diarization(false)
+    .with_clear_speakers_on_start(false)
+```
+
+**`ensure_model` / pre-warm**
+
+`parakeet_config` passes `settings.diarization_enabled` through to `ParakeetWorker::ensure_model()`, which passes it to the Python `ensure_model` command. This controls whether TitaNet is downloaded.
 
 ---
 
@@ -143,7 +241,15 @@ One new field:
 pub diarization_enabled: bool,
 ```
 
-Default: `true`. The existing `default_true` function covers this.
+Default: `true`. Uses the existing `default_true` function.
+
+`AppSettings` uses a hand-written `Default` impl (not `#[derive(Default)]`). The explicit struct initializer in `impl Default for AppSettings` must also include:
+
+```rust
+diarization_enabled: default_true(),
+```
+
+Without this, the field will fail to compile or silently default to `false`.
 
 ---
 
@@ -165,12 +271,13 @@ No changes to `TranscriptView`, `NotesView`, `SuggestionsView`, or any event sch
 1. System audio chunk arrives → VAD accumulates → speech segment fires
 2. Segment sent via mpsc channel to blocking Parakeet thread
 3. `worker.transcribe(samples)` → `text`
-4. If `diarization_enabled`: `worker.speaker_id(samples)` → `"speaker_N"`
-5. `on_final(text, Some("speaker_N"))` fires
-6. `engine.rs` maps to `participant_label: "Speaker N+1"`
-7. `SessionRecord` written with correct participant fields
-8. `transcript` event emitted to frontend with `participant_label: "Speaker N+1"`
-9. `TranscriptView` renders the label — no logic change required
+4. If `text` is empty → `on_final(text, None)`; skip to next segment
+5. If `diarization_enabled` and `len(samples) ≥ MIN_SPEAKER_ID_SAMPLES`: `worker.speaker_id(samples)` → `Some("speaker_N")` or `None`
+6. `on_final(text, speaker_id)` fires
+7. `engine.rs` maps speaker_id to `participant_label` via `speaker_id_to_label`
+8. `SessionRecord` written with correct participant fields
+9. `transcript` event emitted to frontend with `participant_label: "Speaker N+1"`
+10. `TranscriptView` renders the label — no logic change required
 
 ---
 
@@ -180,8 +287,8 @@ No changes to `TranscriptView`, `NotesView`, `SuggestionsView`, or any event sch
 - `SuggestionEngine` — filters by `Speaker::Them` regardless of participant label
 - Notes generation — uses `display_label()` which already returns `participant_label` when set
 - Overlay
-- Whisper / FasterWhisper backends — `on_final` second arg is always `None`
-- Mic (You) stream — diarization is never applied
+- Whisper / FasterWhisper branches — always pass `None` as second arg to `on_final`
+- Mic (You) stream — `diarization_enabled: false`, second arg always `None`
 
 ---
 
@@ -189,10 +296,12 @@ No changes to `TranscriptView`, `NotesView`, `SuggestionsView`, or any event sch
 
 | Failure | Behaviour |
 |---------|-----------|
-| TitaNet fails to load | Warning logged; `speaker_id` returns error; utterance gets "Speaker A" fallback |
-| `speaker_id` errors on a segment | Warning logged; `None` passed to `on_final`; utterance gets fallback |
-| Non-Parakeet backend | `diarization_enabled` ignored; all utterances get existing "Speaker A" label |
-| `diarization_enabled: false` | `speaker_id` call skipped entirely; existing behaviour preserved |
+| TitaNet fails to load during `ensure_model` | Warning logged; `TITANET_MODEL` stays `None`; all `speaker_id` calls return error |
+| `speaker_id` returns error | Warning logged; `None` passed to `on_final`; utterance gets "Speaker A" fallback |
+| Segment too short (< 1 s) | Python returns `{"speaker_id": null}`; treated as `None`; utterance gets fallback |
+| `speaker_id_to_label` parse failure | Returns `("remote_1", "Speaker A")` fallback |
+| Non-Parakeet backend | `diarization_enabled` ignored; all utterances get "Speaker A" label |
+| `diarization_enabled: false` | `speaker_id` call and TitaNet download skipped entirely |
 
 ---
 
