@@ -34,6 +34,7 @@ export interface AppSettings {
   parakeetModel: string;
   parakeetDevice: string;
   diarizationEnabled: boolean;
+  echoCancellationEnabled: boolean;
   inputDeviceName: string | null;
   systemAudioDeviceName: string | null;
   llmProvider: string;

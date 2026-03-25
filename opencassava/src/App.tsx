@@ -142,6 +142,11 @@ function App() {
   const [installLogLines, setInstallLogLines] = useState<string[]>([]);
   const [stopStatusMessage, setStopStatusMessage] = useState<string | null>(null);
   const [parakeetWarming, setParakeetWarming] = useState(false);
+  const [speakerLabels, setSpeakerLabels] = useState<Record<string, string>>({});
+
+  const handleRenameParticipant = useCallback((key: string, newName: string) => {
+    setSpeakerLabels((prev) => ({ ...prev, [key]: newName }));
+  }, []);
   // Load settings on mount
   useEffect(() => {
     invoke<AppSettings>("get_settings")
@@ -330,6 +335,7 @@ function App() {
       setCurrentSessionNotes(null);
       setVolatileYouText("");
       setVolatileThemText("");
+      setSpeakerLabels({});
       setTranscriptionProgress({ capturedSegments: 0, processedSegments: 0 });
       setIsStopping(false);
       setStopStatusMessage(null);
@@ -627,6 +633,8 @@ function App() {
             searchQuery={searchQuery}
             searchResults={searchResults}
             currentSearchIndex={currentSearchIndex}
+            speakerLabels={speakerLabels}
+            onRenameParticipant={handleRenameParticipant}
           />
         )}
         {tab === "suggestions" && (
@@ -659,14 +667,15 @@ function App() {
             isSettingUpStt={isSettingUpStt}
           />
         )}
-        {tab === "notes" && (
+        {/* NotesView stays mounted to preserve autoRegen state across tab switches */}
+        <div style={{ display: tab === "notes" ? "flex" : "none", flex: 1, overflow: "hidden", flexDirection: "column" }}>
           <NotesView
             sessionId={currentSessionId}
             initialNotes={currentSessionNotes}
             onNotesChange={setCurrentSessionNotes}
             isRunning={isRunning}
           />
-        )}
+        </div>
       </div>
 
       {/* Bottom Status Bar */}

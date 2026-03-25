@@ -56,7 +56,7 @@ const sttProviderOptions = [
 
 const parakeetModelOptions = [
   { value: "nvidia/parakeet-tdt-0.6b-v3", label: "Parakeet TDT 0.6B v3 (Recommended)", description: "600M params, 25 languages, best speed/accuracy balance." },
-  { value: "nvidia/parakeet-tdt-1.1b-v2", label: "Parakeet TDT 1.1B v2", description: "1.1B params, English-focused, highest accuracy." },
+  { value: "nvidia/parakeet-tdt_ctc-1.1b", label: "Parakeet TDT 1.1B v2", description: "1.1B params, English-focused, highest accuracy." },
 ];
 
 const parakeetDeviceOptions = [
@@ -984,6 +984,28 @@ export function SettingsView({
                   </div>
                   <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
                     Automatically identify different speakers in call audio
+                  </span>
+                </div>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Echo cancellation</label>
+                  <div style={{ display: "flex", alignItems: "center", gap: spacing[2] }}>
+                    <input
+                      type="checkbox"
+                      id="echo-cancellation-toggle"
+                      checked={settings.echoCancellationEnabled ?? true}
+                      onChange={(e) =>
+                        saveSettings({ ...settings, echoCancellationEnabled: e.target.checked })
+                      }
+                    />
+                    <label
+                      htmlFor="echo-cancellation-toggle"
+                      style={{ fontSize: typography.sm, color: colors.text, cursor: "pointer" }}
+                    >
+                      Enabled
+                    </label>
+                  </div>
+                  <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                    Reduce speaker playback leaking back into the microphone when you are using speakers
                   </span>
                 </div>
               </>

@@ -11,7 +11,7 @@ MODELS = {}
 SPEAKER_ANCHORS = {}        # speaker_id (str) → mean embedding (np.ndarray)
 SPEAKER_COUNTER = 0         # next speaker index
 TITANET_MODEL = None
-COSINE_THRESHOLD = 0.7
+COSINE_THRESHOLD = 0.5
 MIN_SPEAKER_ID_SAMPLES = 16_000  # 1.0 s at 16 kHz
 
 
@@ -53,7 +53,7 @@ def load_titanet():
     if TITANET_MODEL is not None:
         return TITANET_MODEL
     import nemo.collections.asr as nemo_asr
-    TITANET_MODEL = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained("nvidia/titanet-large")
+    TITANET_MODEL = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained("nvidia/speakerverification_en_titanet_large")
     TITANET_MODEL.eval()
     return TITANET_MODEL
 

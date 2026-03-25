@@ -7,7 +7,12 @@ use crate::audio_macos::MacosAudioCapture as SystemAudioCapture;
 #[cfg(not(target_os = "macos"))]
 use crate::audio_windows::SystemAudioCapture;
 use opencassava_core::{
-    audio::{cpal_mic::CpalMicCapture, AudioCaptureService, MicCaptureService},
+    audio::{
+        cpal_mic::CpalMicCapture,
+        echo_cancel::{EchoReferenceBuffer, MicEchoProcessor},
+        AudioCaptureService,
+        MicCaptureService,
+    },
     download,
     intelligence::{
         embedding_client, knowledge_base::KnowledgeBase, notes_engine,
@@ -832,6 +837,7 @@ pub fn start_transcription(
 
     let recent_utterances: Arc<Mutex<Vec<opencassava_core::models::Utterance>>> =
         Arc::new(Mutex::new(Vec::new()));
+    let echo_reference = EchoReferenceBuffer::default();
 
     let handle = tauri::async_runtime::spawn(async move {
         // Audio level polling task — runs until is_running goes false
@@ -861,6 +867,7 @@ pub fn start_transcription(
         let them_backend = backend.clone();
         let them_lang = language.clone();
         let recent_utterances_spawn = Arc::clone(&recent_utterances);
+        let echo_reference_for_them = echo_reference.clone();
 
         let them_handle = tauri::async_runtime::spawn(async move {
             let sys = SystemAudioCapture::new(sys_device_name.as_deref())
@@ -874,9 +881,11 @@ pub fn start_transcription(
             };
             use futures::StreamExt;
             let sys_level_w = Arc::clone(&them_state.sys_level);
+            let echo_reference = echo_reference_for_them.clone();
             let them_stream_leveled = them_stream.map(move |chunk: Vec<f32>| {
                 let rms = compute_rms(&chunk);
                 sys_level_w.store(rms.to_bits(), Ordering::Relaxed);
+                echo_reference.push_render_chunk(&chunk);
                 chunk
             });
 
@@ -1178,10 +1187,13 @@ pub fn start_transcription(
         let mic_stream = mic.buffer_stream_for_device(device_name.as_deref());
         use futures::StreamExt;
         let mic_level_w = Arc::clone(&state_clone.mic_level);
+        let mut echo_processor = MicEchoProcessor::new(echo_reference.clone());
+        echo_processor.set_enabled(settings.echo_cancellation_enabled);
         let mic_stream_leveled = mic_stream.map(move |chunk: Vec<f32>| {
-            let rms = compute_rms(&chunk);
+            let cleaned = echo_processor.process_chunk(&chunk);
+            let rms = compute_rms(&cleaned);
             mic_level_w.store(rms.to_bits(), Ordering::Relaxed);
-            chunk
+            cleaned
         });
         let app_y = app_clone.clone();
         let state_y = Arc::clone(&state_clone);

@@ -195,7 +195,24 @@ impl StreamingTranscriber {
                                     log::warn!("[diarization] clear_speakers failed: {e}");
                                 }
                             }
+                            // Rolling buffer of recent speech for speaker ID.
+                            // TitaNet needs 3–4 s of audio for stable embeddings;
+                            // using only the current short VAD segment causes every
+                            // segment to get a new speaker ID.
+                            const DIARIZATION_BUF_SAMPLES: usize = 4 * 16_000; // 4 s at 16 kHz
+                            let mut diarization_buf: Vec<f32> = Vec::new();
+                            // Last confirmed speaker ID — used as fallback when the buffer
+                            // is too short for a reliable embedding (avoids "Speaker A").
+                            let mut last_speaker_id: Option<String> = None;
+
                             for samples in seg_rx.iter() {
+                                if diarization_enabled {
+                                    diarization_buf.extend_from_slice(&samples);
+                                    if diarization_buf.len() > DIARIZATION_BUF_SAMPLES {
+                                        let excess = diarization_buf.len() - DIARIZATION_BUF_SAMPLES;
+                                        diarization_buf.drain(..excess);
+                                    }
+                                }
                                 match worker.transcribe(&samples) {
                                     Ok(text) if !text.is_empty() => {
                                         if let Some(ref on_progress) = progress_for_backend {
@@ -203,11 +220,15 @@ impl StreamingTranscriber {
                                         }
                                         log::info!("[transcriber] {}", &text[..text.len().min(80)]);
                                         let speaker_id = if diarization_enabled {
-                                            match worker.speaker_id(&samples) {
-                                                Ok(id) => id,
+                                            match worker.speaker_id(&diarization_buf) {
+                                                Ok(Some(id)) => {
+                                                    last_speaker_id = Some(id.clone());
+                                                    Some(id)
+                                                }
+                                                Ok(None) => last_speaker_id.clone(),
                                                 Err(e) => {
                                                     log::warn!("[diarization] speaker_id error: {e}");
-                                                    None
+                                                    last_speaker_id.clone()
                                                 }
                                             }
                                         } else {

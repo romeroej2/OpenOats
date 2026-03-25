@@ -1,4 +1,5 @@
 pub mod cpal_mic;
+pub mod echo_cancel;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;

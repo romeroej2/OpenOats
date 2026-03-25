@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Utterance } from "../types";
 import { colors, typography, spacing } from "../theme";
 
@@ -9,6 +9,8 @@ interface Props {
   searchQuery?: string;
   searchResults?: number[];
   currentSearchIndex?: number;
+  speakerLabels: Record<string, string>;
+  onRenameParticipant: (key: string, newName: string) => void;
 }
 
 // Format timestamp to relative time or clock time
@@ -77,13 +79,39 @@ function UtteranceBubble({
   utterance,
   isHighlighted,
   searchQuery,
+  speakerLabels,
+  onRenameParticipant,
 }: {
   utterance: Utterance;
   isHighlighted?: boolean;
   searchQuery?: string;
+  speakerLabels: Record<string, string>;
+  onRenameParticipant: (key: string, newName: string) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
   const isYou = utterance.speaker === "you";
-  const speakerLabel = utterance.participantLabel || (isYou ? "You" : "Them");
+  const labelKey = utterance.participantId || utterance.speaker || "them";
+  const speakerLabel = speakerLabels[labelKey] || utterance.participantLabel || (isYou ? "You" : "Them");
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  const startEdit = () => {
+    setDraft(speakerLabel);
+    setEditing(true);
+  };
+
+  const commitEdit = () => {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== speakerLabel) {
+      onRenameParticipant(labelKey, trimmed);
+    }
+    setEditing(false);
+  };
 
   return (
     <div
@@ -98,20 +126,50 @@ function UtteranceBubble({
         border: isHighlighted ? `1px solid ${colors.accent}30` : "none",
       }}
     >
-      {/* Speaker label */}
-      <div
-        style={{
-          minWidth: 72,
-          textAlign: "right",
-          fontSize: typography.sm,
-          fontWeight: 600,
-          color: isYou ? colors.you : colors.them,
-          textTransform: "uppercase",
-          letterSpacing: "0.5px",
-          paddingTop: 2,
-        }}
-      >
-        {speakerLabel}
+      {/* Speaker label — click to rename */}
+      <div style={{ minWidth: 72, textAlign: "right", paddingTop: 2 }}>
+        {editing ? (
+          <input
+            ref={inputRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitEdit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitEdit();
+              if (e.key === "Escape") setEditing(false);
+            }}
+            style={{
+              width: 72,
+              fontSize: typography.sm,
+              fontWeight: 600,
+              color: isYou ? colors.you : colors.them,
+              textTransform: "uppercase",
+              letterSpacing: "0.5px",
+              background: "transparent",
+              border: "none",
+              borderBottom: `1px solid ${isYou ? colors.you : colors.them}`,
+              outline: "none",
+              textAlign: "right",
+              padding: 0,
+            }}
+          />
+        ) : (
+          <span
+            onClick={startEdit}
+            title="Click to rename"
+            style={{
+              fontSize: typography.sm,
+              fontWeight: 600,
+              color: isYou ? colors.you : colors.them,
+              textTransform: "uppercase",
+              letterSpacing: "0.5px",
+              cursor: "text",
+              borderBottom: "1px solid transparent",
+            }}
+          >
+            {speakerLabel}
+          </span>
+        )}
       </div>
 
       {/* Content */}
@@ -181,6 +239,8 @@ export function TranscriptView({
   searchQuery,
   searchResults = [],
   currentSearchIndex = 0,
+  speakerLabels,
+  onRenameParticipant,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -297,6 +357,8 @@ export function TranscriptView({
                   utterance={utterance}
                   isHighlighted={isHighlighted}
                   searchQuery={searchQuery}
+                  speakerLabels={speakerLabels}
+                  onRenameParticipant={onRenameParticipant}
                 />
               </div>
             );

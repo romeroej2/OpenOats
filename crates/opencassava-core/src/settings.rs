@@ -105,6 +105,9 @@ pub struct AppSettings {
 
     #[serde(default = "default_true")]
     pub diarization_enabled: bool,
+
+    #[serde(default = "default_true", alias = "echo_cancellation_enabled")]
+    pub echo_cancellation_enabled: bool,
 }
 
 impl AppSettings {
@@ -178,6 +181,7 @@ impl Default for AppSettings {
             suggestion_synthesis_system_prompt: default_suggestion_synthesis_system_prompt(),
             smart_question_system_prompt: default_smart_question_system_prompt(),
             diarization_enabled: default_true(),
+            echo_cancellation_enabled: default_true(),
         }
     }
 }
@@ -415,5 +419,24 @@ mod tests {
         s.save_to(path.clone());
         let s2 = AppSettings::load_from(path);
         assert!(!s2.diarization_enabled);
+    }
+
+    #[test]
+    fn echo_cancellation_enabled_defaults_to_true() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+        let s = AppSettings::load_from(path);
+        assert!(s.echo_cancellation_enabled);
+    }
+
+    #[test]
+    fn echo_cancellation_enabled_persists_and_reloads() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = AppSettings::load_from(path.clone());
+        s.echo_cancellation_enabled = false;
+        s.save_to(path.clone());
+        let s2 = AppSettings::load_from(path);
+        assert!(!s2.echo_cancellation_enabled);
     }
 }
