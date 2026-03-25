@@ -360,7 +360,7 @@ pub fn warm_parakeet_workers(state: Arc<AppState>, app: AppHandle) {
         std::thread::spawn(move || {
             log::info!("[parakeet] pre-warming {name} worker...");
             match ParakeetWorker::spawn(&config_clone) {
-                Ok(mut worker) => match worker.ensure_model() {
+                Ok(mut worker) => match worker.ensure_model(config_clone.diarization_enabled) {
                     Ok(_) => {
                         let mut slot = if name == "mic" {
                             state_clone.warmed_parakeet_mic.lock().unwrap()

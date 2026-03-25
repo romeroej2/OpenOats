@@ -167,7 +167,7 @@ impl StreamingTranscriber {
                         Ok(mut worker) => {
                             // Eagerly load the model now (no-op if pre-warmed, otherwise loads
                             // in parallel with audio capture so it's ready for the first segment).
-                            if let Err(e) = worker.ensure_model() {
+                            if let Err(e) = worker.ensure_model(config.diarization_enabled) {
                                 log::error!("parakeet ensure_model failed: {e}");
                                 return;
                             }
