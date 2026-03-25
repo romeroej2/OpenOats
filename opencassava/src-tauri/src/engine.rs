@@ -872,7 +872,7 @@ pub fn start_transcription(
             let app_sg = them_app.clone();
             let state_sg = Arc::clone(&them_state);
 
-            let on_them = move |text: String| {
+            let on_them = move |text: String, _speaker_id: Option<String>| {
                 if !*state_sg.is_running.lock().unwrap() {
                     return;
                 }
@@ -1166,7 +1166,7 @@ pub fn start_transcription(
         });
         let app_y = app_clone.clone();
         let state_y = Arc::clone(&state_clone);
-        let on_you = move |text: String| {
+        let on_you = move |text: String, _speaker_id: Option<String>| {
             if !*state_y.is_running.lock().unwrap() {
                 return;
             }

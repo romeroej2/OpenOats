@@ -6,7 +6,7 @@ use std::sync::{
 };
 use std::sync::mpsc;
 
-pub type OnFinal = Box<dyn Fn(String) + Send + 'static>;
+pub type OnFinal = Box<dyn Fn(String, Option<String>) + Send + 'static>;
 pub type OnVolatile = Box<dyn Fn(String) + Send + 'static>;
 pub type OnProgress = Arc<dyn Fn(SegmentProgress) + Send + Sync + 'static>;
 
@@ -141,7 +141,7 @@ impl StreamingTranscriber {
                                 }
                                 if !text.is_empty() {
                                     log::info!("[transcriber] {}", &text[..text.len().min(80)]);
-                                    on_final(text);
+                                    on_final(text, None);
                                 }
                             }
                         }
@@ -158,7 +158,7 @@ impl StreamingTranscriber {
                                             on_progress(SegmentProgress::Processed);
                                         }
                                         log::info!("[transcriber] {}", &text[..text.len().min(80)]);
-                                        on_final(text);
+                                        on_final(text, None);
                                     }
                                     Ok(_) => {
                                         if let Some(ref on_progress) = progress_for_backend {
@@ -194,7 +194,7 @@ impl StreamingTranscriber {
                                             on_progress(SegmentProgress::Processed);
                                         }
                                         log::info!("[transcriber] {}", &text[..text.len().min(80)]);
-                                        on_final(text);
+                                        on_final(text, None);
                                     }
                                     Ok(_) => {
                                         if let Some(ref on_progress) = progress_for_backend {
@@ -317,7 +317,7 @@ mod tests {
     #[tokio::test]
     async fn silence_produces_no_transcription() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let on_final = move |text: String| {
+        let on_final = move |text: String, _speaker_id: Option<String>| {
             tx.send(text).ok();
         };
         let transcriber = StreamingTranscriber::new_passthrough(Box::new(on_final));
@@ -331,7 +331,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
         let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let calls_clone = Arc::clone(&calls);
-        let on_final = Box::new(|_text: String| {});
+        let on_final = Box::new(|_text: String, _speaker_id: Option<String>| {});
         let on_volatile = Box::new(move |text: String| {
             calls_clone.lock().unwrap().push(text);
         });
