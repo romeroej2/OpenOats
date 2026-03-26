@@ -53,6 +53,9 @@ pub fn run() {
             engine::load_session,
             engine::load_session_notes,
             engine::save_transcript,
+            engine::start_calibration_preview,
+            engine::stop_calibration_preview,
+            engine::calibrate_mic_threshold,
         ])
         .setup(move |app| {
             if cfg!(debug_assertions) {

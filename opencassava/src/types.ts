@@ -35,6 +35,8 @@ export interface AppSettings {
   parakeetDevice: string;
   diarizationEnabled: boolean;
   echoCancellationEnabled: boolean;
+  micCalibrationRms: number | null;
+  micThresholdMultiplier: number;
   inputDeviceName: string | null;
   systemAudioDeviceName: string | null;
   llmProvider: string;
