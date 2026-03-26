@@ -33,9 +33,9 @@ if (-not (Test-Path $whisperRoot)) {
 
 $sysRoot = Join-Path $whisperRoot "sys"
 $sysBuild = Join-Path $sysRoot "build.rs"
-$sysBindings = Join-Path $sysRoot "src\bindings.rs"
-$commonLogging = Join-Path $whisperRoot "src\common_logging.rs"
-$grammar = Join-Path $whisperRoot "src\whisper_grammar.rs"
+$sysBindings = Join-Path $sysRoot "src" "bindings.rs"
+$commonLogging = Join-Path $whisperRoot "src" "common_logging.rs"
+$grammar = Join-Path $whisperRoot "src" "whisper_grammar.rs"
 
 $buildText = Get-Content $sysBuild -Raw
 $buildText = $buildText.Replace(
