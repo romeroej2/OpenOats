@@ -108,6 +108,12 @@ pub struct AppSettings {
 
     #[serde(default = "default_true", alias = "echo_cancellation_enabled")]
     pub echo_cancellation_enabled: bool,
+
+    #[serde(default)]
+    pub mic_calibration_rms: Option<f32>,
+
+    #[serde(default = "default_mic_threshold_multiplier")]
+    pub mic_threshold_multiplier: f32,
 }
 
 impl AppSettings {
@@ -182,8 +188,14 @@ impl Default for AppSettings {
             smart_question_system_prompt: default_smart_question_system_prompt(),
             diarization_enabled: default_true(),
             echo_cancellation_enabled: default_true(),
+            mic_calibration_rms: None,
+            mic_threshold_multiplier: default_mic_threshold_multiplier(),
         }
     }
+}
+
+fn default_mic_threshold_multiplier() -> f32 {
+    0.6
 }
 
 fn default_whisper_model() -> String {
@@ -438,5 +450,40 @@ mod tests {
         s.save_to(path.clone());
         let s2 = AppSettings::load_from(path);
         assert!(!s2.echo_cancellation_enabled);
+    }
+
+    #[test]
+    fn mic_threshold_defaults() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+        let s = AppSettings::load_from(path);
+        assert!(s.mic_calibration_rms.is_none(), "mic_calibration_rms should default to None");
+        assert!(
+            (s.mic_threshold_multiplier - 0.6).abs() < 1e-6,
+            "mic_threshold_multiplier should default to 0.6"
+        );
+    }
+
+    #[test]
+    fn mic_threshold_persists_and_reloads() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = AppSettings::load_from(path.clone());
+        s.mic_calibration_rms = Some(0.042);
+        s.mic_threshold_multiplier = 0.7;
+        s.save_to(path.clone());
+        let s2 = AppSettings::load_from(path);
+        assert!((s2.mic_calibration_rms.unwrap() - 0.042).abs() < 1e-6);
+        assert!((s2.mic_threshold_multiplier - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mic_threshold_defaults_when_absent_from_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"selectedModel":"gpt-4o"}"#).unwrap();
+        let s = AppSettings::load_from(path);
+        assert!(s.mic_calibration_rms.is_none());
+        assert!((s.mic_threshold_multiplier - 0.6).abs() < 1e-6);
     }
 }
