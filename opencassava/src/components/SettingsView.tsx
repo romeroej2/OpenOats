@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { ApiKeys, AppSettings, SttStatus } from "../types";
 import { colors, typography, spacing } from "../theme";
+import { WaveformVisualizer } from "./WaveformVisualizer";
 import { PromptsView } from "./PromptsView";
 
 type Tab = "general" | "ai" | "advanced" | "prompts";
@@ -140,6 +142,10 @@ export function SettingsView({
   const [kbFileCount, setKbFileCount] = useState<number>(0);
   const [isIndexingKb, setIsIndexingKb] = useState(false);
   const [kbStatus, setKbStatus] = useState<string | null>(null);
+  const [isCalibrating, setIsCalibrating] = useState(false);
+  const [calibrationCountdown, setCalibrationCountdown] = useState(0);
+  const [calibrationLevel, setCalibrationLevel] = useState(0);
+  const [calibrationError, setCalibrationError] = useState<string | null>(null);
 
   useEffect(() => {
     invoke<ApiKeys>("get_api_keys")
@@ -226,6 +232,38 @@ export function SettingsView({
       flashSaved();
     } catch (err) {
       setError(String(err));
+    }
+  };
+
+  const startCalibration = async () => {
+    if (!settings) return;
+    setIsCalibrating(true);
+    setCalibrationError(null);
+    setCalibrationLevel(0);
+
+    const unlisten = await listen<{ level: number }>("calibration-audio-level", (e) => {
+      setCalibrationLevel(e.payload.level);
+    });
+
+    try {
+      await invoke("start_calibration_preview");
+
+      for (let i = 3; i >= 1; i--) {
+        setCalibrationCountdown(i);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      setCalibrationCountdown(0);
+
+      const rms = await invoke<number>("calibrate_mic_threshold");
+      await invoke("stop_calibration_preview").catch(() => {});
+      await saveSettings({ ...settings, micCalibrationRms: rms });
+    } catch (err) {
+      setCalibrationError(String(err));
+      await invoke("stop_calibration_preview").catch(() => {});
+    } finally {
+      unlisten();
+      setIsCalibrating(false);
+      setCalibrationLevel(0);
     }
   };
 
@@ -1007,6 +1045,63 @@ export function SettingsView({
                   <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
                     Reduce speaker playback leaking back into the microphone when you are using speakers
                   </span>
+                </div>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Mic Voice Threshold</label>
+                  {isCalibrating ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: spacing[1] }}>
+                      <WaveformVisualizer level={calibrationLevel} isActive={true} />
+                      <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
+                        {calibrationCountdown > 0 ? `Speak normally… ${calibrationCountdown}` : "Processing…"}
+                      </span>
+                    </div>
+                  ) : (
+                    <>
+                      {settings && settings.micCalibrationRms == null ? (
+                        <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
+                          Not calibrated — gate is disabled
+                        </span>
+                      ) : settings ? (
+                        <>
+                          <span style={{ fontSize: typography.sm, color: colors.text }}>
+                            Calibrated: {((settings.micCalibrationRms ?? 0) * 1000).toFixed(1)}
+                          </span>
+                          <div style={{ display: "flex", alignItems: "center", gap: spacing[2], marginTop: spacing[1] }}>
+                            <label style={{ fontSize: typography.sm, color: colors.text }}>Sensitivity</label>
+                            <input
+                              type="range"
+                              min={0.1}
+                              max={0.8}
+                              step={0.05}
+                              value={settings.micThresholdMultiplier ?? 0.6}
+                              onChange={(e) =>
+                                saveSettings({ ...settings, micThresholdMultiplier: parseFloat(e.target.value) })
+                              }
+                              style={{ width: 120 }}
+                            />
+                            <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
+                              {(((settings.micThresholdMultiplier ?? 0.6)) * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                        </>
+                      ) : null}
+                      {calibrationError && (
+                        <span style={{ fontSize: typography.sm, color: colors.error, marginTop: spacing[1], display: "block" }}>
+                          {calibrationError}
+                        </span>
+                      )}
+                      <button
+                        style={{ ...styles.button, marginTop: spacing[1] }}
+                        onClick={startCalibration}
+                        disabled={isCalibrating}
+                      >
+                        {settings && settings.micCalibrationRms == null ? "Calibrate" : "Recalibrate"}
+                      </button>
+                      <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                        Audio below this level will be silenced. Recalibrate if you change microphones.
+                      </span>
+                    </>
+                  )}
                 </div>
               </>
             ) : null}
