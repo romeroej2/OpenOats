@@ -1920,8 +1920,139 @@ pub async fn save_transcript(
     
     let path = file_path.into_path().map_err(|e| e.to_string())?;
     tokio::fs::write(&path, content).await.map_err(|e| e.to_string())?;
-    
+
     Ok(())
+}
+
+// ── Mic calibration commands ─────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn start_calibration_preview(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    if *state.is_running.lock().unwrap() {
+        return Err("Recording session is active — use audio-level events instead".into());
+    }
+    // Stop any existing preview first
+    state.preview_stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = state.preview_task.lock().unwrap().take() {
+        handle.abort();
+    }
+
+    let device_name = state.settings.lock().unwrap().input_device_name.clone();
+    state.preview_stop.store(false, Ordering::Relaxed);
+    let stop_flag = Arc::clone(&state.preview_stop);
+
+    let handle = tauri::async_runtime::spawn(async move {
+        use futures::StreamExt;
+        let mic = CpalMicCapture::new().with_stop_signal(Arc::clone(&stop_flag));
+        let mut stream = mic.buffer_stream_for_device(device_name.as_deref());
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        let mut level_accum: Vec<f32> = Vec::new();
+
+        loop {
+            tokio::select! {
+                chunk = stream.next() => {
+                    match chunk {
+                        Some(samples) => level_accum.extend_from_slice(&samples),
+                        None => break,
+                    }
+                }
+                _ = interval.tick() => {
+                    if stop_flag.load(Ordering::Relaxed) { break; }
+                    if !level_accum.is_empty() {
+                        let level = compute_rms(&level_accum);
+                        level_accum.clear();
+                        app.emit("calibration-audio-level", &CalibrationAudioLevelPayload { level }).ok();
+                    }
+                }
+            }
+        }
+    });
+
+    *state.preview_task.lock().unwrap() = Some(handle);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn stop_calibration_preview(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.preview_stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = state.preview_task.lock().unwrap().take() {
+        handle.abort();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn calibrate_mic_threshold(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<f32, String> {
+    if *state.is_running.lock().unwrap() {
+        return Err("Cannot calibrate during an active recording".into());
+    }
+
+    // Stop any running preview so the device is free
+    state.preview_stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = state.preview_task.lock().unwrap().take() {
+        handle.abort();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let device_name = state.settings.lock().unwrap().input_device_name.clone();
+
+    // Capture 3 seconds in a dedicated task (CpalMicCapture must stay on one task)
+    let block_rmses = tauri::async_runtime::spawn(async move {
+        use futures::StreamExt;
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = Arc::clone(&stop);
+        let mic = CpalMicCapture::new().with_stop_signal(Arc::clone(&stop));
+        let mut stream = mic.buffer_stream_for_device(device_name.as_deref());
+        let mut accum: Vec<f32> = Vec::new();
+        let mut rmses: Vec<f32> = Vec::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                stop2.store(true, Ordering::Relaxed);
+                break;
+            }
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                stream.next(),
+            ).await {
+                Ok(Some(chunk)) => {
+                    accum.extend_from_slice(&chunk);
+                    while accum.len() >= 256 {
+                        let block: Vec<f32> = accum.drain(..256).collect();
+                        rmses.push(compute_rms(&block));
+                    }
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+        rmses
+    }).await.map_err(|e| format!("Capture task failed: {e}"))?;
+
+    if block_rmses.is_empty() {
+        return Err("No audio captured — check your microphone".into());
+    }
+
+    let calibrated_rms = top_percentile_mean(&block_rmses, 0.30);
+
+    if calibrated_rms < 0.001 {
+        return Err("Level too low — check your microphone".into());
+    }
+
+    {
+        let mut settings = state.settings.lock().unwrap();
+        settings.mic_calibration_rms = Some(calibrated_rms);
+        settings.save();
+    }
+
+    Ok(calibrated_rms)
 }
 
 #[cfg(test)]
