@@ -15,7 +15,27 @@ permissions:
   contents: write
 
 jobs:
+  prepare-whisper:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.release_tag || github.ref_name }}
+
+      - name: Prepare whisper-rs
+        run: pwsh opencassava/scripts/prepare-whisper.ps1
+
+      - name: Upload prepared whisper-rs
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-rs-source
+          path: .build/whisper-rs
+          if-no-files-found: error
+
   build-windows:
+    needs: prepare-whisper
     runs-on: windows-latest
     defaults:
       run:
@@ -45,6 +65,12 @@ jobs:
             . -> target
             opencassava/src-tauri -> target
 
+      - name: Restore prepared whisper-rs
+        uses: actions/download-artifact@v4
+        with:
+          name: whisper-rs-source
+          path: .build/whisper-rs
+
       - name: Install frontend dependencies
         run: npm.cmd ci
 
@@ -61,6 +87,7 @@ jobs:
           if-no-files-found: error
 
   build-mac:
+    needs: prepare-whisper
     runs-on: macos-14
     defaults:
       run:
@@ -94,9 +121,11 @@ jobs:
         run: brew install cmake
         working-directory: .
 
-      - name: Prepare whisper-rs
-        run: pwsh opencassava/scripts/prepare-whisper.ps1
-        working-directory: .
+      - name: Restore prepared whisper-rs
+        uses: actions/download-artifact@v4
+        with:
+          name: whisper-rs-source
+          path: .build/whisper-rs
 
       - name: Install frontend dependencies
         run: npm ci
@@ -117,6 +146,7 @@ jobs:
           if-no-files-found: error
 
   build-ubuntu:
+    needs: prepare-whisper
     runs-on: ubuntu-22.04
     defaults:
       run:
@@ -162,9 +192,11 @@ jobs:
             libclang-dev
         working-directory: .
 
-      - name: Prepare whisper-rs
-        run: pwsh opencassava/scripts/prepare-whisper.ps1
-        working-directory: .
+      - name: Restore prepared whisper-rs
+        uses: actions/download-artifact@v4
+        with:
+          name: whisper-rs-source
+          path: .build/whisper-rs
 
       - name: Install frontend dependencies
         run: npm ci

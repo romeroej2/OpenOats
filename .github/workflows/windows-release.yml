@@ -35,6 +35,10 @@ jobs:
             . -> target
             opencassava/src-tauri -> target
 
+      - name: Prepare whisper-rs
+        run: pwsh opencassava/scripts/prepare-whisper.ps1
+        working-directory: .
+
       - name: Install frontend dependencies
         run: npm.cmd ci
 
@@ -49,4 +53,3 @@ jobs:
             target/release/bundle/nsis/*.exe
             target/release/bundle/msi/*.msi
           if-no-files-found: error
-
