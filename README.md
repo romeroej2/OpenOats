@@ -9,9 +9,13 @@
 > **Disclaimer & Acknowledgement:** OpenCassava is a descendant of the excellent [OpenOats](https://github.com/yazinsai/OpenOats) project created by [yazinsai](https://github.com/yazinsai). A huge thank you to the original creator for laying the groundwork for this application. OpenCassava has now evolved into its own dedicated project with a focus on comprehensive cross-platform support and expanded features.
 
 <p align="center">
- 
+
   <a href="https://github.com/romeroej2/OpenCassava/releases/latest">
     <img src="https://img.shields.io/badge/Download_for_Windows-EXE-black?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows" />
+  </a>
+  &nbsp;
+  <a href="https://github.com/romeroej2/OpenCassava/releases/latest">
+    <img src="https://img.shields.io/badge/Download_for_Linux-DEB-orange?style=for-the-badge&logo=linux&logoColor=white" alt="Download for Linux" />
   </a>
 </p>
 
