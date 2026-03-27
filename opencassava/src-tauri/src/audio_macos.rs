@@ -33,7 +33,7 @@ mod macos_impl {
     };
     use tokio::sync::mpsc;
 
-    const TARGET_RATE: f64 = 16_000.0;
+    const TARGET_RATE: u32 = 16_000;
     const TARGET_CHANNELS: u32 = 1;
 
     // ── CoreMedia FFI ─────────────────────────────────────────────────────────
@@ -172,11 +172,18 @@ mod macos_impl {
     unsafe impl Sync for MacosAudioCapture {}
 
     impl MacosAudioCapture {
-        pub fn new() -> Self {
+        pub fn new(_device_name: Option<&str>) -> Self {
             Self {
                 finished: Arc::new(AtomicBool::new(false)),
                 level: Arc::new(Mutex::new(0.0)),
             }
+        }
+
+        /// Replace the internal stop flag with an externally shared signal,
+        /// so callers can stop the capture by setting that flag.
+        pub fn with_stop_signal(mut self, signal: Arc<AtomicBool>) -> Self {
+            self.finished = signal;
+            self
         }
     }
 
@@ -188,9 +195,9 @@ mod macos_impl {
 
         async fn buffer_stream(&self) -> Result<AudioStream, Box<dyn Error + Send + Sync>> {
             // SCShareableContent::get() checks screen-recording permission.
-            let content = tokio::task::spawn_blocking(SCShareableContent::get)
-                .await
-                .map_err(|e| format!("join error: {e}"))?
+            // CFError is not Send so we cannot use spawn_blocking; block_in_place
+            // runs blocking code on the current thread without requiring Send.
+            let content = tokio::task::block_in_place(SCShareableContent::get)
                 .map_err(|e| format!("SCShareableContent: {:?}", e))?;
 
             let display = content
@@ -207,7 +214,7 @@ mod macos_impl {
                 .map_err(|e| format!("set_captures_audio: {:?}", e))?
                 .set_sample_rate(TARGET_RATE)
                 .map_err(|e| format!("set_sample_rate: {:?}", e))?
-                .set_channel_count(TARGET_CHANNELS)
+                .set_channel_count(TARGET_CHANNELS as u8)
                 .map_err(|e| format!("set_channel_count: {:?}", e))?
                 .set_width(2)
                 .map_err(|e| format!("set_width: {:?}", e))?
