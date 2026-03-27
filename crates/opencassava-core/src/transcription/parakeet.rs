@@ -164,6 +164,8 @@ impl ParakeetWorker {
         let mut child = Command::new(config.python_path())
             .arg("-u")
             .arg(&config.worker_script_path)
+            .env("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+            .env("TQDM_FORCE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -299,24 +301,41 @@ impl Drop for ParakeetWorker {
     }
 }
 
-fn pump_stderr<F>(stderr: impl Read + Send + 'static, tail: Arc<Mutex<String>>, on_line: F)
+fn pump_stderr<F>(mut stderr: impl Read + Send + 'static, tail: Arc<Mutex<String>>, on_line: F)
 where
     F: Fn(&str) + Send + 'static,
 {
     thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
-            log::warn!("[parakeet] {line}");
-            on_line(&line);
-            if let Ok(mut buffer) = tail.lock() {
-                if !buffer.is_empty() {
-                    buffer.push('\n');
+        let mut line_buf = String::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            match stderr.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&buf[..n]);
+                    for c in text.chars() {
+                        if c == '\n' || c == '\r' {
+                            if !line_buf.is_empty() {
+                                log::warn!("[parakeet] {}", line_buf);
+                                on_line(&line_buf);
+                                if let Ok(mut tail_buf) = tail.lock() {
+                                    if !tail_buf.is_empty() {
+                                        tail_buf.push('\n');
+                                    }
+                                    tail_buf.push_str(&line_buf);
+                                    if tail_buf.len() > 4000 {
+                                        let start = tail_buf.len().saturating_sub(4000);
+                                        *tail_buf = tail_buf[start..].to_string();
+                                    }
+                                }
+                                line_buf.clear();
+                            }
+                        } else {
+                            line_buf.push(c);
+                        }
+                    }
                 }
-                buffer.push_str(&line);
-                if buffer.len() > 4000 {
-                    let start = buffer.len().saturating_sub(4000);
-                    *buffer = buffer[start..].to_string();
-                }
+                Err(_) => break,
             }
         }
     });

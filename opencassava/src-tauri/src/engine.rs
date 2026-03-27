@@ -300,6 +300,8 @@ impl AppState {
             runtime_root,
             model: settings.omni_asr_model.clone(),
             device: settings.omni_asr_device.clone(),
+            // On Windows, fairseq2 is not available natively — route through WSL2.
+            use_wsl: cfg!(windows),
         }
     }
 }
@@ -569,6 +571,11 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
             };
         }
 
+        let setup_message = if cfg!(windows) {
+            "Omni-ASR requires WSL2 + Python 3 inside WSL. Click \"Set up\" to install. See README for details.".into()
+        } else {
+            "Omni-ASR needs Python 3 and setup before transcription can start.".into()
+        };
         return SttStatusPayload {
             selected_provider,
             effective_provider: "omni-asr".into(),
@@ -578,7 +585,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
             ready: false,
             using_fallback: false,
             download_required: true,
-            message: "Omni-ASR needs setup before transcription can start.".into(),
+            message: setup_message,
             parakeet_warming: false,
         };
     }
@@ -2241,4 +2248,22 @@ mod tests {
         let result = top_percentile_mean(&vals, 1.0);
         assert!((result - (0.2 + 0.4 + 0.6) / 3.0).abs() < 1e-5, "got {}", result);
     }
+}
+
+// ── Prerequisite check commands ──────────────────────────────────────────────
+
+/// Check whether WSL2 is available and has Python 3 inside it.
+/// Returns Ok(message) on success or Err(message) with setup instructions.
+#[tauri::command]
+pub fn check_wsl2() -> Result<String, String> {
+    omni_asr::check_wsl2_available()
+        .map(|_| "WSL2 is available and Python 3 is installed inside it.".to_string())
+}
+
+/// Check whether a native Python 3 is available on the system PATH.
+/// Used by faster-whisper and parakeet on all platforms.
+/// Returns Ok(command) on success or Err(message) with setup instructions.
+#[tauri::command]
+pub fn check_python() -> Result<String, String> {
+    omni_asr::check_native_python_available()
 }

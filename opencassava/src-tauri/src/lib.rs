@@ -57,6 +57,8 @@ pub fn run() {
             engine::start_calibration_preview,
             engine::stop_calibration_preview,
             engine::calibrate_mic_threshold,
+            engine::check_wsl2,
+            engine::check_python,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {

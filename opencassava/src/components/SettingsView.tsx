@@ -51,10 +51,10 @@ const whisperModelOptions = [
 ];
 
 const sttProviderOptions = [
-  { value: "whisper-rs", label: "whisper-rs", description: "Current in-process local transcription with ggml Whisper models." },
-  { value: "faster-whisper", label: "faster-whisper", description: "Bundled worker-based backend with app-managed Python runtime." },
-  { value: "parakeet", label: "parakeet", description: "NVIDIA Parakeet TDT v3 — multilingual, 25 languages, automatic language detection. Requires Python and ~3 GB disk." },
-  { value: "omni-asr", label: "Omni-ASR", description: "facebookresearch/omnilingual-asr — supports 1,600+ languages with various models. Requires Python and dependencies." },
+  { value: "whisper-rs", label: "whisper-rs", description: "Current in-process local transcription with ggml Whisper models. No extra dependencies required." },
+  { value: "faster-whisper", label: "faster-whisper", description: "Worker-based backend with app-managed Python runtime. Requires Python 3 on your system." },
+  { value: "parakeet", label: "parakeet", description: "NVIDIA Parakeet TDT v3 — multilingual, 25 languages, automatic language detection. Requires Python 3 and ~3 GB disk." },
+  { value: "omni-asr", label: "Omni-ASR", description: "facebookresearch/omnilingual-asr — supports 1,600+ languages. Requires Python 3 (Linux/macOS) or WSL2 + Python 3 (Windows)." },
 ];
 
 const parakeetModelOptions = [
@@ -158,12 +158,39 @@ export function SettingsView({
   const [calibrationCountdown, setCalibrationCountdown] = useState(0);
   const [calibrationLevel, setCalibrationLevel] = useState(0);
   const [calibrationError, setCalibrationError] = useState<string | null>(null);
+  // Prerequisite check state
+  const [wsl2Status, setWsl2Status] = useState<{ ok: boolean; message: string } | null>(null);
+  const [pythonStatus, setPythonStatus] = useState<{ ok: boolean; message: string } | null>(null);
+
 
   useEffect(() => {
     invoke<ApiKeys>("get_api_keys")
       .then(setApiKeys)
       .catch((err) => setError(String(err)));
   }, []);
+
+  // Check prerequisites when the Advanced tab becomes active or the provider changes
+  useEffect(() => {
+    if (!settings || activeTab !== "advanced") return;
+    const provider = settings.sttProvider;
+    // WSL2 check — only matters for omni-asr on Windows
+    if (provider === "omni-asr" && isWindows) {
+      invoke<string>("check_wsl2")
+        .then(() => setWsl2Status({ ok: true, message: "WSL2 is available and Python 3 is installed inside it." }))
+        .catch((err: string) => setWsl2Status({ ok: false, message: err }));
+    } else {
+      setWsl2Status(null);
+    }
+    // Native Python check — for faster-whisper and parakeet
+    if (provider === "faster-whisper" || provider === "parakeet") {
+      invoke<string>("check_python")
+        .then((cmd) => setPythonStatus({ ok: true, message: `Python 3 found (${cmd}).` }))
+        .catch((err: string) => setPythonStatus({ ok: false, message: err }));
+    } else {
+      setPythonStatus(null);
+    }
+  }, [settings?.sttProvider, activeTab]);
+
 
   useEffect(() => {
     if (initialSettings) {
@@ -880,9 +907,8 @@ export function SettingsView({
                   <option 
                     key={option.value} 
                     value={option.value}
-                    disabled={isWindows && option.value === "omni-asr"}
                   >
-                    {option.label}{isWindows && option.value === "omni-asr" ? " (Unsupported on Windows)" : ""}
+                    {option.label}
                   </option>
                 ))}
               </select>
@@ -1163,6 +1189,88 @@ export function SettingsView({
                 </div>
               </>
             ) : null}
+            {/* WSL2 prerequisite banner — Windows + omni-asr only */}
+            {wsl2Status && (
+              <div style={{
+                marginTop: spacing[2],
+                padding: spacing[3],
+                background: wsl2Status.ok ? `${colors.success}12` : `${colors.warning}12`,
+                border: `1px solid ${wsl2Status.ok ? colors.success : colors.warning}`,
+                borderRadius: 6,
+              }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: spacing[2] }}>
+                  <span style={{ fontSize: 18 }}>{wsl2Status.ok ? "✅" : "⚠️"}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: typography.base, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
+                      {wsl2Status.ok ? "WSL2 Ready" : "WSL2 Required for Omni-ASR on Windows"}
+                    </div>
+                    <div style={{ fontSize: typography.sm, color: colors.textMuted, lineHeight: 1.5 }}>
+                      {wsl2Status.message}
+                    </div>
+                    {!wsl2Status.ok && (
+                      <div style={{ marginTop: spacing[2], display: "flex", flexDirection: "column", gap: spacing[1] }}>
+                        <div style={{ fontSize: typography.sm, color: colors.text, fontWeight: 500 }}>Setup steps:</div>
+                        <ol style={{ margin: 0, paddingLeft: 20, fontSize: typography.sm, color: colors.textMuted, lineHeight: 1.8 }}>
+                          <li>Open PowerShell as Administrator and run: <code style={{ background: colors.surface, padding: "1px 4px", borderRadius: 3 }}>wsl --install</code></li>
+                          <li>After reboot, open the WSL terminal (Ubuntu) and run:<br/>
+                            <code style={{ background: colors.surface, padding: "1px 4px", borderRadius: 3 }}>sudo apt update && sudo apt install -y python3 python3-venv python3-pip</code><br/>
+                            <span style={{ fontSize: typography.xs, color: colors.textMuted }}>On Ubuntu 24.04 with Python 3.12, use: <code style={{ background: colors.surface, padding: "1px 4px", borderRadius: 3 }}>python3.12-venv</code> instead of <code style={{ background: colors.surface, padding: "1px 4px", borderRadius: 3 }}>python3-venv</code></span>
+                          </li>
+                          <li>Then click <strong>Set up Omni-ASR</strong> below.</li>
+                        </ol>
+                        <a
+                          href="https://learn.microsoft.com/en-us/windows/wsl/install"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ fontSize: typography.sm, color: colors.accent, marginTop: spacing[1] }}
+                        >
+                          📖 WSL2 Installation Guide →
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            {/* Python prerequisite banner — faster-whisper and parakeet */}
+            {pythonStatus && (
+              <div style={{
+                marginTop: spacing[2],
+                padding: spacing[3],
+                background: pythonStatus.ok ? `${colors.success}12` : `${colors.warning}12`,
+                border: `1px solid ${pythonStatus.ok ? colors.success : colors.warning}`,
+                borderRadius: 6,
+              }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: spacing[2] }}>
+                  <span style={{ fontSize: 18 }}>{pythonStatus.ok ? "✅" : "⚠️"}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: typography.base, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
+                      {pythonStatus.ok ? "Python 3 Found" : "Python 3 Required"}
+                    </div>
+                    <div style={{ fontSize: typography.sm, color: colors.textMuted, lineHeight: 1.5 }}>
+                      {pythonStatus.message}
+                    </div>
+                    {!pythonStatus.ok && (
+                      <div style={{ marginTop: spacing[2] }}>
+                        <a
+                          href="https://python.org/downloads/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ fontSize: typography.sm, color: colors.accent }}
+                        >
+                          📖 Download Python 3 →
+                        </a>
+                        {isWindows && (
+                          <span style={{ fontSize: typography.sm, color: colors.textMuted, marginLeft: spacing[2] }}>
+                            (check "Add Python to PATH" during installation)
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
             {sttStatus && (
               <div style={{ marginTop: spacing[2], display: "flex", flexDirection: "column", gap: spacing[2] }}>
                 <span style={styles.statusBadge(sttStatus.ready ? (sttStatus.usingFallback ? "warning" : "success") : "error")}>

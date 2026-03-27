@@ -139,6 +139,7 @@ function App() {
   const [audioLevelThem, setAudioLevelThem] = useState(0);
   const [isSettingUpStt, setIsSettingUpStt] = useState(false);
   const [sttSetupMessage, setSttSetupMessage] = useState("");
+  const [sttSetupStage, setSttSetupStage] = useState("");
   const [installLogLines, setInstallLogLines] = useState<string[]>([]);
   const [stopStatusMessage, setStopStatusMessage] = useState<string | null>(null);
   const [parakeetWarming, setParakeetWarming] = useState(false);
@@ -251,6 +252,7 @@ function App() {
       }),
 
       listen<SttSetupStatusEvent>("stt-setup-status", (e) => {
+        setSttSetupStage(e.payload.stage);
         setSttSetupMessage(e.payload.message);
       }),
 
@@ -258,6 +260,11 @@ function App() {
         const line = e.payload.trim();
         if (!line) return;
         setInstallLogLines((prev) => [...prev.slice(-2), line]);
+        
+        const percentMatch = line.match(/(\d{1,3})%/);
+        if (percentMatch) {
+          setDownloadProgress(parseInt(percentMatch[1], 10));
+        }
       }),
 
       listen<{ id: string; kind?: "knowledge_base" | "smart_question"; text: string; kbHits?: any[] }>("suggestion", (e) => {
@@ -315,6 +322,7 @@ function App() {
     setModelError(null);
     setModelState("downloading");
     setIsSettingUpStt(true);
+    setSttSetupStage("prepare");
     setSttSetupMessage("Starting speech-to-text setup...");
     try {
       await invoke("download_stt_model");
@@ -451,19 +459,29 @@ function App() {
   }
 
   if (modelState === "downloading") {
+    const isModelStage = sttSetupStage === "model" || settings?.sttProvider === "whisper-rs" || !settings?.sttProvider;
+    
     return (
       <div style={centerStyle}>
         <div style={{ textAlign: "center", maxWidth: 280 }}>
           <h3 style={{ color: colors.text, margin: "0 0 16px", fontSize: 16 }}>🧠 Setting up Speech-to-Text</h3>
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ width: 260, height: 6, background: colors.surfaceElevated, borderRadius: 3, overflow: "hidden" }}>
-              <div style={{ width: `${downloadProgress}%`, height: "100%", background: colors.accent, borderRadius: 3, transition: "width 0.3s" }} />
+          
+          {!isModelStage ? (
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+              <LoadingSpinner />
             </div>
-          </div>
+          ) : (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ width: 260, height: 6, background: colors.surfaceElevated, borderRadius: 3, overflow: "hidden" }}>
+                <div style={{ width: `${downloadProgress}%`, height: "100%", background: colors.accent, borderRadius: 3, transition: "width 0.3s" }} />
+              </div>
+            </div>
+          )}
+          
           <p style={{ color: colors.textSecondary, fontSize: 12, margin: 0 }}>
             {settings?.sttProvider === "faster-whisper"
-              ? `Preparing faster-whisper... ${downloadProgress}%`
-              : `Downloading ${activeWhisperModel}... ${downloadProgress}%`}
+              ? `Preparing faster-whisper... ${isModelStage ? `${downloadProgress}%` : ''}`
+              : `Downloading ${activeWhisperModel}... ${isModelStage ? `${downloadProgress}%` : ''}`}
           </p>
           {sttSetupMessage && (
             <p style={{ color: colors.textMuted, fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>

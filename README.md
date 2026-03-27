@@ -53,7 +53,8 @@ For first-time setup with LM Studio, start here: [LM Studio Setup Guide](docs/lm
 
 - **Runs 100% locally** - tested primarily with LM Studio for LLM suggestions and local embeddings; no audio has to leave your device.
 - **Flexible AI providers** - use local providers like Ollama, or cloud endpoints through OpenRouter and OpenAI-compatible APIs.
-- **Multi-language transcription** - supports both `whisper-rs` and [NVIDIA Parakeet](https://github.com/NVIDIA/NeMo) for local speech recognition.
+- **Multi-language transcription** - supports `whisper-rs`, [NVIDIA Parakeet](https://github.com/NVIDIA/NeMo), and [Omni-ASR](https://github.com/facebookresearch/omnilingual-asr) (1,600+ languages) for local speech recognition.
+- **Omni-ASR on Windows** - multilingual Omni-ASR runs via WSL2 on Windows. The app guides you through setup automatically.
 
 ---
 
@@ -128,9 +129,34 @@ The installers are output to `opencassava/src-tauri/target/release/bundle/`.
 ### Windows & macOS
 
 - **OS:** Windows 10/11 (64-bit) or macOS 15+ (Apple Silicon)
-- **For local mode (Tested):** LM Studio (or potentially [Ollama](https://ollama.com/)) running locally with your preferred models (e.g., `qwen3:8b` for suggestions, `nomic-embed-text` for embeddings).
+- **For local mode (Tested):** LM Studio (or [Ollama](https://ollama.com/)) running locally with your preferred models (e.g., `qwen3:8b` for suggestions, `nomic-embed-text` for embeddings).
 - **For cloud mode (Untested):** [OpenRouter](https://openrouter.ai/) API key + [Voyage AI](https://www.voyageai.com/) API key.
 - **For OpenAI-compatible embeddings:** any server implementing `/v1/embeddings`.
+
+### Python-based STT engines
+
+The following engines require Python 3 to be installed on your system:
+
+| Engine | Platform | Python Requirement |
+|---|---|---|
+| `faster-whisper` | Windows, macOS, Linux | Python 3 on native system PATH |
+| `parakeet` | Windows, macOS, Linux | Python 3 on native system PATH |
+| `omni-asr` | macOS, Linux | Python 3 on native system PATH |
+| `omni-asr` | **Windows** | **WSL2** with Python 3 inside it |
+
+**`omni-asr` on Windows (WSL2 setup):**
+
+1. Open PowerShell as Administrator and run:
+   ```
+   wsl --install
+   ```
+2. After reboot, open the WSL terminal (Ubuntu) and run:
+   ```
+   sudo apt update && sudo apt install -y python3 python3-venv python3-pip
+   ```
+3. In OpenCassava, go to **Settings → Advanced**, select `Omni-ASR`, and click **Set up Omni-ASR**.
+
+The app will detect missing prerequisites automatically and show guided setup steps in the Settings UI.
 
 ---
 
@@ -151,7 +177,7 @@ OpenCassava is built on a cross-platform Rust core with a shared React frontend.
 |---|---|
 | Framework | [Tauri 2](https://tauri.app/) |
 | Core logic | Rust (`opencassava-core`) |
-| Transcription | [whisper-rs](https://github.com/ubisoft/Voxxiamo#whisper-rs) (Whisper.cpp bindings) |
+| Transcription | whisper-rs (default) · faster-whisper · NVIDIA Parakeet · Omni-ASR |
 | Audio capture | cpal (mic), WASAPI (Windows system audio) |
 | LLM inference | OpenRouter API or [Ollama](https://ollama.com/) |
 | Embeddings | Voyage AI, Ollama, or OpenAI-compatible |
