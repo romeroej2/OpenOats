@@ -264,6 +264,12 @@ impl StreamingTranscriber {
                 SttBackend::OmniAsr(config) => {
                     match crate::transcription::omni_asr::OmniAsrWorker::spawn(&config) {
                         Ok(mut worker) => {
+                            // Load the model into memory before entering the audio loop.
+                            // Without this, the first transcribe() call silently blocks
+                            // for 30-60 s while the 1+ GB checkpoint loads.
+                            if let Err(e) = worker.ensure_model() {
+                                log::error!("omni-asr ensure_model failed: {e}");
+                            }
                             for samples in seg_rx.iter() {
                                 match worker.transcribe(&samples) {
                                     Ok(text) if !text.is_empty() => {
