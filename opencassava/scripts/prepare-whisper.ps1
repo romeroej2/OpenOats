@@ -3,21 +3,40 @@ $ErrorActionPreference = "Stop"
 $workspaceRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $buildRoot = Join-Path $workspaceRoot ".build"
 $whisperRoot = Join-Path $buildRoot "whisper-rs"
-$repoUrl = "https://codeberg.org/tazz4843/whisper-rs.git"
+$repoUrls = @(
+  "https://codeberg.org/tazz4843/whisper-rs.git",
+  "https://github.com/tazz4843/whisper-rs.git"
+)
 $repoCommit = "b202069aa891d8243206f89599c04f0e8e6a3d27"
 $cacheStamp = Join-Path $whisperRoot ".openoats-patched-commit"
+
+function Clone-WhisperRepo {
+  foreach ($repoUrl in $repoUrls) {
+    try {
+      git clone $repoUrl $whisperRoot | Out-Host
+      return
+    } catch {
+      Write-Warning "Failed to clone whisper-rs from $repoUrl. Trying next mirror."
+      if (Test-Path $whisperRoot) {
+        Remove-Item -Recurse -Force $whisperRoot
+      }
+    }
+  }
+
+  throw "Failed to clone whisper-rs from all configured mirrors."
+}
 
 New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
 
 if (-not (Test-Path $whisperRoot)) {
-  git clone $repoUrl $whisperRoot | Out-Host
+  Clone-WhisperRepo
   git -C $whisperRoot checkout $repoCommit | Out-Host
   git -C $whisperRoot submodule update --init --recursive | Out-Host
 } elseif (Test-Path $cacheStamp) {
   $cachedCommit = (Get-Content $cacheStamp -Raw).Trim()
   if ($cachedCommit -ne $repoCommit) {
     Remove-Item -Recurse -Force $whisperRoot
-    git clone $repoUrl $whisperRoot | Out-Host
+    Clone-WhisperRepo
     git -C $whisperRoot checkout $repoCommit | Out-Host
     git -C $whisperRoot submodule update --init --recursive | Out-Host
   }
@@ -26,7 +45,7 @@ if (-not (Test-Path $whisperRoot)) {
     Remove-Item -Recurse -Force $whisperRoot
   }
 
-  git clone $repoUrl $whisperRoot | Out-Host
+  Clone-WhisperRepo
   git -C $whisperRoot checkout $repoCommit | Out-Host
   git -C $whisperRoot submodule update --init --recursive | Out-Host
 }
