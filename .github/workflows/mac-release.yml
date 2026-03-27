@@ -47,22 +47,20 @@ jobs:
         run: pwsh opencassava/scripts/prepare-whisper.ps1
         working-directory: .
 
-      - name: Patch whisper-rs for macOS ARM i8mm compatibility
-        shell: pwsh
-        run: |
-          $buildRs = Get-Content ".build/whisper-rs/sys/build.rs" -Raw
-          $buildRs = $buildRs.Replace(
-            '("GGML_OPENMP", "OFF")',
-            '("GGML_OPENMP", "OFF").define("GGML_MATMUL_INT8", "OFF")'
-          )
-          Set-Content -Path ".build/whisper-rs/sys/build.rs" -Value $buildRs -NoNewline
-        working-directory: .
-
       - name: Install frontend dependencies
         run: npm ci
 
       - name: Build macOS DMG
         run: npm run tauri -- build --bundles dmg
+        env:
+          # Apple Clang 17 on M-series sets __ARM_FEATURE_MATMUL_INT8 based on
+          # native CPU capabilities even when -mcpu=...+noi8mm disables i8mm at
+          # the code-generation level. This causes always_inline vmmlaq_s32 calls
+          # in ggml-cpu-quants.c to fail because the surrounding function is
+          # compiled without i8mm support. Force-undefine the macro so ggml
+          # falls back to its non-i8mm code path.
+          CFLAGS: "-U__ARM_FEATURE_MATMUL_INT8"
+          CXXFLAGS: "-U__ARM_FEATURE_MATMUL_INT8"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
