@@ -239,11 +239,13 @@ jobs:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: opencassava-*
           path: artifacts
+          merge-multiple: true
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
           body_path: release_notes.md
-          files: artifacts/**/*
+          files: artifacts/*
