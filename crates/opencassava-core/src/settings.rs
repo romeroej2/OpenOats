@@ -144,12 +144,27 @@ impl AppSettings {
         } else {
             Self::default()
         };
-        // Migrate old HuggingFace-style omni-asr model names to fairseq2 card names.
+        // Migrate old model names (HuggingFace-style, CTC, unversioned LLM) to
+        // omniASR_LLM_Unlimited_*_v2 card names. The unversioned LLM models use
+        // non-identity size mappings (LLM_300M→1B_v2, LLM_1B→3B_v2) because the
+        // LLM and Unlimited architectures have different capacity profiles at each
+        // parameter count.
         s.omni_asr_model = match s.omni_asr_model.as_str() {
-            "facebook/omnilingual-asr-300m" | "omnilingual-asr-300m" => "omniASR_CTC_300M",
-            "facebook/omnilingual-asr-1b" | "omnilingual-asr-1b" => "omniASR_CTC_1B",
-            "facebook/omnilingual-asr-3b" | "omnilingual-asr-3b" => "omniASR_CTC_3B",
-            "facebook/omnilingual-asr-7b" | "omnilingual-asr-7b" => "omniASR_LLM_7B",
+            "facebook/omnilingual-asr-300m" | "omnilingual-asr-300m" | "omniASR_CTC_300M" => {
+                "omniASR_LLM_Unlimited_300M_v2"
+            }
+            "facebook/omnilingual-asr-1b"
+            | "omnilingual-asr-1b"
+            | "omniASR_CTC_1B"
+            | "omniASR_LLM_300M" => "omniASR_LLM_Unlimited_1B_v2",
+            "facebook/omnilingual-asr-3b"
+            | "omnilingual-asr-3b"
+            | "omniASR_CTC_3B"
+            | "omniASR_LLM_1B" => "omniASR_LLM_Unlimited_3B_v2",
+            "facebook/omnilingual-asr-7b"
+            | "omnilingual-asr-7b"
+            | "omniASR_LLM_3B"
+            | "omniASR_LLM_7B" => "omniASR_LLM_Unlimited_7B_v2",
             other => other,
         }
         .to_string();
@@ -238,7 +253,7 @@ fn default_parakeet_device() -> String {
     "auto".into()
 }
 fn default_omni_asr_model() -> String {
-    "omniASR_CTC_300M".into()
+    "omniASR_LLM_Unlimited_1B_v2".into()
 }
 fn default_omni_asr_device() -> String {
     "auto".into()
@@ -512,5 +527,52 @@ mod tests {
         let s = AppSettings::load_from(path);
         assert!(s.mic_calibration_rms.is_none());
         assert!((s.mic_threshold_multiplier - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn omni_asr_model_migrates_to_v2() {
+        let cases: &[(&str, &str)] = &[
+            // Legacy HuggingFace-style names
+            ("facebook/omnilingual-asr-300m", "omniASR_LLM_Unlimited_300M_v2"),
+            ("omnilingual-asr-300m",          "omniASR_LLM_Unlimited_300M_v2"),
+            ("facebook/omnilingual-asr-1b",   "omniASR_LLM_Unlimited_1B_v2"),
+            ("omnilingual-asr-1b",            "omniASR_LLM_Unlimited_1B_v2"),
+            ("facebook/omnilingual-asr-3b",   "omniASR_LLM_Unlimited_3B_v2"),
+            ("omnilingual-asr-3b",            "omniASR_LLM_Unlimited_3B_v2"),
+            ("facebook/omnilingual-asr-7b",   "omniASR_LLM_Unlimited_7B_v2"),
+            ("omnilingual-asr-7b",            "omniASR_LLM_Unlimited_7B_v2"),
+            // Old CTC names
+            ("omniASR_CTC_300M", "omniASR_LLM_Unlimited_300M_v2"),
+            ("omniASR_CTC_1B",   "omniASR_LLM_Unlimited_1B_v2"),
+            ("omniASR_CTC_3B",   "omniASR_LLM_Unlimited_3B_v2"),
+            // Old unversioned LLM names
+            ("omniASR_LLM_300M", "omniASR_LLM_Unlimited_1B_v2"),
+            ("omniASR_LLM_1B",   "omniASR_LLM_Unlimited_3B_v2"),
+            ("omniASR_LLM_3B",   "omniASR_LLM_Unlimited_7B_v2"),
+            ("omniASR_LLM_7B",   "omniASR_LLM_Unlimited_7B_v2"),
+            // v2 Unlimited names pass through unchanged
+            ("omniASR_LLM_Unlimited_300M_v2", "omniASR_LLM_Unlimited_300M_v2"),
+            ("omniASR_LLM_Unlimited_1B_v2",   "omniASR_LLM_Unlimited_1B_v2"),
+            ("omniASR_LLM_Unlimited_3B_v2",   "omniASR_LLM_Unlimited_3B_v2"),
+            ("omniASR_LLM_Unlimited_7B_v2",   "omniASR_LLM_Unlimited_7B_v2"),
+            // Unknown/custom names pass through unchanged
+            ("my_custom_asr_model", "my_custom_asr_model"),
+        ];
+
+        for (old, expected) in cases {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("settings.json");
+            std::fs::write(
+                &path,
+                format!(r#"{{"omniAsrModel": "{}"}}"#, old),
+            )
+            .unwrap();
+            let s = AppSettings::load_from(path);
+            assert_eq!(
+                s.omni_asr_model, *expected,
+                "expected '{}' to migrate to '{}', got '{}'",
+                old, expected, s.omni_asr_model
+            );
+        }
     }
 }
