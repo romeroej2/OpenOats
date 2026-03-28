@@ -1585,9 +1585,9 @@ mod tests {
         }
 
         struct TestEnv {
-            _lock: MutexGuard<'static, ()>,
-            _tempdir: tempfile::TempDir,
             _path: PathGuard,
+            _tempdir: tempfile::TempDir,
+            _lock: MutexGuard<'static, ()>,
         }
 
         fn write_python(dir: &Path, name: &str, version: Option<&str>) {
@@ -1610,9 +1610,9 @@ mod tests {
             }
             let path = PathGuard::set(td.path());
             TestEnv {
-                _lock: lock,
-                _tempdir: td,
                 _path: path,
+                _tempdir: td,
+                _lock: lock,
             }
         }
 
