@@ -1404,10 +1404,11 @@ pub fn model_storage_exists(config: &OmniAsrConfig) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::native_ld_library_path;
     #[cfg(not(target_os = "windows"))]
     use super::{
         check_native_python_available, detect_native_python, install_native_runtime_packages,
-        native_ld_library_path,
     };
     use super::{
         cuda_variant_for_gpu_info, fairseq2_index_for_variant, locale_to_fairseq_lang,
@@ -1461,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     fn ld_library_path() {
         let venv = PathBuf::from("/tmp/venv");
         assert_eq!(native_ld_library_path(&venv, None), "/tmp/venv/lib");
@@ -1519,7 +1520,7 @@ mod tests {
         assert!(!config.is_installed());
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn pip_install_commands_cuda_variants() {
         fn record_commands(variant: &str) -> String {
