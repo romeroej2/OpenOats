@@ -18,3 +18,4 @@ target/
 opencassava/.npm-cache/
 .worktrees/
 Cargo.lock
+/docs/superpowers
