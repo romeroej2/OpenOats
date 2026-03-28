@@ -698,7 +698,8 @@ where
             .arg("-r")
             .arg(&config.requirements_path)
             .arg("--extra-index-url")
-            .arg(fairseq2_index),
+            .arg(fairseq2_index)
+            .arg("--ignore-requires-python"),
         "install omni-asr runtime dependencies",
         on_line.clone(),
     )?;
@@ -710,7 +711,8 @@ where
             .arg("pip")
             .arg("install")
             .arg("-r")
-            .arg(&config.requirements_path),
+            .arg(&config.requirements_path)
+            .arg("--ignore-requires-python"),
         "install omni-asr runtime dependencies",
         on_line.clone(),
     )?;
@@ -1402,17 +1404,17 @@ pub fn model_storage_exists(config: &OmniAsrConfig) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::native_ld_library_path;
+    #[cfg(not(target_os = "windows"))]
+    use super::{
+        check_native_python_available, detect_native_python, install_native_runtime_packages,
+    };
     use super::{
         cuda_variant_for_gpu_info, fairseq2_index_for_variant, locale_to_fairseq_lang,
         OmniAsrConfig, FAIRSEQ2_CPU_INDEX, FAIRSEQ2_CUDA_BLACKWELL_INDEX, FAIRSEQ2_CUDA_INDEX,
         INSTALL_LAYOUT_VERSION, REQUIREMENTS,
     };
-    #[cfg(not(target_os = "windows"))]
-    use super::{
-        check_native_python_available, detect_native_python, install_native_runtime_packages,
-    };
-    #[cfg(target_os = "linux")]
-    use super::native_ld_library_path;
     #[cfg(not(target_os = "windows"))]
     use std::ffi::OsStr;
     use std::fs;
@@ -1563,6 +1565,7 @@ mod tests {
         use std::env;
         use std::ffi::OsString;
         use std::path::Path;
+        use std::sync::MutexGuard;
 
         struct PathGuard(Option<OsString>);
         impl PathGuard {
@@ -1581,6 +1584,12 @@ mod tests {
             }
         }
 
+        struct TestEnv {
+            _path: PathGuard,
+            _tempdir: tempfile::TempDir,
+            _lock: MutexGuard<'static, ()>,
+        }
+
         fn write_python(dir: &Path, name: &str, version: Option<&str>) {
             let content = match version {
                 Some(v) => format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\necho '{v}'\nexit 0\nfi\nexit 1\n"),
@@ -1593,21 +1602,23 @@ mod tests {
             fs::set_permissions(&path, perms).unwrap();
         }
 
-        fn run_test(
-            cases: &[(&str, Option<&str>)],
-        ) -> (tempfile::TempDir, PathGuard, std::sync::MutexGuard<'static, ()>) {
+        fn run_test(cases: &[(&str, Option<&str>)]) -> TestEnv {
             let lock = path_lock().lock().unwrap();
             let td = tempdir().unwrap();
             for (name, ver) in cases {
                 write_python(td.path(), name, *ver);
             }
-            let guard = PathGuard::set(td.path());
-            (td, guard, lock)
+            let path = PathGuard::set(td.path());
+            TestEnv {
+                _path: path,
+                _tempdir: td,
+                _lock: lock,
+            }
         }
 
         #[test]
         fn selects_supported_python() {
-            let (_td, _guard, _lock) = run_test(&[
+            let _env = run_test(&[
                 ("python3", Some("Python 3.13.0")),
                 ("python", Some("Python 3.12.9")),
             ]);
@@ -1617,13 +1628,13 @@ mod tests {
 
         #[test]
         fn selects_versioned_python() {
-            let (_td, _guard, _lock) = run_test(&[("python3.11", Some("Python 3.11.11"))]);
+            let _env = run_test(&[("python3.11", Some("Python 3.11.11"))]);
             assert_eq!(detect_native_python().unwrap().command, "python3.11");
         }
 
         #[test]
         fn rejects_unsupported_version() {
-            let (_td, _guard, _lock) = run_test(&[("python3", Some("Python 3.13.0"))]);
+            let _env = run_test(&[("python3", Some("Python 3.13.0"))]);
             assert!(detect_native_python().unwrap_err().contains("3.13"));
             assert!(check_native_python_available()
                 .unwrap_err()
@@ -1632,13 +1643,13 @@ mod tests {
 
         #[test]
         fn rejects_old_version() {
-            let (_td, _guard, _lock) = run_test(&[("python3", Some("Python 3.9.0"))]);
+            let _env = run_test(&[("python3", Some("Python 3.9.0"))]);
             assert!(detect_native_python().unwrap_err().contains("3.9"));
         }
 
         #[test]
         fn prefers_explicit_versions() {
-            let (_td, _guard, _lock) = run_test(&[
+            let _env = run_test(&[
                 ("python3", Some("Python 3.13.0")),
                 ("python3.10", Some("Python 3.10.0")),
             ]);
@@ -1647,8 +1658,7 @@ mod tests {
 
         #[test]
         fn skips_commands_without_version() {
-            let (_td, _guard, _lock) =
-                run_test(&[("python3", None), ("python3.12", Some("Python 3.12.0"))]);
+            let _env = run_test(&[("python3", None), ("python3.12", Some("Python 3.12.0"))]);
             assert_eq!(detect_native_python().unwrap().command, "python3.12");
         }
     }

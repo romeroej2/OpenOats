@@ -533,28 +533,34 @@ mod tests {
     fn omni_asr_model_migrates_to_v2() {
         let cases: &[(&str, &str)] = &[
             // Legacy HuggingFace-style names
-            ("facebook/omnilingual-asr-300m", "omniASR_LLM_Unlimited_300M_v2"),
-            ("omnilingual-asr-300m",          "omniASR_LLM_Unlimited_300M_v2"),
-            ("facebook/omnilingual-asr-1b",   "omniASR_LLM_Unlimited_1B_v2"),
-            ("omnilingual-asr-1b",            "omniASR_LLM_Unlimited_1B_v2"),
-            ("facebook/omnilingual-asr-3b",   "omniASR_LLM_Unlimited_3B_v2"),
-            ("omnilingual-asr-3b",            "omniASR_LLM_Unlimited_3B_v2"),
-            ("facebook/omnilingual-asr-7b",   "omniASR_LLM_Unlimited_7B_v2"),
-            ("omnilingual-asr-7b",            "omniASR_LLM_Unlimited_7B_v2"),
+            (
+                "facebook/omnilingual-asr-300m",
+                "omniASR_LLM_Unlimited_300M_v2",
+            ),
+            ("omnilingual-asr-300m", "omniASR_LLM_Unlimited_300M_v2"),
+            ("facebook/omnilingual-asr-1b", "omniASR_LLM_Unlimited_1B_v2"),
+            ("omnilingual-asr-1b", "omniASR_LLM_Unlimited_1B_v2"),
+            ("facebook/omnilingual-asr-3b", "omniASR_LLM_Unlimited_3B_v2"),
+            ("omnilingual-asr-3b", "omniASR_LLM_Unlimited_3B_v2"),
+            ("facebook/omnilingual-asr-7b", "omniASR_LLM_Unlimited_7B_v2"),
+            ("omnilingual-asr-7b", "omniASR_LLM_Unlimited_7B_v2"),
             // Old CTC names
             ("omniASR_CTC_300M", "omniASR_LLM_Unlimited_300M_v2"),
-            ("omniASR_CTC_1B",   "omniASR_LLM_Unlimited_1B_v2"),
-            ("omniASR_CTC_3B",   "omniASR_LLM_Unlimited_3B_v2"),
+            ("omniASR_CTC_1B", "omniASR_LLM_Unlimited_1B_v2"),
+            ("omniASR_CTC_3B", "omniASR_LLM_Unlimited_3B_v2"),
             // Old unversioned LLM names
             ("omniASR_LLM_300M", "omniASR_LLM_Unlimited_1B_v2"),
-            ("omniASR_LLM_1B",   "omniASR_LLM_Unlimited_3B_v2"),
-            ("omniASR_LLM_3B",   "omniASR_LLM_Unlimited_7B_v2"),
-            ("omniASR_LLM_7B",   "omniASR_LLM_Unlimited_7B_v2"),
+            ("omniASR_LLM_1B", "omniASR_LLM_Unlimited_3B_v2"),
+            ("omniASR_LLM_3B", "omniASR_LLM_Unlimited_7B_v2"),
+            ("omniASR_LLM_7B", "omniASR_LLM_Unlimited_7B_v2"),
             // v2 Unlimited names pass through unchanged
-            ("omniASR_LLM_Unlimited_300M_v2", "omniASR_LLM_Unlimited_300M_v2"),
-            ("omniASR_LLM_Unlimited_1B_v2",   "omniASR_LLM_Unlimited_1B_v2"),
-            ("omniASR_LLM_Unlimited_3B_v2",   "omniASR_LLM_Unlimited_3B_v2"),
-            ("omniASR_LLM_Unlimited_7B_v2",   "omniASR_LLM_Unlimited_7B_v2"),
+            (
+                "omniASR_LLM_Unlimited_300M_v2",
+                "omniASR_LLM_Unlimited_300M_v2",
+            ),
+            ("omniASR_LLM_Unlimited_1B_v2", "omniASR_LLM_Unlimited_1B_v2"),
+            ("omniASR_LLM_Unlimited_3B_v2", "omniASR_LLM_Unlimited_3B_v2"),
+            ("omniASR_LLM_Unlimited_7B_v2", "omniASR_LLM_Unlimited_7B_v2"),
             // Unknown/custom names pass through unchanged
             ("my_custom_asr_model", "my_custom_asr_model"),
         ];
@@ -562,11 +568,7 @@ mod tests {
         for (old, expected) in cases {
             let dir = tempdir().unwrap();
             let path = dir.path().join("settings.json");
-            std::fs::write(
-                &path,
-                format!(r#"{{"omniAsrModel": "{}"}}"#, old),
-            )
-            .unwrap();
+            std::fs::write(&path, format!(r#"{{"omniAsrModel": "{}"}}"#, old)).unwrap();
             let s = AppSettings::load_from(path);
             assert_eq!(
                 s.omni_asr_model, *expected,
