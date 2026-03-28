@@ -33,3 +33,28 @@ jobs:
       - name: Run core unit tests
         shell: powershell
         run: cargo test -p opencassava-core
+
+  unit-tests-linux:
+    name: Rust unit tests (Linux)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            opencassava/src-tauri -> target
+
+      - name: Prepare whisper-rs
+        shell: pwsh
+        run: pwsh opencassava/scripts/prepare-whisper.ps1
+
+      - name: Run core unit tests
+        run: cargo test -p opencassava-core
