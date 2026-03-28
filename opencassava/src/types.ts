@@ -78,6 +78,7 @@ export interface SttStatus {
   downloadRequired: boolean;
   message: string;
   parakeetWarming: boolean;
+  omniAsrWarming: boolean;
 }
 
 export interface TranscriptionProgress {

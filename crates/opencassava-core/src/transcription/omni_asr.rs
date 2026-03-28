@@ -1592,19 +1592,21 @@ mod tests {
             fs::set_permissions(&path, perms).unwrap();
         }
 
-        fn run_test(cases: &[(&str, Option<&str>)]) -> (tempfile::TempDir, PathGuard) {
-            let _guard = path_lock().lock().unwrap();
+        fn run_test(
+            cases: &[(&str, Option<&str>)],
+        ) -> (tempfile::TempDir, PathGuard, std::sync::MutexGuard<'static, ()>) {
+            let lock = path_lock().lock().unwrap();
             let td = tempdir().unwrap();
             for (name, ver) in cases {
                 write_python(td.path(), name, *ver);
             }
             let guard = PathGuard::set(td.path());
-            (td, guard)
+            (td, guard, lock)
         }
 
         #[test]
         fn selects_supported_python() {
-            let (_td, _guard) = run_test(&[
+            let (_td, _guard, _lock) = run_test(&[
                 ("python3", Some("Python 3.13.0")),
                 ("python", Some("Python 3.12.9")),
             ]);
@@ -1614,13 +1616,13 @@ mod tests {
 
         #[test]
         fn selects_versioned_python() {
-            let (_td, _guard) = run_test(&[("python3.11", Some("Python 3.11.11"))]);
+            let (_td, _guard, _lock) = run_test(&[("python3.11", Some("Python 3.11.11"))]);
             assert_eq!(detect_native_python().unwrap().command, "python3.11");
         }
 
         #[test]
         fn rejects_unsupported_version() {
-            let (_td, _guard) = run_test(&[("python3", Some("Python 3.13.0"))]);
+            let (_td, _guard, _lock) = run_test(&[("python3", Some("Python 3.13.0"))]);
             assert!(detect_native_python().unwrap_err().contains("3.13"));
             assert!(check_native_python_available()
                 .unwrap_err()
@@ -1629,13 +1631,13 @@ mod tests {
 
         #[test]
         fn rejects_old_version() {
-            let (_td, _guard) = run_test(&[("python3", Some("Python 3.9.0"))]);
+            let (_td, _guard, _lock) = run_test(&[("python3", Some("Python 3.9.0"))]);
             assert!(detect_native_python().unwrap_err().contains("3.9"));
         }
 
         #[test]
         fn prefers_explicit_versions() {
-            let (_td, _guard) = run_test(&[
+            let (_td, _guard, _lock) = run_test(&[
                 ("python3", Some("Python 3.13.0")),
                 ("python3.10", Some("Python 3.10.0")),
             ]);
@@ -1644,7 +1646,7 @@ mod tests {
 
         #[test]
         fn skips_commands_without_version() {
-            let (_td, _guard) =
+            let (_td, _guard, _lock) =
                 run_test(&[("python3", None), ("python3.12", Some("Python 3.12.0"))]);
             assert_eq!(detect_native_python().unwrap().command, "python3.12");
         }

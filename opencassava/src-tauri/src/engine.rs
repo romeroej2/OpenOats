@@ -124,6 +124,8 @@ pub struct SttStatusPayload {
     pub message: String,
     /// True while Parakeet workers are pre-warming in the background.
     pub parakeet_warming: bool,
+    /// True while OmniASR workers are pre-warming in the background.
+    pub omni_asr_warming: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -556,6 +558,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 download_required: false,
                 message: format!("faster-whisper is ready with {}.", config.model),
                 parakeet_warming: false,
+                omni_asr_warming: false,
             };
         }
 
@@ -571,6 +574,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 download_required: true,
                 message: "faster-whisper is unavailable. Falling back to whisper-rs.".into(),
                 parakeet_warming: false,
+                omni_asr_warming: false,
             };
         }
 
@@ -585,6 +589,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
             download_required: true,
             message: "faster-whisper needs setup before transcription can start.".into(),
             parakeet_warming: false,
+            omni_asr_warming: false,
         };
     }
 
@@ -605,6 +610,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 download_required: false,
                 message: format!("parakeet is ready with {}.", config.model),
                 parakeet_warming: false,
+                omni_asr_warming: false,
             };
         }
 
@@ -620,6 +626,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 download_required: true,
                 message: "parakeet is unavailable. Falling back to whisper-rs.".into(),
                 parakeet_warming: false,
+                omni_asr_warming: false,
             };
         }
 
@@ -634,6 +641,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
             download_required: true,
             message: "parakeet needs setup before transcription can start.".into(),
             parakeet_warming: false,
+            omni_asr_warming: false,
         };
     }
 
@@ -654,6 +662,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 download_required: false,
                 message: format!("Omni-ASR is ready with {}.", config.model),
                 parakeet_warming: false,
+                omni_asr_warming: false,
             };
         }
 
@@ -669,6 +678,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 download_required: true,
                 message: "Omni-ASR is unavailable. Falling back to whisper-rs.".into(),
                 parakeet_warming: false,
+                omni_asr_warming: false,
             };
         }
 
@@ -688,6 +698,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
             download_required: true,
             message: setup_message,
             parakeet_warming: false,
+            omni_asr_warming: false,
         };
     }
 
@@ -706,6 +717,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
             "whisper-rs model is missing and needs download.".into()
         },
         parakeet_warming: false,
+        omni_asr_warming: false,
     }
 }
 
@@ -959,6 +971,7 @@ pub fn get_stt_status(
     let settings = state.settings.lock().unwrap().clone();
     let mut status = resolve_stt_status(&app, &settings);
     status.parakeet_warming = state.parakeet_warming.load(Ordering::Relaxed);
+    status.omni_asr_warming = state.omni_asr_warming.load(Ordering::Relaxed);
     Ok(status)
 }
 
@@ -2376,6 +2389,19 @@ mod tests {
             (result - (0.2 + 0.4 + 0.6) / 3.0).abs() < 1e-5,
             "got {}",
             result
+        );
+    }
+
+    #[test]
+    fn app_state_warming_flags_initialize_false() {
+        let state = AppState::new();
+        assert!(
+            !state.parakeet_warming.load(Ordering::Relaxed),
+            "parakeet_warming should start false"
+        );
+        assert!(
+            !state.omni_asr_warming.load(Ordering::Relaxed),
+            "omni_asr_warming should start false"
         );
     }
 }

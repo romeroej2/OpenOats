@@ -166,6 +166,7 @@ function App() {
       const status = await invoke<SttStatus>("get_stt_status");
       setSttStatus(status);
       setParakeetWarming(status.parakeetWarming);
+      setOmniAsrWarming(status.omniAsrWarming);
       setModelError(null);
       setModelState(status.ready ? "ready" : "missing");
     } catch (err) {

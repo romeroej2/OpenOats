@@ -9,8 +9,21 @@ permissions:
 
 jobs:
   unit-tests:
-    name: Rust unit tests
-    runs-on: windows-latest
+    name: Rust unit tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+            artifact_suffix: linux
+          - os: windows-latest
+            label: Windows
+            artifact_suffix: windows
+          - os: macos-latest
+            label: macOS
+            artifact_suffix: macos
 
     steps:
       - name: Check out repository
@@ -19,17 +32,63 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             . -> target
-            opencassava/src-tauri -> target
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
 
       - name: Prepare whisper-rs
-        shell: powershell
-        run: pwsh opencassava/scripts/prepare-whisper.ps1
+        shell: pwsh
+        run: ./opencassava/scripts/prepare-whisper.ps1
 
-      - name: Run core unit tests
-        shell: powershell
-        run: cargo test -p opencassava-core
+      - name: Run core unit tests with coverage
+        shell: pwsh
+        run: cargo llvm-cov --package opencassava-core --json --summary-only --output-path coverage-summary.json
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.artifact_suffix }}
+          path: coverage-summary.json
+
+  coverage-report:
+    name: Consolidated coverage report
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: coverage-artifacts
+
+      - name: Build consolidated coverage report
+        shell: bash
+        run: |
+          python .github/scripts/consolidate_coverage.py coverage-artifacts > coverage-report.md
+          cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload consolidated coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-report.md
