@@ -145,7 +145,10 @@ impl AppSettings {
             Self::default()
         };
         // Migrate old model names (HuggingFace-style, CTC, unversioned LLM) to
-        // omniASR_LLM_Unlimited_*_v2 card names.
+        // omniASR_LLM_Unlimited_*_v2 card names. The unversioned LLM models use
+        // non-identity size mappings (LLM_300M→1B_v2, LLM_1B→3B_v2) because the
+        // LLM and Unlimited architectures have different capacity profiles at each
+        // parameter count.
         s.omni_asr_model = match s.omni_asr_model.as_str() {
             "facebook/omnilingual-asr-300m" | "omnilingual-asr-300m" | "omniASR_CTC_300M" => {
                 "omniASR_LLM_Unlimited_300M_v2"
@@ -550,6 +553,8 @@ mod tests {
             ("omniASR_LLM_Unlimited_1B_v2",   "omniASR_LLM_Unlimited_1B_v2"),
             ("omniASR_LLM_Unlimited_3B_v2",   "omniASR_LLM_Unlimited_3B_v2"),
             ("omniASR_LLM_Unlimited_7B_v2",   "omniASR_LLM_Unlimited_7B_v2"),
+            // Unknown/custom names pass through unchanged
+            ("my_custom_asr_model", "my_custom_asr_model"),
         ];
 
         for (old, expected) in cases {
