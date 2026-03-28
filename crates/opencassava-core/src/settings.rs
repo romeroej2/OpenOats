@@ -161,9 +161,10 @@ impl AppSettings {
             | "omnilingual-asr-3b"
             | "omniASR_CTC_3B"
             | "omniASR_LLM_1B" => "omniASR_LLM_Unlimited_3B_v2",
-            "facebook/omnilingual-asr-7b" | "omnilingual-asr-7b" | "omniASR_LLM_7B" => {
-                "omniASR_LLM_Unlimited_7B_v2"
-            }
+            "facebook/omnilingual-asr-7b"
+            | "omnilingual-asr-7b"
+            | "omniASR_LLM_3B"
+            | "omniASR_LLM_7B" => "omniASR_LLM_Unlimited_7B_v2",
             other => other,
         }
         .to_string();
@@ -547,6 +548,7 @@ mod tests {
             // Old unversioned LLM names
             ("omniASR_LLM_300M", "omniASR_LLM_Unlimited_1B_v2"),
             ("omniASR_LLM_1B",   "omniASR_LLM_Unlimited_3B_v2"),
+            ("omniASR_LLM_3B",   "omniASR_LLM_Unlimited_7B_v2"),
             ("omniASR_LLM_7B",   "omniASR_LLM_Unlimited_7B_v2"),
             // v2 Unlimited names pass through unchanged
             ("omniASR_LLM_Unlimited_300M_v2", "omniASR_LLM_Unlimited_300M_v2"),
