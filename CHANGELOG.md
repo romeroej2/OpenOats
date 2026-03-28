@@ -9,6 +9,34 @@ and the next one.
 
 ---
 
+## [0.2.1] — omniASR LLM Unlimited v2 & Linux fixes
+
+### omniASR model migration
+
+- **LLM Unlimited v2 family** — omniASR now uses the `LLM_Unlimited_*_v2` model
+  family (`LLM_Unlimited_300M_v2`, `LLM_Unlimited_1B_v2`, `LLM_Unlimited_7B_v2`).
+  Settings UI updated to list the new names.
+- **Automatic migration** — saved settings referencing the old `omniASR_LLM_*`
+  names (including the 3B variant) are remapped to the closest v2 equivalent on
+  load; no manual action needed.
+
+### Linux (native) fixes
+
+- **Pinned torch + CUDA cleanup** — `torch` is pinned before installing
+  `omnilingual-asr` on native Linux to prevent pip pulling incompatible CUDA
+  builds. Stale CUDA packages are removed from the venv on install.
+- **Blackwell CUDA variant** — installer detects CUDA 12.8+ (Blackwell GPUs) and
+  selects the appropriate torch wheel index.
+
+### Test / CI fixes
+
+- **macOS unit tests** — fixed a series of test compilation and assertion issues
+  on macOS; `cargo test -p opencassava-core` now passes on all three platforms.
+- **`ld_library_path` test gated to non-Windows** — `PathBuf` uses backslashes on
+  Windows, so the test is skipped on that platform to avoid false negatives.
+
+---
+
 ## [0.2.0] — Omni-ASR WSL2 overhaul
 
 Full end-to-end repair of the Omni-ASR pipeline on Windows via WSL2, fixing a

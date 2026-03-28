@@ -15,7 +15,66 @@ permissions:
   contents: write
 
 jobs:
+  unit-tests:
+    name: Unit tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+          - os: macos-latest
+            label: macOS
+          - os: ubuntu-latest
+            label: Linux
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.release_tag || github.ref_name }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
+
+      - name: Prepare whisper-rs
+        shell: pwsh
+        run: ./opencassava/scripts/prepare-whisper.ps1
+
+      - name: Run core unit tests
+        shell: pwsh
+        run: cargo test -p opencassava-core
+
+  delete-tag-on-failure:
+    name: Delete tag on test failure
+    needs: unit-tests
+    if: failure()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
+          echo "Unit tests failed — deleting tag ${TAG}"
+          gh api --method DELETE "repos/${{ github.repository }}/git/refs/tags/${TAG}"
+
   prepare-whisper:
+    needs: unit-tests
     runs-on: ubuntu-latest
 
     steps:
