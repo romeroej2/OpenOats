@@ -1410,8 +1410,9 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     use super::{
         check_native_python_available, detect_native_python, install_native_runtime_packages,
-        native_ld_library_path,
     };
+    #[cfg(target_os = "linux")]
+    use super::native_ld_library_path;
     #[cfg(not(target_os = "windows"))]
     use std::ffi::OsStr;
     use std::fs;
@@ -1459,7 +1460,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     fn ld_library_path() {
         let venv = PathBuf::from("/tmp/venv");
         assert_eq!(native_ld_library_path(&venv, None), "/tmp/venv/lib");
