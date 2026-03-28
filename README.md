@@ -30,7 +30,12 @@ For first-time setup with LM Studio, start here: [LM Studio Setup Guide](docs/lm
   <img src="assets/image.png" width="360" alt="OpenCassava during a call - suggestions drawn from your own notes appear at the top, live transcript below" />
 </p>
 
----
+
+## Contributing
+
+Found a bug or have an idea? [Open an issue](https://github.com/romeroej2/OpenCassava/issues). PRs encouraged.
+
+
 
 ## Features
 
