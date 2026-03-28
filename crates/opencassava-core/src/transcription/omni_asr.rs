@@ -817,9 +817,11 @@ where
 
     // 5. Install all requirements. torch/torchaudio are already installed for the CPU
     //    variant, so pip will keep them and only fetch the remaining packages from PyPI.
+    //    --ignore-requires-python lets pip install omnilingual-asr on Python 3.13+;
+    //    the package metadata caps at <=3.12 but the wheel is pure-Python and works fine.
     let install_req_script = format!(
         "'{venv_wsl}/bin/python3' -m pip install -r '{req_wsl}' \
-         --extra-index-url {fairseq2_index}"
+         --extra-index-url {fairseq2_index} --ignore-requires-python"
     );
     run_wsl_command(
         &install_req_script,
@@ -1401,11 +1403,16 @@ pub fn model_storage_exists(config: &OmniAsrConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_native_python_available, cuda_variant_for_gpu_info, detect_native_python,
-        fairseq2_index_for_variant, install_native_runtime_packages, locale_to_fairseq_lang,
-        native_ld_library_path, OmniAsrConfig, FAIRSEQ2_CPU_INDEX, FAIRSEQ2_CUDA_BLACKWELL_INDEX,
-        FAIRSEQ2_CUDA_INDEX, INSTALL_LAYOUT_VERSION, REQUIREMENTS,
+        cuda_variant_for_gpu_info, fairseq2_index_for_variant, locale_to_fairseq_lang,
+        OmniAsrConfig, FAIRSEQ2_CPU_INDEX, FAIRSEQ2_CUDA_BLACKWELL_INDEX, FAIRSEQ2_CUDA_INDEX,
+        INSTALL_LAYOUT_VERSION, REQUIREMENTS,
     };
+    #[cfg(not(target_os = "windows"))]
+    use super::{
+        check_native_python_available, detect_native_python, install_native_runtime_packages,
+        native_ld_library_path,
+    };
+    #[cfg(not(target_os = "windows"))]
     use std::ffi::OsStr;
     use std::fs;
     #[cfg(unix)]

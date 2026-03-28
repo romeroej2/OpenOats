@@ -1,0 +1,35 @@
+name: Pull Request
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Rust unit tests
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            opencassava/src-tauri -> target
+
+      - name: Prepare whisper-rs
+        shell: powershell
+        run: pwsh opencassava/scripts/prepare-whisper.ps1
+
+      - name: Run core unit tests
+        shell: powershell
+        run: cargo test -p opencassava-core
