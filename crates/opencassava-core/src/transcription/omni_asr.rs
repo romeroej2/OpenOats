@@ -1518,7 +1518,7 @@ mod tests {
         assert!(!config.is_installed());
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn pip_install_commands_cuda_variants() {
         fn record_commands(variant: &str) -> String {
