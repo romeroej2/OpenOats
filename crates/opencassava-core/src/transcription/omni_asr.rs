@@ -323,6 +323,7 @@ fn command_output(command: &str, args: &[&str]) -> Option<String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn native_ld_library_path(venv_path: &Path, existing: Option<&std::ffi::OsStr>) -> String {
     let mut value = venv_path.join("lib").to_string_lossy().into_owned();
 
@@ -388,7 +389,7 @@ where
     }
 
     #[cfg(not(target_os = "linux"))]
-    let _ = (variant, on_line);
+    let _ = (python_path, variant, on_line);
 
     Ok(())
 }
