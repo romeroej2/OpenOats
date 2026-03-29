@@ -10,6 +10,7 @@ use opencassava_core::{
     audio::{
         cpal_mic::CpalMicCapture,
         echo_cancel::{EchoReferenceBuffer, MicEchoProcessor},
+        recorder::AudioRecorder,
         AudioCaptureService, MicCaptureService,
     },
     download,
@@ -192,6 +193,9 @@ pub struct AppState {
     pub omni_asr_warming: Arc<std::sync::atomic::AtomicBool>,
     pub preview_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub preview_stop: Arc<std::sync::atomic::AtomicBool>,
+    /// Holds the active audio recorder when the user opted in before the session.
+    /// Populated by start_transcription, cleared by discard_recording_files.
+    pub audio_recorder: Mutex<Option<std::sync::Arc<AudioRecorder>>>,
 }
 
 impl AppState {
@@ -234,6 +238,7 @@ impl AppState {
             omni_asr_warming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             preview_task: Mutex::new(None),
             preview_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            audio_recorder: Mutex::new(None),
         }
     }
 
@@ -1067,6 +1072,7 @@ pub fn list_sys_audio_devices() -> Vec<String> {
 pub fn start_transcription(
     app: AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
+    save_recording: bool,
 ) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
 
@@ -1123,6 +1129,15 @@ pub fn start_transcription(
             .ok_or_else(|| "Failed to create a recording session.".to_string())?
     };
     state.transcript_logger.lock().unwrap().start_session();
+
+    // Start audio recorder if the user opted in
+    if save_recording {
+        match AudioRecorder::new(&session_id) {
+            Ok(rec) => *state.audio_recorder.lock().unwrap() = Some(std::sync::Arc::new(rec)),
+            Err(e) => log::warn!("AudioRecorder::new failed, recording disabled: {e}"),
+        }
+    }
+
     state.suggestion_engine.blocking_lock().clear();
     *state.overlay_suggestion.lock().unwrap() = None;
     if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
