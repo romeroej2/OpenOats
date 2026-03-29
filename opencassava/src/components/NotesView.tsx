@@ -60,7 +60,7 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
   const [lastRegenAt, setLastRegenAt] = useState<Date | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [historyViewIndex, setHistoryViewIndex] = useState<number | null>(null);
-  const [_secondsSinceRegen, setSecondsSinceRegen] = useState<number | null>(null);
+  const [, setSecondsSinceRegen] = useState<number | null>(null);
 
   // Refs to avoid stale closures in interval
   const isGeneratingRef = useRef(isGenerating);
@@ -155,7 +155,7 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
     setError(null);
     setShowThoughts(false);
     setHistoryViewIndex(null);
-  }, [sessionId, initialNotes]);
+  }, [sessionId, initialNotes, templates]);
 
   // Turn off auto-regen when recording stops
   useEffect(() => {

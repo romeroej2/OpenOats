@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node ./scripts/vite-dev.mjs",
     "build": "tsc -b ./tsconfig.app.json && node ./scripts/vite-build.mjs",
-    "lint": "eslint .",
+    "lint": "eslint --max-warnings=0 --cache --cache-location .eslintcache \"src/**/*.{ts,tsx}\" \"scripts/**/*.mjs\" \"eslint.config.js\"",
+    "lint:fix": "npm run lint -- --fix",
     "preview": "vite preview",
     "tauri": "node ./scripts/run-tauri.mjs"
   },

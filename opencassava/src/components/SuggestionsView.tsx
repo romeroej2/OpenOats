@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Suggestion } from "../types";
+import type { KBResult, Suggestion } from "../types";
 import { SuggestionControls } from "./SuggestionControls";
 import { colors, typography, spacing } from "../theme";
 
@@ -16,7 +16,7 @@ interface Props {
   onSuggestionsEnabledChange?: (enabled: boolean) => void;
   onSuggestionIntervalChange?: (seconds: number) => void;
   onDismiss?: (id: string) => void;
-  onInjectTest?: (suggestion: { id: string; kind: string; text: string; kbHits: any[] }) => void;
+  onInjectTest?: (suggestion: { id: string; kind: Suggestion["kind"]; text: string; kbHits: KBResult[] }) => void;
 }
 
 interface ParsedBullet {
