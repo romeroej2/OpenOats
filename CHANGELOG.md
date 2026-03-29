@@ -9,6 +9,16 @@ and the next one.
 
 ---
 
+## [Unreleased] — next version
+
+### UI improvements
+
+- **Update availability indicator** - the desktop UI now checks the installed app
+  version against the latest GitHub release and shows a persistent status badge
+  with a direct download link when an update is available. Tracks issue `#25`.
+
+---
+
 ## [0.2.1] — omniASR LLM Unlimited v2 & Linux fixes
 
 ### omniASR model migration
