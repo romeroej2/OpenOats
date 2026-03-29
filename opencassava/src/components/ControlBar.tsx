@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { WaveformVisualizer } from "./WaveformVisualizer";
+import { SuggestionControls } from "./SuggestionControls";
 import { colors, typography, spacing } from "../theme";
 
 interface Props {
@@ -17,6 +18,10 @@ interface Props {
   isSuggestionAnalyzing?: boolean;
   lastSuggestionCheckAt?: string | null;
   lastSuggestionCheckSurfaced?: boolean | null;
+  suggestionsEnabled?: boolean;
+  suggestionIntervalSeconds?: number;
+  onSuggestionsEnabledChange?: (enabled: boolean) => void;
+  onSuggestionIntervalChange?: (seconds: number) => void;
   audioLevel?: number;
   audioLevelThem?: number;
 }
@@ -57,6 +62,10 @@ export function ControlBar({
   isSuggestionAnalyzing = false,
   lastSuggestionCheckAt = null,
   lastSuggestionCheckSurfaced = null,
+  suggestionsEnabled = true,
+  suggestionIntervalSeconds = 30,
+  onSuggestionsEnabledChange,
+  onSuggestionIntervalChange,
   audioLevel = 0,
   audioLevelThem = 0,
 }: Props) {
@@ -370,7 +379,7 @@ export function ControlBar({
 
       <div style={{ flex: 1 }} />
 
-      <div style={{ display: "flex", alignItems: "center", gap: spacing[2] }}>
+      <div style={{ display: "flex", alignItems: "center", gap: spacing[2], flexWrap: "wrap", justifyContent: "flex-end" }}>
         {kbConnected ? (
           <span style={statusBadgeStyle(colors.accent)}>
             <span>KB</span>
@@ -385,18 +394,34 @@ export function ControlBar({
         {isRunning && !isStopping && (
           <span
             style={statusBadgeStyle(
-              isSuggestionAnalyzing
+              !suggestionsEnabled
+                ? colors.textSecondary
+                : isSuggestionAnalyzing
                 ? colors.them
                 : lastSuggestionCheckSurfaced
                   ? colors.success
                   : colors.textSecondary,
             )}
           >
-            <span style={{ fontSize: 6 }}>{isSuggestionAnalyzing ? "o" : "O"}</span>
+            <span style={{ fontSize: 6 }}>{!suggestionsEnabled ? "O" : isSuggestionAnalyzing ? "o" : "O"}</span>
             <span>
-              {isSuggestionAnalyzing ? "Analyzing" : `Suggestions ${formatRelativeTime(lastSuggestionCheckAt)}`}
+              {!suggestionsEnabled
+                ? "Suggestions off"
+                : isSuggestionAnalyzing
+                  ? "Analyzing"
+                  : `Suggestions ${formatRelativeTime(lastSuggestionCheckAt)}`}
             </span>
           </span>
+        )}
+
+        {onSuggestionsEnabledChange && onSuggestionIntervalChange && (
+          <SuggestionControls
+            suggestionsEnabled={suggestionsEnabled}
+            suggestionIntervalSeconds={suggestionIntervalSeconds}
+            onSuggestionsEnabledChange={onSuggestionsEnabledChange}
+            onSuggestionIntervalChange={onSuggestionIntervalChange}
+            compact
+          />
         )}
       </div>
 

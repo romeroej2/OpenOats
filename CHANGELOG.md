@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] - Next version
+
+### Suggestions controls
+
+- **Suggestion quick controls** - added an easy-to-find live suggestions toggle and
+  cadence control directly in the main app UI instead of burying cadence in
+  Settings only.
+- **Suggestion disable setting** - added a persisted `suggestionsEnabled` setting
+  so users can fully turn off live suggestion checks and overlay surfacing.
+
 All notable changes to OpenCassava are documented here.
 
 Format: `## [version] — title` followed by grouped bullet points.
