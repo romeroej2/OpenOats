@@ -1187,6 +1187,7 @@ pub fn start_transcription(
         let recent_utterances_spawn = Arc::clone(&recent_utterances);
         let echo_reference_for_them = echo_reference.clone();
 
+        let them_recorder = state_clone.audio_recorder.lock().unwrap().clone();
         let them_handle = tauri::async_runtime::spawn(async move {
             let sys = SystemAudioCapture::new(sys_device_name.as_deref())
                 .with_stop_signal(Arc::clone(&them_state.stop_requested));
@@ -1204,6 +1205,9 @@ pub fn start_transcription(
                 let rms = compute_rms(&chunk);
                 sys_level_w.store(rms.to_bits(), Ordering::Relaxed);
                 echo_reference.push_render_chunk(&chunk);
+                if let Some(ref rec) = them_recorder {
+                    rec.append_sys(&chunk);
+                }
                 chunk
             });
 
@@ -1513,6 +1517,7 @@ pub fn start_transcription(
         // Share stop_requested as the mic's finished signal so that when stop
         // is clicked the CPAL callback drops its sender, closing the channel
         // and letting the transcriber drain every buffered chunk before halting.
+        let mic_recorder = state_clone.audio_recorder.lock().unwrap().clone();
         let mic = CpalMicCapture::new().with_stop_signal(Arc::clone(&state_clone.stop_requested));
         let mic_stream = mic.buffer_stream_for_device(device_name.as_deref());
         use futures::StreamExt;
@@ -1526,6 +1531,9 @@ pub fn start_transcription(
             let cleaned = echo_processor.process_chunk(&chunk);
             let rms = compute_rms(&cleaned);
             mic_level_w.store(rms.to_bits(), Ordering::Relaxed);
+            if let Some(ref rec) = mic_recorder {
+                rec.append_mic(&cleaned);
+            }
             cleaned
         });
         let app_y = app_clone.clone();
