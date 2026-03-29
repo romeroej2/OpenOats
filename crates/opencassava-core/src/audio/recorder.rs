@@ -2,6 +2,7 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::BufWriter;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const WAV_SPEC: WavSpec = WavSpec {
     channels: 1,
@@ -20,12 +21,8 @@ pub struct AudioRecorder {
     sys_writer: Mutex<Option<WavWriter<BufWriter<std::fs::File>>>>,
     pub mic_path: PathBuf,
     pub sys_path: PathBuf,
+    disabled: AtomicBool,
 }
-
-// WavWriter is !Send because it holds a raw file handle; we access it only
-// through the inner Mutex which ensures exclusive access across tasks.
-unsafe impl Send for AudioRecorder {}
-unsafe impl Sync for AudioRecorder {}
 
 impl AudioRecorder {
     pub fn new(session_id: &str) -> Result<Self, String> {
@@ -41,6 +38,7 @@ impl AudioRecorder {
             sys_writer: Mutex::new(Some(sys_writer)),
             mic_path,
             sys_path,
+            disabled: AtomicBool::new(false),
         })
     }
 
@@ -61,13 +59,17 @@ impl AudioRecorder {
     }
 
     /// Write a chunk of mic samples to the temp WAV file.
-    /// Silently drops the chunk if the writer has been finalized or on error.
+    /// Logs and disables the recorder on write error.
     pub fn append_mic(&self, samples: &[f32]) {
+        if self.disabled.load(Ordering::Relaxed) {
+            return;
+        }
         let mut guard = self.mic_writer.lock().unwrap();
         if let Some(ref mut w) = *guard {
             for &s in samples {
                 if w.write_sample(s).is_err() {
-                    drop(guard);
+                    log::warn!("AudioRecorder: mic write error, disabling recorder");
+                    self.disabled.store(true, Ordering::Relaxed);
                     return;
                 }
             }
@@ -75,12 +77,17 @@ impl AudioRecorder {
     }
 
     /// Write a chunk of system audio samples to the temp WAV file.
+    /// Logs and disables the recorder on write error.
     pub fn append_sys(&self, samples: &[f32]) {
+        if self.disabled.load(Ordering::Relaxed) {
+            return;
+        }
         let mut guard = self.sys_writer.lock().unwrap();
         if let Some(ref mut w) = *guard {
             for &s in samples {
                 if w.write_sample(s).is_err() {
-                    drop(guard);
+                    log::warn!("AudioRecorder: sys write error, disabling recorder");
+                    self.disabled.store(true, Ordering::Relaxed);
                     return;
                 }
             }

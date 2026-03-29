@@ -240,27 +240,32 @@ export function ControlBar({
         ))}
       </select>
 
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: spacing[1],
-          fontSize: typography.sm,
-          color: isRunning ? colors.textMuted : colors.text,
-          cursor: isRunning ? "not-allowed" : "pointer",
-          opacity: isRunning ? 0.5 : 1,
-          userSelect: "none",
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={saveRecording}
-          onChange={(e) => onSaveRecordingChange(e.target.checked)}
-          disabled={isRunning}
-          style={{ cursor: isRunning ? "not-allowed" : "pointer" }}
-        />
-        Record audio
-      </label>
+      {(() => {
+        const isRecordBusy = isRunning || isStopping;
+        return (
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: spacing[1],
+              fontSize: typography.sm,
+              color: isRecordBusy ? colors.textMuted : colors.text,
+              cursor: isRecordBusy ? "not-allowed" : "pointer",
+              opacity: isRecordBusy ? 0.5 : 1,
+              userSelect: "none",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={saveRecording}
+              onChange={(e) => onSaveRecordingChange(e.target.checked)}
+              disabled={isRecordBusy}
+              style={{ cursor: isRecordBusy ? "not-allowed" : "pointer" }}
+            />
+            Record audio
+          </label>
+        );
+      })()}
 
       <button
         onClick={isRunning ? onStop : onStart}

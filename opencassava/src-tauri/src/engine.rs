@@ -2235,7 +2235,7 @@ pub async fn save_transcript(
 }
 
 #[tauri::command]
-pub fn finish_recording(
+pub async fn finish_recording(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<RecordingFilesPayload, String> {
     let recorder = state
@@ -2244,11 +2244,15 @@ pub fn finish_recording(
         .unwrap()
         .take()
         .ok_or("No active recording to finalize")?;
-    let files = recorder.finish()?;
-    Ok(RecordingFilesPayload {
-        mic_path: files.mic_path.to_string_lossy().into_owned(),
-        sys_path: files.sys_path.to_string_lossy().into_owned(),
+    tokio::task::spawn_blocking(move || {
+        let files = recorder.finish()?;
+        Ok(RecordingFilesPayload {
+            mic_path: files.mic_path.to_string_lossy().into_owned(),
+            sys_path: files.sys_path.to_string_lossy().into_owned(),
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2319,9 +2323,14 @@ pub async fn save_recording_merged(
 
     let dest_path = dest.into_path().map_err(|e| e.to_string())?;
 
-    let mic = std::path::Path::new(&mic_path);
-    let sys = std::path::Path::new(&sys_path);
-    AudioRecorder::merge(mic, sys, &dest_path)?;
+    let dest_path_clone = dest_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let mic = std::path::Path::new(&mic_path);
+        let sys = std::path::Path::new(&sys_path);
+        AudioRecorder::merge(mic, sys, &dest_path_clone)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     if let Some(dir) = dest_path.parent() {
         let mut settings = state.settings.lock().unwrap();
