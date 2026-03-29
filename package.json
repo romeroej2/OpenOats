@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "lint": "npm --prefix ./opencassava run lint",
+    "lint:fix": "npm --prefix ./opencassava run lint:fix"
+  },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.1"
   }

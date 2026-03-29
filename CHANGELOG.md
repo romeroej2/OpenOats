@@ -17,6 +17,24 @@ The release workflow reads this file and extracts the section that matches the
 current tag, so keep each release block between its own `## [x.y.z]` header
 and the next one.
 
+## [Unreleased] — next version
+
+### Developer workflow
+
+- **Root lint entrypoint** — added a repo-root `npm run lint` / `npm run lint:fix`
+  path that delegates to the Tauri frontend so contributors and CI use the same
+  command.
+- **Scoped frontend ESLint** — tightened the frontend lint command to target the
+  TypeScript React source, local Node build scripts, and the ESLint config
+  itself while ignoring generated directories.
+- **Typed lint cleanup** — removed the existing frontend lint failures that were
+  blocking a real enforced lint pass, including unsafe `any` usage, stale effect
+  dependencies, and unused props/state.
+- **PR lint job** — pull requests now install frontend dependencies and run the
+  frontend lint check in GitHub Actions instead of only running Rust tests.
+- **Lint cache ignored** — the frontend ESLint cache file is now ignored so local
+  lint runs do not dirty the worktree.
+
 ---
 
 ## [Unreleased] — next version

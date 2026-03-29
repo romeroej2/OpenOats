@@ -5,7 +5,6 @@ interface Props {
   level: number; // 0-1
   isActive: boolean;
   color?: string;
-  colorLight?: string;
 }
 
 const BAR_COUNT = 12;
@@ -25,7 +24,6 @@ export function WaveformVisualizer({
   level,
   isActive,
   color = colors.accent,
-  colorLight: _colorLight = colors.accentLight,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number>(0);

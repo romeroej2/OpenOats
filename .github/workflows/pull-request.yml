@@ -10,6 +10,28 @@ permissions:
   contents: read
 
 jobs:
+  frontend-lint:
+    name: Frontend lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: opencassava/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: opencassava
+        run: npm ci
+
+      - name: Run frontend lint
+        run: npm run lint
+
   unit-tests:
     name: Rust unit tests (${{ matrix.label }})
     runs-on: ${{ matrix.os }}

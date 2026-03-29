@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { WaveformVisualizer } from "./WaveformVisualizer";
 import { SuggestionControls } from "./SuggestionControls";
+import type { AppSettings } from "../types";
 import { colors, typography, spacing } from "../theme";
 
 interface Props {
@@ -76,12 +77,13 @@ export function ControlBar({
   const [duration, setDuration] = useState(0);
   const durationRef = useRef(0);
   const intervalRef = useRef<number | null>(null);
+  const loadSettings = () => invoke<AppSettings>("get_settings");
 
   useEffect(() => {
     Promise.all([
       invoke<string[]>("list_mic_devices"),
       invoke<string[]>("list_sys_audio_devices"),
-      invoke<any>("get_settings"),
+      loadSettings(),
     ]).then(([mics, sysDevs, s]) => {
       setDevices(mics);
       setSysDevices(sysDevs);
@@ -116,11 +118,12 @@ export function ControlBar({
   }, [isRunning, isStopping]);
 
   const isBusy = isRunning || isStopping;
+  const displayedDuration = isBusy ? duration : 0;
 
   const handleDeviceChange = async (device: string) => {
     setSelectedDevice(device);
     try {
-      const settings = await invoke<any>("get_settings");
+      const settings = await loadSettings();
       await invoke("save_settings", {
         newSettings: { ...settings, inputDeviceName: device === "default" ? null : device },
       });
@@ -132,7 +135,7 @@ export function ControlBar({
   const handleSysDeviceChange = async (device: string) => {
     setSelectedSysDevice(device);
     try {
-      const settings = await invoke<any>("get_settings");
+      const settings = await loadSettings();
       await invoke("save_settings", {
         newSettings: { ...settings, systemAudioDeviceName: device === "default" ? null : device },
       });
@@ -353,7 +356,7 @@ export function ControlBar({
               letterSpacing: "0.5px",
             }}
           >
-            {formatDuration(duration)}
+            {formatDuration(displayedDuration)}
           </span>
 
           <div style={{ display: "flex", flexDirection: "column", gap: spacing[1] }}>

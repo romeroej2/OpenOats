@@ -11,6 +11,7 @@ CLAUDE.md
 AGENTS.md
 node_modules/
 opencassava/node_modules/
+opencassava/.eslintcache
 *.log
 target/
 .claude/settings.local.json

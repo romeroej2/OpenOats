@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   Utterance,
   Suggestion,
+  KBResult,
   AppSettings,
   EnhancedNotes,
   SessionDetails,
@@ -302,7 +303,11 @@ function App() {
   useKeyboardShortcuts({
     onStartStop: () => {
       if (modelState === "ready" && !isStopping && !parakeetWarming && !omniAsrWarming) {
-        isRunning ? handleStop() : handleStart();
+        if (isRunning) {
+          void handleStop();
+        } else {
+          void handleStart();
+        }
       }
     },
     onFocusSearch: () => {
@@ -393,7 +398,7 @@ function App() {
         }
       }),
 
-      listen<{ id: string; kind?: "knowledge_base" | "smart_question"; text: string; kbHits?: any[] }>("suggestion", (e) => {
+      listen<{ id: string; kind?: "knowledge_base" | "smart_question"; text: string; kbHits?: KBResult[] }>("suggestion", (e) => {
         setIsGeneratingSuggestion(false);
         setSuggestions((prev) => [
           ...prev,
@@ -888,7 +893,6 @@ function App() {
                 ...prev,
                 {
                   ...s,
-                  kind: s.kind as Suggestion["kind"],
                   timestamp: new Date().toISOString(),
                 },
               ])

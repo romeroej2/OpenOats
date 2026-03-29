@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ApiKeys, AppSettings, SttStatus } from "../types";
@@ -163,6 +163,7 @@ export function SettingsView({
   // Prerequisite check state
   const [wsl2Status, setWsl2Status] = useState<{ ok: boolean; message: string } | null>(null);
   const [pythonStatus, setPythonStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const isWindows = navigator.userAgent.toLowerCase().includes("windows");
 
 
   useEffect(() => {
@@ -191,14 +192,14 @@ export function SettingsView({
     } else {
       setPythonStatus(null);
     }
-  }, [settings?.sttProvider, activeTab]);
+  }, [settings, activeTab, isWindows]);
 
 
   useEffect(() => {
     if (initialSettings) {
       setSettings(initialSettings);
       if (initialSettings.kbFolderPath) {
-        countKBFiles(initialSettings.kbFolderPath);
+        void countKBFiles();
       } else {
         setKbFileCount(0);
       }
@@ -209,37 +210,37 @@ export function SettingsView({
       .then((loadedSettings) => {
         setSettings(loadedSettings);
         if (loadedSettings.kbFolderPath) {
-          countKBFiles(loadedSettings.kbFolderPath);
+          void countKBFiles();
         } else {
           setKbFileCount(0);
         }
       })
       .catch((err) => setError(String(err)));
-  }, [initialSettings]);
+  }, [initialSettings, countKBFiles]);
 
   useEffect(() => {
     if (settings?.kbFolderPath) {
-      syncKnowledgeBase();
+      void syncKnowledgeBase();
     } else {
       setKbStatus(null);
       setIsIndexingKb(false);
     }
-  }, [settings?.kbFolderPath]);
+  }, [settings?.kbFolderPath, syncKnowledgeBase]);
 
-  const countKBFiles = async (_path: string) => {
+  const countKBFiles = useCallback(async () => {
     try {
       setKbFileCount(0);
     } catch {
       setKbFileCount(0);
     }
-  };
+  }, []);
 
   const flashSaved = () => {
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   };
 
-  const syncKnowledgeBase = async () => {
+  const syncKnowledgeBase = useCallback(async () => {
     if (!settings?.kbFolderPath) {
       setKbStatus(null);
       setIsIndexingKb(false);
@@ -262,7 +263,7 @@ export function SettingsView({
     } finally {
       setIsIndexingKb(false);
     }
-  };
+  }, [settings?.kbFolderPath]);
 
   const saveSettings = async (updated: AppSettings) => {
     try {
@@ -326,7 +327,7 @@ export function SettingsView({
         const updated = { ...settings, [key]: selected };
         await saveSettings(updated);
         if (key === "kbFolderPath") {
-          countKBFiles(selected);
+          void countKBFiles();
         }
       }
     } catch (err) {
@@ -349,8 +350,6 @@ export function SettingsView({
     (settings.llmProvider === "ollama" && settings.embeddingProvider === "ollama") ||
     (settings.llmProvider === "openai" && settings.embeddingProvider === "openai" &&
       isLocalUrl(settings.openAiLlmBaseUrl) && isLocalUrl(settings.openAiEmbedBaseUrl));
-
-  const isWindows = navigator.userAgent.toLowerCase().includes("windows");
 
   // Local styles for SettingsView
   const styles = {
