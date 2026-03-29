@@ -86,6 +86,31 @@ impl AudioRecorder {
             }
         }
     }
+
+    /// Mix two mono 16kHz WAV files by averaging samples.
+    /// If one file is shorter it is zero-padded to match the longer one.
+    pub fn merge(mic: &std::path::Path, sys: &std::path::Path, out: &std::path::Path) -> Result<(), String> {
+        let mut mic_r = hound::WavReader::open(mic).map_err(|e| e.to_string())?;
+        let mut sys_r = hound::WavReader::open(sys).map_err(|e| e.to_string())?;
+
+        let mic_samples: Vec<f32> = mic_r.samples::<f32>()
+            .map(|s| s.unwrap_or(0.0))
+            .collect();
+        let sys_samples: Vec<f32> = sys_r.samples::<f32>()
+            .map(|s| s.unwrap_or(0.0))
+            .collect();
+
+        let len = mic_samples.len().max(sys_samples.len());
+        let mut writer = hound::WavWriter::create(out, WAV_SPEC).map_err(|e| e.to_string())?;
+        for i in 0..len {
+            let m = mic_samples.get(i).copied().unwrap_or(0.0);
+            let s = sys_samples.get(i).copied().unwrap_or(0.0);
+            let mixed = ((m + s) / 2.0).clamp(-1.0, 1.0);
+            writer.write_sample(mixed).map_err(|e| e.to_string())?;
+        }
+        writer.finalize().map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -133,5 +158,65 @@ mod tests {
 
         let _ = std::fs::remove_file(&files.mic_path);
         let _ = std::fs::remove_file(&files.sys_path);
+    }
+
+    #[test]
+    fn test_merge_averages_samples() {
+        let tmp = std::env::temp_dir();
+        let mic_p = tmp.join("merge_avg_mic.wav");
+        let sys_p = tmp.join("merge_avg_sys.wav");
+        let out_p = tmp.join("merge_avg_out.wav");
+
+        let mut mw = hound::WavWriter::create(&mic_p, WAV_SPEC).unwrap();
+        mw.write_sample(0.4f32).unwrap();
+        mw.write_sample(0.8f32).unwrap();
+        mw.finalize().unwrap();
+
+        let mut sw = hound::WavWriter::create(&sys_p, WAV_SPEC).unwrap();
+        sw.write_sample(0.2f32).unwrap();
+        sw.write_sample(0.4f32).unwrap();
+        sw.finalize().unwrap();
+
+        AudioRecorder::merge(&mic_p, &sys_p, &out_p).unwrap();
+
+        let mut out_r = hound::WavReader::open(&out_p).unwrap();
+        let samples: Vec<f32> = out_r.samples::<f32>().map(|s| s.unwrap()).collect();
+        assert_eq!(samples.len(), 2);
+        assert!((samples[0] - 0.3).abs() < 1e-5, "expected 0.3, got {}", samples[0]);
+        assert!((samples[1] - 0.6).abs() < 1e-5, "expected 0.6, got {}", samples[1]);
+
+        let _ = std::fs::remove_file(mic_p);
+        let _ = std::fs::remove_file(sys_p);
+        let _ = std::fs::remove_file(out_p);
+    }
+
+    #[test]
+    fn test_merge_zero_pads_shorter_channel() {
+        let tmp = std::env::temp_dir();
+        let mic_p = tmp.join("merge_pad_mic.wav");
+        let sys_p = tmp.join("merge_pad_sys.wav");
+        let out_p = tmp.join("merge_pad_out.wav");
+
+        let mut mw = hound::WavWriter::create(&mic_p, WAV_SPEC).unwrap();
+        mw.write_sample(0.8f32).unwrap();
+        mw.write_sample(0.6f32).unwrap();
+        mw.finalize().unwrap();
+
+        let mut sw = hound::WavWriter::create(&sys_p, WAV_SPEC).unwrap();
+        sw.write_sample(0.4f32).unwrap();
+        // sys is one sample shorter
+        sw.finalize().unwrap();
+
+        AudioRecorder::merge(&mic_p, &sys_p, &out_p).unwrap();
+
+        let mut out_r = hound::WavReader::open(&out_p).unwrap();
+        let samples: Vec<f32> = out_r.samples::<f32>().map(|s| s.unwrap()).collect();
+        assert_eq!(samples.len(), 2);
+        assert!((samples[0] - 0.6).abs() < 1e-5); // (0.8 + 0.4) / 2
+        assert!((samples[1] - 0.3).abs() < 1e-5); // (0.6 + 0.0) / 2
+
+        let _ = std::fs::remove_file(mic_p);
+        let _ = std::fs::remove_file(sys_p);
+        let _ = std::fs::remove_file(out_p);
     }
 }
