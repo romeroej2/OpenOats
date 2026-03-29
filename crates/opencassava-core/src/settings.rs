@@ -615,4 +615,22 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_last_recording_dir_defaults_to_none_and_roundtrips() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings_rec_test.json");
+
+        // Default is None
+        let s = AppSettings::load_from(path.clone());
+        assert!(s.last_recording_dir.is_none());
+
+        // Roundtrip
+        let mut s2 = AppSettings::load_from(path.clone());
+        s2.last_recording_dir = Some("/tmp/recordings".to_string());
+        s2.save_to(path.clone());
+
+        let s3 = AppSettings::load_from(path);
+        assert_eq!(s3.last_recording_dir, Some("/tmp/recordings".to_string()));
+    }
 }
