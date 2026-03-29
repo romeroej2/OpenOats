@@ -85,6 +85,9 @@ pub struct AppSettings {
     )]
     pub suggestion_interval_seconds: u64,
 
+    #[serde(default = "default_true", alias = "suggestions_enabled")]
+    pub suggestions_enabled: bool,
+
     #[serde(default, alias = "kb_folder_path")]
     pub kb_folder_path: Option<String>,
 
@@ -211,6 +214,7 @@ impl Default for AppSettings {
             open_ai_embed_base_url: default_openai_embed_url(),
             open_ai_embed_model: default_openai_embed_model(),
             suggestion_interval_seconds: default_suggestion_interval_seconds(),
+            suggestions_enabled: default_true(),
             kb_folder_path: None,
             notes_folder_path: default_notes_folder(),
             has_acknowledged_recording_consent: false,
@@ -451,6 +455,18 @@ mod tests {
         s.save_to(path.clone());
         let s2 = AppSettings::load_from(path);
         assert_eq!(s2.suggestion_interval_seconds, 180);
+    }
+
+    #[test]
+    fn suggestions_enabled_defaults_and_persists() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = AppSettings::load_from(path.clone());
+        assert!(s.suggestions_enabled);
+        s.suggestions_enabled = false;
+        s.save_to(path.clone());
+        let s2 = AppSettings::load_from(path);
+        assert!(!s2.suggestions_enabled);
     }
 
     #[test]

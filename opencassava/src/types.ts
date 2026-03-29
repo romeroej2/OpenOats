@@ -50,6 +50,7 @@ export interface AppSettings {
   openAiEmbedBaseUrl: string;
   openAiEmbedModel: string;
   suggestionIntervalSeconds: number;
+  suggestionsEnabled: boolean;
   kbFolderPath: string | null;
   notesFolderPath: string;
   hasAcknowledgedRecordingConsent: boolean;

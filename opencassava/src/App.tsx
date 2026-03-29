@@ -161,6 +161,23 @@ function App() {
     setSettings(updated);
   }, []);
 
+  const handleSuggestionSettingsChange = useCallback(
+    async (updates: Partial<Pick<AppSettings, "suggestionsEnabled" | "suggestionIntervalSeconds">>) => {
+      if (!settings) {
+        return;
+      }
+      const nextSettings = { ...settings, ...updates };
+      setSettings(nextSettings);
+      try {
+        await invoke("save_settings", { newSettings: nextSettings });
+      } catch (err) {
+        console.error("Failed to save suggestion settings:", err);
+        setSettings(settings);
+      }
+    },
+    [settings],
+  );
+
   const refreshSttStatus = useCallback(async () => {
     try {
       const status = await invoke<SttStatus>("get_stt_status");
@@ -592,6 +609,10 @@ function App() {
         isSuggestionAnalyzing={isGeneratingSuggestion}
         lastSuggestionCheckAt={lastSuggestionCheckAt}
         lastSuggestionCheckSurfaced={lastSuggestionCheckSurfaced}
+        suggestionsEnabled={settings?.suggestionsEnabled ?? true}
+        suggestionIntervalSeconds={settings?.suggestionIntervalSeconds ?? 30}
+        onSuggestionsEnabledChange={(enabled) => handleSuggestionSettingsChange({ suggestionsEnabled: enabled })}
+        onSuggestionIntervalChange={(seconds) => handleSuggestionSettingsChange({ suggestionIntervalSeconds: seconds })}
         audioLevel={audioLevel}
         audioLevelThem={audioLevelThem}
       />
@@ -671,6 +692,10 @@ function App() {
             kbFileCount={0}
             lastCheckedAt={lastSuggestionCheckAt}
             lastCheckSurfaced={lastSuggestionCheckSurfaced}
+            suggestionsEnabled={settings?.suggestionsEnabled ?? true}
+            suggestionIntervalSeconds={settings?.suggestionIntervalSeconds ?? 30}
+            onSuggestionsEnabledChange={(enabled) => handleSuggestionSettingsChange({ suggestionsEnabled: enabled })}
+            onSuggestionIntervalChange={(seconds) => handleSuggestionSettingsChange({ suggestionIntervalSeconds: seconds })}
             onDismiss={handleDismissSuggestion}
             onInjectTest={(s) =>
               setSuggestions((prev) => [

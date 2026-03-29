@@ -1297,19 +1297,42 @@ export function SettingsView({
               </div>
             )}
             <div style={styles.fieldWrap}>
+              <label style={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={settings.suggestionsEnabled}
+                  onChange={(e) =>
+                    saveSettings({
+                      ...settings,
+                      suggestionsEnabled: e.target.checked,
+                    })
+                  }
+                />
+                <span>Enable live suggestions</span>
+              </label>
+              <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                Turn off all live suggestion checks without changing your other AI settings.
+              </span>
+            </div>
+            <div style={styles.fieldWrap}>
               <label style={styles.labelStyle}>Suggestion Cadence</label>
               <input
                 type="number"
                 min={30}
                 step={15}
                 value={settings.suggestionIntervalSeconds}
+                disabled={!settings.suggestionsEnabled}
                 onChange={(e) =>
                   saveSettings({
                     ...settings,
                     suggestionIntervalSeconds: Math.max(30, Number(e.target.value) || 30),
                   })
                 }
-                style={styles.inputStyle}
+                style={{
+                  ...styles.inputStyle,
+                  opacity: settings.suggestionsEnabled ? 1 : 0.6,
+                  cursor: settings.suggestionsEnabled ? "text" : "not-allowed",
+                }}
               />
               <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
                 Generate suggestions from the recent conversation every N seconds instead of waiting for trigger phrases.

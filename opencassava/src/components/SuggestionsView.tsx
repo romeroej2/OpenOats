@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Suggestion } from "../types";
+import { SuggestionControls } from "./SuggestionControls";
 import { colors, typography, spacing } from "../theme";
 
 interface Props {
@@ -10,6 +11,10 @@ interface Props {
   kbFileCount?: number;
   lastCheckedAt?: string | null;
   lastCheckSurfaced?: boolean | null;
+  suggestionsEnabled?: boolean;
+  suggestionIntervalSeconds?: number;
+  onSuggestionsEnabledChange?: (enabled: boolean) => void;
+  onSuggestionIntervalChange?: (seconds: number) => void;
   onDismiss?: (id: string) => void;
   onInjectTest?: (suggestion: { id: string; kind: string; text: string; kbHits: any[] }) => void;
 }
@@ -395,6 +400,10 @@ export function SuggestionsView({
   kbFileCount = 0,
   lastCheckedAt = null,
   lastCheckSurfaced = null,
+  suggestionsEnabled = true,
+  suggestionIntervalSeconds = 30,
+  onSuggestionsEnabledChange,
+  onSuggestionIntervalChange,
   onDismiss,
   onInjectTest,
 }: Props) {
@@ -420,6 +429,16 @@ export function SuggestionsView({
         }}
       >
         <div style={{ padding: spacing[3] }}>
+          {onSuggestionsEnabledChange && onSuggestionIntervalChange && (
+            <div style={{ marginBottom: spacing[3] }}>
+              <SuggestionControls
+                suggestionsEnabled={suggestionsEnabled}
+                suggestionIntervalSeconds={suggestionIntervalSeconds}
+                onSuggestionsEnabledChange={onSuggestionsEnabledChange}
+                onSuggestionIntervalChange={onSuggestionIntervalChange}
+              />
+            </div>
+          )}
           <button
             onClick={handleInjectTest}
             style={{
@@ -454,6 +473,17 @@ export function SuggestionsView({
         background: colors.background,
       }}
     >
+      {onSuggestionsEnabledChange && onSuggestionIntervalChange && (
+        <div style={{ marginBottom: spacing[3] }}>
+          <SuggestionControls
+            suggestionsEnabled={suggestionsEnabled}
+            suggestionIntervalSeconds={suggestionIntervalSeconds}
+            onSuggestionsEnabledChange={onSuggestionsEnabledChange}
+            onSuggestionIntervalChange={onSuggestionIntervalChange}
+          />
+        </div>
+      )}
+
       <button
         onClick={handleInjectTest}
         style={{

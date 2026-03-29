@@ -1321,6 +1321,15 @@ pub fn start_transcription(
                     break;
                 }
 
+                let settings = suggestion_state.settings.lock().unwrap().clone();
+                if !settings.suggestions_enabled {
+                    *suggestion_state.overlay_suggestion.lock().unwrap() = None;
+                    if let Some(overlay) = suggestion_app.get_webview_window(OVERLAY_LABEL) {
+                        let _ = overlay.hide();
+                    }
+                    continue;
+                }
+
                 let cutoff =
                     chrono::Utc::now() - chrono::Duration::seconds(suggestion_context_window_secs);
                 let recent_buf = suggestion_recent_utterances
@@ -1361,7 +1370,6 @@ pub fn start_transcription(
                     )
                     .ok();
 
-                let settings = suggestion_state.settings.lock().unwrap().clone();
                 {
                     let mut engine = suggestion_state.suggestion_engine.lock().await;
                     engine.kb_surfacing_system_prompt = settings.kb_surfacing_system_prompt.clone();
