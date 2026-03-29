@@ -13,6 +13,7 @@ import type {
   TranscriptionProgress,
 } from "./types";
 import { ControlBar } from "./components/ControlBar";
+import { SaveRecordingModal } from "./components/SaveRecordingModal";
 import { TranscriptView } from "./components/TranscriptView";
 import { SuggestionsView } from "./components/SuggestionsView";
 import { NotesView } from "./components/NotesView";
@@ -186,6 +187,8 @@ function App() {
     latestVersion: null,
     releaseUrl: LATEST_RELEASE_URL,
   });
+  const [saveRecording, setSaveRecording] = useState(false);
+  const [recordingFiles, setRecordingFiles] = useState<{ micPath: string; sysPath: string } | null>(null);
 
   const handleRenameParticipant = useCallback((key: string, newName: string) => {
     setSpeakerLabels((prev) => ({ ...prev, [key]: newName }));
@@ -471,7 +474,7 @@ function App() {
 
   const handleStart = async () => {
     try {
-      const sessionId = await invoke<string>("start_transcription");
+      const sessionId = await invoke<string>("start_transcription", { saveRecording });
       setCurrentSessionId(sessionId);
       setUtterances([]);
       setSuggestions([]);
@@ -504,6 +507,17 @@ function App() {
     try {
       await invoke("stop_transcription");
       setIsRunning(false);
+
+      // Finalize WAV files and show save modal if recording was enabled
+      if (saveRecording) {
+        try {
+          const files = await invoke<{ micPath: string; sysPath: string }>("finish_recording");
+          setRecordingFiles(files);
+        } catch (e) {
+          console.error("finish_recording failed:", e);
+        }
+      }
+
       setStopStatusMessage("Recording fully stopped.");
       window.setTimeout(() => {
         setStopStatusMessage((current) =>
@@ -806,7 +820,17 @@ function App() {
         onSuggestionIntervalChange={(seconds) => handleSuggestionSettingsChange({ suggestionIntervalSeconds: seconds })}
         audioLevel={audioLevel}
         audioLevelThem={audioLevelThem}
+        saveRecording={saveRecording}
+        onSaveRecordingChange={setSaveRecording}
       />
+
+      {recordingFiles && currentSessionId && (
+        <SaveRecordingModal
+          files={recordingFiles}
+          sessionId={currentSessionId}
+          onDone={() => setRecordingFiles(null)}
+        />
+      )}
 
       {stopStatusMessage && (
         <div
