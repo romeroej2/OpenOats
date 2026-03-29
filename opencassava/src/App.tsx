@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
@@ -31,6 +32,11 @@ type SttSetupStatusEvent = {
   stage: string;
   message: string;
 };
+type ReleaseCheckState =
+  | { status: "checking"; currentVersion: string | null; latestVersion: null; releaseUrl: string }
+  | { status: "current"; currentVersion: string; latestVersion: string; releaseUrl: string }
+  | { status: "update"; currentVersion: string; latestVersion: string; releaseUrl: string }
+  | { status: "error"; currentVersion: string | null; latestVersion: null; releaseUrl: string };
 
 type WhisperModelId =
   | "auto"
@@ -106,6 +112,33 @@ function transcriptionLocaleLabel(locale?: string | null): string {
   }
 }
 
+const LATEST_RELEASE_URL = "https://github.com/romeroej2/OpenCassava/releases/latest";
+const LATEST_RELEASE_API_URL = "https://api.github.com/repos/romeroej2/OpenCassava/releases/latest";
+
+function normalizeSemver(version: string): number[] {
+  const cleaned = version.trim().replace(/^v/i, "").split("-")[0];
+  return cleaned.split(".").map((segment) => {
+    const value = Number.parseInt(segment, 10);
+    return Number.isFinite(value) ? value : 0;
+  });
+}
+
+function compareVersions(a: string, b: string): number {
+  const left = normalizeSemver(a);
+  const right = normalizeSemver(b);
+  const maxLength = Math.max(left.length, right.length);
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const aValue = left[index] ?? 0;
+    const bValue = right[index] ?? 0;
+
+    if (aValue > bValue) return 1;
+    if (aValue < bValue) return -1;
+  }
+
+  return 0;
+}
+
 function App() {
   const [modelState, setModelState] = useState<ModelState>("checking");
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -146,9 +179,82 @@ function App() {
   const [parakeetWarming, setParakeetWarming] = useState(false);
   const [omniAsrWarming, setOmniAsrWarming] = useState(false);
   const [speakerLabels, setSpeakerLabels] = useState<Record<string, string>>({});
+  const [releaseCheck, setReleaseCheck] = useState<ReleaseCheckState>({
+    status: "checking",
+    currentVersion: null,
+    latestVersion: null,
+    releaseUrl: LATEST_RELEASE_URL,
+  });
 
   const handleRenameParticipant = useCallback((key: string, newName: string) => {
     setSpeakerLabels((prev) => ({ ...prev, [key]: newName }));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const checkLatestRelease = async () => {
+      try {
+        const currentVersion = await getVersion();
+        if (cancelled) return;
+
+        setReleaseCheck({
+          status: "checking",
+          currentVersion,
+          latestVersion: null,
+          releaseUrl: LATEST_RELEASE_URL,
+        });
+
+        const response = await fetch(LATEST_RELEASE_API_URL, {
+          headers: {
+            Accept: "application/vnd.github+json",
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error(`Release check failed with status ${response.status}`);
+        }
+
+        const payload = (await response.json()) as {
+          html_url?: string;
+          tag_name?: string;
+          name?: string;
+        };
+
+        const latestVersion = (payload.tag_name || payload.name || "").trim().replace(/^v/i, "");
+        if (!latestVersion) {
+          throw new Error("Latest release version was missing");
+        }
+
+        const releaseUrl = payload.html_url || LATEST_RELEASE_URL;
+        const status = compareVersions(latestVersion, currentVersion) > 0 ? "update" : "current";
+
+        if (!cancelled) {
+          setReleaseCheck({
+            status,
+            currentVersion,
+            latestVersion,
+            releaseUrl,
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setReleaseCheck((previous) => ({
+            status: "error",
+            currentVersion: previous.currentVersion,
+            latestVersion: null,
+            releaseUrl: previous.releaseUrl,
+          }));
+        }
+        console.error("Failed to check latest release", error);
+      }
+    };
+
+    checkLatestRelease().catch(console.error);
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
   // Load settings on mount
   useEffect(() => {
@@ -429,6 +535,86 @@ function App() {
   const activeWhisperModel = resolveWhisperModel(settings);
   const activeSttProvider = sttStatus?.effectiveProvider || settings?.sttProvider || "whisper-rs";
   const activeSttModel = sttStatus?.effectiveModel || activeWhisperModel;
+  const releaseIndicator = (() => {
+    if (releaseCheck.status === "checking") {
+      return (
+        <span
+          style={{
+            padding: `${spacing[1]}px ${spacing[2]}px`,
+            background: `${colors.info}12`,
+            color: colors.info,
+            borderRadius: 12,
+            fontWeight: 500,
+          }}
+          title="Checking GitHub for the latest release"
+        >
+          Checking updates...
+        </span>
+      );
+    }
+
+    if (releaseCheck.status === "update") {
+      return (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: spacing[2],
+            flexWrap: "wrap",
+          }}
+        >
+          <span
+            style={{
+              padding: `${spacing[1]}px ${spacing[2]}px`,
+              background: `${colors.warning}15`,
+              color: colors.warning,
+              borderRadius: 12,
+              fontWeight: 600,
+            }}
+            title={`Installed ${releaseCheck.currentVersion} · Latest ${releaseCheck.latestVersion}`}
+          >
+            Update available: v{releaseCheck.latestVersion}
+          </span>
+          <button
+            type="button"
+            onClick={() => window.open(releaseCheck.releaseUrl, "_blank", "noopener,noreferrer")}
+            style={{
+              padding: `${spacing[1]}px ${spacing[2]}px`,
+              background: colors.accent,
+              color: colors.textInverse,
+              border: "none",
+              borderRadius: 12,
+              fontSize: typography.xs,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+            title="Open the latest GitHub release to download an updated installer"
+          >
+            Download update
+          </button>
+        </div>
+      );
+    }
+
+    if (releaseCheck.status === "current") {
+      return (
+        <span
+          style={{
+            padding: `${spacing[1]}px ${spacing[2]}px`,
+            background: `${colors.success}12`,
+            color: colors.success,
+            borderRadius: 12,
+            fontWeight: 500,
+          }}
+          title={`Installed version ${releaseCheck.currentVersion}`}
+        >
+          Up to date: v{releaseCheck.currentVersion}
+        </span>
+      );
+    }
+
+    return null;
+  })();
 
   if (modelState === "checking") {
     return (
@@ -720,6 +906,7 @@ function App() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: spacing[2], flexWrap: "wrap" }}>
+          {releaseIndicator}
           <span
             style={{
               padding: `${spacing[1]}px ${spacing[2]}px`,
