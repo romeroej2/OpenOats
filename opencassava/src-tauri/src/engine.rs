@@ -100,6 +100,13 @@ pub struct AudioLevelPayload {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingFilesPayload {
+    pub mic_path: String,
+    pub sys_path: String,
+}
+
+#[derive(Clone, Serialize)]
 pub struct CalibrationAudioLevelPayload {
     pub level: f32,
 }
@@ -2224,6 +2231,115 @@ pub async fn save_transcript(
         .await
         .map_err(|e| e.to_string())?;
 
+    Ok(())
+}
+
+#[tauri::command]
+pub fn finish_recording(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<RecordingFilesPayload, String> {
+    let recorder = state
+        .audio_recorder
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or("No active recording to finalize")?;
+    let files = recorder.finish()?;
+    Ok(RecordingFilesPayload {
+        mic_path: files.mic_path.to_string_lossy().into_owned(),
+        sys_path: files.sys_path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+pub async fn save_recording_file(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    source_path: String,
+    default_name: String,
+) -> Result<(), String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let last_dir = state.settings.lock().unwrap().last_recording_dir.clone();
+
+    let dest = tokio::task::spawn_blocking(move || {
+        let mut builder = app
+            .dialog()
+            .file()
+            .set_file_name(&default_name)
+            .add_filter("WAV Audio", &["wav"]);
+        if let Some(ref dir) = last_dir {
+            builder = builder.set_directory(dir);
+        }
+        builder.blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or("No file selected")?;
+
+    let dest_path = dest.into_path().map_err(|e| e.to_string())?;
+    tokio::fs::copy(&source_path, &dest_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(dir) = dest_path.parent() {
+        let mut settings = state.settings.lock().unwrap();
+        settings.last_recording_dir = Some(dir.to_string_lossy().into_owned());
+        settings.save();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn save_recording_merged(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    mic_path: String,
+    sys_path: String,
+    default_name: String,
+) -> Result<(), String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let last_dir = state.settings.lock().unwrap().last_recording_dir.clone();
+
+    let dest = tokio::task::spawn_blocking(move || {
+        let mut builder = app
+            .dialog()
+            .file()
+            .set_file_name(&default_name)
+            .add_filter("WAV Audio", &["wav"]);
+        if let Some(ref dir) = last_dir {
+            builder = builder.set_directory(dir);
+        }
+        builder.blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or("No file selected")?;
+
+    let dest_path = dest.into_path().map_err(|e| e.to_string())?;
+
+    let mic = std::path::Path::new(&mic_path);
+    let sys = std::path::Path::new(&sys_path);
+    AudioRecorder::merge(mic, sys, &dest_path)?;
+
+    if let Some(dir) = dest_path.parent() {
+        let mut settings = state.settings.lock().unwrap();
+        settings.last_recording_dir = Some(dir.to_string_lossy().into_owned());
+        settings.save();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn discard_recording_files(
+    state: tauri::State<'_, Arc<AppState>>,
+    mic_path: String,
+    sys_path: String,
+) -> Result<(), String> {
+    *state.audio_recorder.lock().unwrap() = None;
+    let _ = tokio::fs::remove_file(&mic_path).await;
+    let _ = tokio::fs::remove_file(&sys_path).await;
     Ok(())
 }
 

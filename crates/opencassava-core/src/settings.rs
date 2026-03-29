@@ -123,6 +123,9 @@ pub struct AppSettings {
 
     #[serde(default = "default_mic_threshold_multiplier")]
     pub mic_threshold_multiplier: f32,
+
+    #[serde(default)]
+    pub last_recording_dir: Option<String>,
 }
 
 impl AppSettings {
@@ -227,6 +230,7 @@ impl Default for AppSettings {
             echo_cancellation_enabled: default_true(),
             mic_calibration_rms: None,
             mic_threshold_multiplier: default_mic_threshold_multiplier(),
+            last_recording_dir: None,
         }
     }
 }
