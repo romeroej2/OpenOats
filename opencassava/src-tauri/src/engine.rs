@@ -1137,14 +1137,6 @@ pub fn start_transcription(
     };
     state.transcript_logger.lock().unwrap().start_session();
 
-    // Start audio recorder if the user opted in
-    if save_recording {
-        match AudioRecorder::new(&session_id) {
-            Ok(rec) => *state.audio_recorder.lock().unwrap() = Some(std::sync::Arc::new(rec)),
-            Err(e) => log::warn!("AudioRecorder::new failed, recording disabled: {e}"),
-        }
-    }
-
     state.suggestion_engine.blocking_lock().clear();
     *state.overlay_suggestion.lock().unwrap() = None;
     if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
@@ -1163,6 +1155,14 @@ pub fn start_transcription(
     let recent_utterances: Arc<Mutex<Vec<opencassava_core::models::Utterance>>> =
         Arc::new(Mutex::new(Vec::new()));
     let echo_reference = EchoReferenceBuffer::default();
+
+    // Start audio recorder after all early-return points so no orphan is left on failure.
+    if save_recording {
+        match AudioRecorder::new(&session_id) {
+            Ok(rec) => *state.audio_recorder.lock().unwrap() = Some(std::sync::Arc::new(rec)),
+            Err(e) => log::warn!("AudioRecorder::new failed, recording disabled: {e}"),
+        }
+    }
 
     let handle = tauri::async_runtime::spawn(async move {
         // Audio level polling task — runs until is_running goes false
@@ -2245,11 +2245,15 @@ pub async fn finish_recording(
         .take()
         .ok_or("No active recording to finalize")?;
     tokio::task::spawn_blocking(move || {
-        let files = recorder.finish()?;
-        Ok(RecordingFilesPayload {
-            mic_path: files.mic_path.to_string_lossy().into_owned(),
-            sys_path: files.sys_path.to_string_lossy().into_owned(),
-        })
+        // Capture paths before finish() so we can clean up on failure.
+        let mic_path = recorder.mic_path.to_string_lossy().into_owned();
+        let sys_path = recorder.sys_path.to_string_lossy().into_owned();
+        recorder.finish().map_err(|e| {
+            let _ = std::fs::remove_file(&mic_path);
+            let _ = std::fs::remove_file(&sys_path);
+            e.to_string()
+        })?;
+        Ok(RecordingFilesPayload { mic_path, sys_path })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2346,7 +2350,12 @@ pub async fn discard_recording_files(
     mic_path: String,
     sys_path: String,
 ) -> Result<(), String> {
-    *state.audio_recorder.lock().unwrap() = None;
+    let recorder = state.audio_recorder.lock().unwrap().take();
+    if let Some(rec) = recorder {
+        // Finalize WAV headers so the files are valid before deletion. Drop impl
+        // would also attempt finalization but swallows errors silently.
+        let _ = tokio::task::spawn_blocking(move || rec.finish()).await;
+    }
     let _ = tokio::fs::remove_file(&mic_path).await;
     let _ = tokio::fs::remove_file(&sys_path).await;
     Ok(())

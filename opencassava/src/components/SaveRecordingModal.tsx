@@ -19,29 +19,36 @@ export function SaveRecordingModal({ files, sessionId, onDone }: Props) {
   const [saveMerged, setSaveMerged] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Track which saves completed so retrying doesn't re-open already-finished pickers.
+  const [doneMic, setDoneMic] = useState(false);
+  const [doneSys, setDoneSys] = useState(false);
+  const [doneMerged, setDoneMerged] = useState(false);
 
   const handleSave = async () => {
     setSaving(true);
     setError(null);
     try {
-      if (saveMic) {
+      if (saveMic && !doneMic) {
         await invoke("save_recording_file", {
           sourcePath: files.micPath,
           defaultName: `${sessionId}_mic.wav`,
         });
+        setDoneMic(true);
       }
-      if (saveSys) {
+      if (saveSys && !doneSys) {
         await invoke("save_recording_file", {
           sourcePath: files.sysPath,
           defaultName: `${sessionId}_sys.wav`,
         });
+        setDoneSys(true);
       }
-      if (saveMerged) {
+      if (saveMerged && !doneMerged) {
         await invoke("save_recording_merged", {
           micPath: files.micPath,
           sysPath: files.sysPath,
           defaultName: `${sessionId}_merged.wav`,
         });
+        setDoneMerged(true);
       }
       await invoke("discard_recording_files", {
         micPath: files.micPath,

@@ -514,7 +514,8 @@ function App() {
           const files = await invoke<{ micPath: string; sysPath: string }>("finish_recording");
           setRecordingFiles(files);
         } catch (e) {
-          console.error("finish_recording failed:", e);
+          // Rust cleans up temp files on finalize failure; surface the error to the user.
+          setStopStatusMessage(`Recording could not be saved: ${e}`);
         }
       }
 
