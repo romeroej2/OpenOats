@@ -2,6 +2,23 @@
 
 ## [Unreleased] - Next version
 
+### Save recordings
+
+- **Record Audio toggle** — a new checkbox in the ControlBar lets users opt in to
+  recording audio before each session starts. The toggle is disabled mid-session
+  so the choice is locked in at call start.
+- **Per-channel WAV export** — mic and system audio are streamed to separate temp
+  WAV files (16kHz mono f32) in real time during the session with no overhead
+  when recording is off.
+- **Save modal** — when a recorded session ends, a modal offers three checkboxes:
+  *Microphone (you)*, *System audio (them)*, and *Merged (both channels mixed)*.
+  Clicking Save Selected opens a file picker for each chosen file in sequence.
+- **Merged channel** — the merged WAV averages mic and system samples
+  frame-by-frame, zero-padding the shorter channel if they differ in length.
+- **Remembered save location** — the last directory chosen in the file picker is
+  persisted in `AppSettings.lastRecordingDir` and pre-seeded on the next save.
+- Closes issue #24.
+
 ### Suggestions controls
 
 - **Suggestion quick controls** - added an easy-to-find live suggestions toggle and

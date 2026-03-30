@@ -123,6 +123,9 @@ pub struct AppSettings {
 
     #[serde(default = "default_mic_threshold_multiplier")]
     pub mic_threshold_multiplier: f32,
+
+    #[serde(default)]
+    pub last_recording_dir: Option<String>,
 }
 
 impl AppSettings {
@@ -227,6 +230,7 @@ impl Default for AppSettings {
             echo_cancellation_enabled: default_true(),
             mic_calibration_rms: None,
             mic_threshold_multiplier: default_mic_threshold_multiplier(),
+            last_recording_dir: None,
         }
     }
 }
@@ -543,6 +547,24 @@ mod tests {
         let s = AppSettings::load_from(path);
         assert!(s.mic_calibration_rms.is_none());
         assert!((s.mic_threshold_multiplier - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_last_recording_dir_defaults_to_none_and_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings_rec_test.json");
+
+        // Default is None
+        let s = AppSettings::load_from(path.clone());
+        assert!(s.last_recording_dir.is_none());
+
+        // Roundtrip
+        let mut s2 = AppSettings::load_from(path.clone());
+        s2.last_recording_dir = Some("/tmp/recordings".to_string());
+        s2.save_to(path.clone());
+
+        let s3 = AppSettings::load_from(path);
+        assert_eq!(s3.last_recording_dir, Some("/tmp/recordings".to_string()));
     }
 
     #[test]

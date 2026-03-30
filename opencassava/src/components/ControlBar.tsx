@@ -25,6 +25,8 @@ interface Props {
   onSuggestionIntervalChange?: (seconds: number) => void;
   audioLevel?: number;
   audioLevelThem?: number;
+  saveRecording: boolean;
+  onSaveRecordingChange: (v: boolean) => void;
 }
 
 function formatRelativeTime(iso: string | null | undefined): string {
@@ -69,6 +71,8 @@ export function ControlBar({
   onSuggestionIntervalChange,
   audioLevel = 0,
   audioLevelThem = 0,
+  saveRecording,
+  onSaveRecordingChange,
 }: Props) {
   const [devices, setDevices] = useState<string[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("default");
@@ -235,6 +239,33 @@ export function ControlBar({
           </option>
         ))}
       </select>
+
+      {(() => {
+        const isRecordBusy = isRunning || isStopping;
+        return (
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: spacing[1],
+              fontSize: typography.sm,
+              color: isRecordBusy ? colors.textMuted : colors.text,
+              cursor: isRecordBusy ? "not-allowed" : "pointer",
+              opacity: isRecordBusy ? 0.5 : 1,
+              userSelect: "none",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={saveRecording}
+              onChange={(e) => onSaveRecordingChange(e.target.checked)}
+              disabled={isRecordBusy}
+              style={{ cursor: isRecordBusy ? "not-allowed" : "pointer" }}
+            />
+            Record audio
+          </label>
+        );
+      })()}
 
       <button
         onClick={isRunning ? onStop : onStart}

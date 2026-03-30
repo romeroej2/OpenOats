@@ -10,6 +10,7 @@ use opencassava_core::{
     audio::{
         cpal_mic::CpalMicCapture,
         echo_cancel::{EchoReferenceBuffer, MicEchoProcessor},
+        recorder::AudioRecorder,
         AudioCaptureService, MicCaptureService,
     },
     download,
@@ -96,6 +97,13 @@ pub struct ApiKeysPayload {
 pub struct AudioLevelPayload {
     pub you: f32,
     pub them: f32,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingFilesPayload {
+    pub mic_path: String,
+    pub sys_path: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -192,6 +200,9 @@ pub struct AppState {
     pub omni_asr_warming: Arc<std::sync::atomic::AtomicBool>,
     pub preview_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub preview_stop: Arc<std::sync::atomic::AtomicBool>,
+    /// Holds the active audio recorder when the user opted in before the session.
+    /// Populated by start_transcription, cleared by discard_recording_files.
+    pub audio_recorder: Mutex<Option<std::sync::Arc<AudioRecorder>>>,
 }
 
 impl AppState {
@@ -234,6 +245,7 @@ impl AppState {
             omni_asr_warming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             preview_task: Mutex::new(None),
             preview_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            audio_recorder: Mutex::new(None),
         }
     }
 
@@ -1067,6 +1079,7 @@ pub fn list_sys_audio_devices() -> Vec<String> {
 pub fn start_transcription(
     app: AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
+    save_recording: bool,
 ) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
 
@@ -1123,6 +1136,7 @@ pub fn start_transcription(
             .ok_or_else(|| "Failed to create a recording session.".to_string())?
     };
     state.transcript_logger.lock().unwrap().start_session();
+
     state.suggestion_engine.blocking_lock().clear();
     *state.overlay_suggestion.lock().unwrap() = None;
     if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
@@ -1141,6 +1155,14 @@ pub fn start_transcription(
     let recent_utterances: Arc<Mutex<Vec<opencassava_core::models::Utterance>>> =
         Arc::new(Mutex::new(Vec::new()));
     let echo_reference = EchoReferenceBuffer::default();
+
+    // Start audio recorder after all early-return points so no orphan is left on failure.
+    if save_recording {
+        match AudioRecorder::new(&session_id) {
+            Ok(rec) => *state.audio_recorder.lock().unwrap() = Some(std::sync::Arc::new(rec)),
+            Err(e) => log::warn!("AudioRecorder::new failed, recording disabled: {e}"),
+        }
+    }
 
     let handle = tauri::async_runtime::spawn(async move {
         // Audio level polling task — runs until is_running goes false
@@ -1172,6 +1194,7 @@ pub fn start_transcription(
         let recent_utterances_spawn = Arc::clone(&recent_utterances);
         let echo_reference_for_them = echo_reference.clone();
 
+        let them_recorder = state_clone.audio_recorder.lock().unwrap().clone();
         let them_handle = tauri::async_runtime::spawn(async move {
             let sys = SystemAudioCapture::new(sys_device_name.as_deref())
                 .with_stop_signal(Arc::clone(&them_state.stop_requested));
@@ -1189,6 +1212,9 @@ pub fn start_transcription(
                 let rms = compute_rms(&chunk);
                 sys_level_w.store(rms.to_bits(), Ordering::Relaxed);
                 echo_reference.push_render_chunk(&chunk);
+                if let Some(ref rec) = them_recorder {
+                    rec.append_sys(&chunk);
+                }
                 chunk
             });
 
@@ -1498,6 +1524,7 @@ pub fn start_transcription(
         // Share stop_requested as the mic's finished signal so that when stop
         // is clicked the CPAL callback drops its sender, closing the channel
         // and letting the transcriber drain every buffered chunk before halting.
+        let mic_recorder = state_clone.audio_recorder.lock().unwrap().clone();
         let mic = CpalMicCapture::new().with_stop_signal(Arc::clone(&state_clone.stop_requested));
         let mic_stream = mic.buffer_stream_for_device(device_name.as_deref());
         use futures::StreamExt;
@@ -1511,6 +1538,9 @@ pub fn start_transcription(
             let cleaned = echo_processor.process_chunk(&chunk);
             let rms = compute_rms(&cleaned);
             mic_level_w.store(rms.to_bits(), Ordering::Relaxed);
+            if let Some(ref rec) = mic_recorder {
+                rec.append_mic(&cleaned);
+            }
             cleaned
         });
         let app_y = app_clone.clone();
@@ -2201,6 +2231,133 @@ pub async fn save_transcript(
         .await
         .map_err(|e| e.to_string())?;
 
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn finish_recording(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<RecordingFilesPayload, String> {
+    let recorder = state
+        .audio_recorder
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or("No active recording to finalize")?;
+    tokio::task::spawn_blocking(move || {
+        // Capture paths before finish() so we can clean up on failure.
+        let mic_path = recorder.mic_path.to_string_lossy().into_owned();
+        let sys_path = recorder.sys_path.to_string_lossy().into_owned();
+        recorder.finish().map_err(|e| {
+            let _ = std::fs::remove_file(&mic_path);
+            let _ = std::fs::remove_file(&sys_path);
+            e.to_string()
+        })?;
+        Ok(RecordingFilesPayload { mic_path, sys_path })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn save_recording_file(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    source_path: String,
+    default_name: String,
+) -> Result<(), String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let last_dir = state.settings.lock().unwrap().last_recording_dir.clone();
+
+    let dest = tokio::task::spawn_blocking(move || {
+        let mut builder = app
+            .dialog()
+            .file()
+            .set_file_name(&default_name)
+            .add_filter("WAV Audio", &["wav"]);
+        if let Some(ref dir) = last_dir {
+            builder = builder.set_directory(dir);
+        }
+        builder.blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or("No file selected")?;
+
+    let dest_path = dest.into_path().map_err(|e| e.to_string())?;
+    tokio::fs::copy(&source_path, &dest_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(dir) = dest_path.parent() {
+        let mut settings = state.settings.lock().unwrap();
+        settings.last_recording_dir = Some(dir.to_string_lossy().into_owned());
+        settings.save();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn save_recording_merged(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    mic_path: String,
+    sys_path: String,
+    default_name: String,
+) -> Result<(), String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let last_dir = state.settings.lock().unwrap().last_recording_dir.clone();
+
+    let dest = tokio::task::spawn_blocking(move || {
+        let mut builder = app
+            .dialog()
+            .file()
+            .set_file_name(&default_name)
+            .add_filter("WAV Audio", &["wav"]);
+        if let Some(ref dir) = last_dir {
+            builder = builder.set_directory(dir);
+        }
+        builder.blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or("No file selected")?;
+
+    let dest_path = dest.into_path().map_err(|e| e.to_string())?;
+
+    let dest_path_clone = dest_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let mic = std::path::Path::new(&mic_path);
+        let sys = std::path::Path::new(&sys_path);
+        AudioRecorder::merge(mic, sys, &dest_path_clone)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    if let Some(dir) = dest_path.parent() {
+        let mut settings = state.settings.lock().unwrap();
+        settings.last_recording_dir = Some(dir.to_string_lossy().into_owned());
+        settings.save();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn discard_recording_files(
+    state: tauri::State<'_, Arc<AppState>>,
+    mic_path: String,
+    sys_path: String,
+) -> Result<(), String> {
+    let recorder = state.audio_recorder.lock().unwrap().take();
+    if let Some(rec) = recorder {
+        // Finalize WAV headers so the files are valid before deletion. Drop impl
+        // would also attempt finalization but swallows errors silently.
+        let _ = tokio::task::spawn_blocking(move || rec.finish()).await;
+    }
+    let _ = tokio::fs::remove_file(&mic_path).await;
+    let _ = tokio::fs::remove_file(&sys_path).await;
     Ok(())
 }
 
