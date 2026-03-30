@@ -31,6 +31,7 @@ pub fn run() {
             engine::list_sys_audio_devices,
             engine::start_transcription,
             engine::stop_transcription,
+            engine::start_import_transcription,
             engine::download_model,
             engine::download_stt_model,
             engine::generate_notes,

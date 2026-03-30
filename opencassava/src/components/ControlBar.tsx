@@ -6,11 +6,13 @@ import { colors, typography, spacing } from "../theme";
 
 interface Props {
   isRunning: boolean;
+  isImporting?: boolean;
   isStopping?: boolean;
   capturedSegments?: number;
   processedSegments?: number;
   onStart: () => void;
   onStop: () => void;
+  onImport: () => void;
   disabled?: boolean;
   engineWarming?: boolean;
   kbConnected?: boolean;
@@ -49,11 +51,13 @@ function formatDuration(seconds: number): string {
 
 export function ControlBar({
   isRunning,
+  isImporting = false,
   isStopping = false,
   capturedSegments = 0,
   processedSegments = 0,
   onStart,
   onStop,
+  onImport,
   disabled,
   engineWarming = false,
   kbConnected = false,
@@ -114,7 +118,7 @@ export function ControlBar({
     };
   }, [isRunning, isStopping]);
 
-  const isBusy = isRunning || isStopping;
+  const isBusy = isRunning || isStopping || isImporting;
   const displayedDuration = isBusy ? duration : 0;
 
   const handleDeviceChange = async (device: string) => {
@@ -336,6 +340,61 @@ export function ControlBar({
           </>
         )}
       </button>
+
+      {!isBusy && (
+        <button
+          onClick={onImport}
+          disabled={disabled}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: spacing[2],
+            padding: `${spacing[2]}px ${spacing[3]}px`,
+            background: "transparent",
+            color: colors.textSecondary,
+            border: `1px solid ${colors.border}`,
+            borderRadius: 20,
+            fontSize: typography.md,
+            fontWeight: 500,
+            cursor: disabled ? "not-allowed" : "pointer",
+            opacity: disabled ? 0.5 : 1,
+            transition: "all 0.2s",
+          }}
+        >
+          <span>Import WAV</span>
+        </button>
+      )}
+
+      {isImporting && (
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: spacing[2],
+            padding: `${spacing[1]}px ${spacing[2]}px`,
+            background: `${colors.accent}15`,
+            color: colors.accent,
+            borderRadius: 12,
+            fontSize: 11,
+            fontWeight: 500,
+            fontFamily: "SF Mono, Monaco, monospace",
+          }}
+        >
+          <span
+            style={{
+              display: "inline-block",
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              border: `2px solid ${colors.accent}`,
+              borderTopColor: "transparent",
+              animation: "spin 0.8s linear infinite",
+              flexShrink: 0,
+            }}
+          />
+          Importing…
+        </span>
+      )}
 
       {engineWarming && !isRunning && (
         <span

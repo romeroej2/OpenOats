@@ -1700,6 +1700,163 @@ pub async fn stop_transcription(
 }
 
 #[tauri::command]
+pub async fn start_import_transcription(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    // Open a file picker for WAV files.
+    let path = {
+        let app_dlg = app.clone();
+        tokio::task::spawn_blocking(move || {
+            app_dlg
+                .dialog()
+                .file()
+                .add_filter("WAV Audio", &["wav", "WAV"])
+                .blocking_pick_file()
+                .and_then(|f| f.into_path().ok())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    };
+    let path = path.ok_or_else(|| "No file selected".to_string())?;
+    log::info!("[import] file selected: {}", path.display());
+
+    // Block concurrent sessions (recording or another import).
+    let mut running = state.is_running.lock().unwrap();
+    if *running {
+        return Err("A session is already running.".into());
+    }
+    *running = true;
+    state
+        .stop_requested
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    state.captured_segments.store(0, Ordering::Relaxed);
+    state.processed_segments.store(0, Ordering::Relaxed);
+    drop(running);
+
+    // Start a new session.
+    let session_id = {
+        let mut ss = state.session_store.lock().unwrap();
+        ss.start_session();
+        ss.current_session_id()
+            .map(str::to_owned)
+            .ok_or_else(|| "Failed to create session".to_string())?
+    };
+    state.transcript_logger.lock().unwrap().start_session();
+    state.suggestion_engine.blocking_lock().clear();
+    *state.overlay_suggestion.lock().unwrap() = None;
+
+    let settings = state.settings.lock().unwrap().clone();
+    let (backend, language, _stt_status) = resolve_stt_backend(&app, &settings)?;
+
+    let state_clone = Arc::clone(&*state);
+    let app_clone = app.clone();
+    let session_id_for_event = session_id.clone();
+
+    log::info!("[import] starting session {session_id}");
+
+    let handle = tauri::async_runtime::spawn(async move {
+        // Read and normalise the WAV file to 16 kHz mono f32.
+        let samples =
+            match opencassava_core::audio::recorder::read_wav_as_f32_16k(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("[import] failed to read WAV: {e}");
+                    app_clone.emit("import-error", &e).ok();
+                    *state_clone.is_running.lock().unwrap() = false;
+                    state_clone.session_store.lock().unwrap().end_session();
+                    state_clone.transcript_logger.lock().unwrap().end_session();
+                    return;
+                }
+            };
+
+        let duration_secs = samples.len() as f32 / 16_000.0;
+        log::info!(
+            "[import] loaded {:.1}s of audio ({} samples), starting transcription",
+            duration_secs,
+            samples.len()
+        );
+
+        // Build the transcript callback (same shape as on_you in start_transcription).
+        let app_f = app_clone.clone();
+        let state_f = Arc::clone(&state_clone);
+        let on_final = Box::new(move |text: String, _speaker_id: Option<String>| {
+            let payload = TranscriptPayload {
+                text: text.clone(),
+                speaker: "you".into(),
+                participant_id: "you".into(),
+                participant_label: "You".into(),
+            };
+            app_f.emit("transcript", &payload).ok();
+            let record = SessionRecord {
+                speaker: Speaker::You,
+                participant_id: Some("you".into()),
+                participant_label: Some("You".into()),
+                text: text.clone(),
+                timestamp: chrono::Utc::now(),
+                suggestions: None,
+                kb_hits: None,
+                suggestion_decision: None,
+                surfaced_suggestion_text: None,
+                conversation_state_summary: None,
+            };
+            state_f
+                .session_store
+                .lock()
+                .unwrap()
+                .append_record(&record)
+                .ok();
+            state_f
+                .transcript_logger
+                .lock()
+                .unwrap()
+                .append("You", &text, chrono::Utc::now());
+        });
+
+        // Progress callback — reuses the same counters and event as live recording.
+        let app_p = app_clone.clone();
+        let state_p = Arc::clone(&state_clone);
+        let on_progress = std::sync::Arc::new(move |progress: SegmentProgress| {
+            match progress {
+                SegmentProgress::Captured => {
+                    state_p.captured_segments.fetch_add(1, Ordering::Relaxed);
+                }
+                SegmentProgress::Processed => {
+                    state_p.processed_segments.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            emit_transcription_progress(&app_p, &state_p);
+        });
+
+        // Feed audio through the transcription pipeline in 100 ms chunks.
+        let chunks: Vec<Vec<f32>> = samples.chunks(1600).map(|c| c.to_vec()).collect();
+        let stream = futures::stream::iter(chunks);
+
+        StreamingTranscriber::new(backend, language, on_final)
+            .with_progress(on_progress)
+            .run(stream)
+            .await;
+
+        // Finalise the session — mirror what stop_transcription does.
+        *state_clone.is_running.lock().unwrap() = false;
+        state_clone.session_store.lock().unwrap().end_session();
+        state_clone.transcript_logger.lock().unwrap().end_session();
+        emit_transcription_progress(&app_clone, &state_clone);
+        log::info!(
+            "[import] done — session {}, captured={} processed={}",
+            session_id_for_event,
+            state_clone.captured_segments.load(Ordering::Relaxed),
+            state_clone.processed_segments.load(Ordering::Relaxed),
+        );
+        app_clone.emit("import-complete", &session_id_for_event).ok();
+    });
+
+    *state.audio_task.lock().unwrap() = Some(handle);
+
+    Ok(session_id)
+}
+
+#[tauri::command]
 pub async fn download_model(app: AppHandle, model: String) -> Result<(), String> {
     let model_path = AppState::whisper_model_path_for(&app, &model)?;
     let app_clone = app.clone();

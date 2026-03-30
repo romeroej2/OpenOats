@@ -146,6 +146,7 @@ function App() {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [modelError, setModelError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [utterances, setUtterances] = useState<Utterance[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -449,6 +450,17 @@ function App() {
       listen<{ ready: boolean; message: string }>("omni-asr-warmup-status", (e) => {
         setOmniAsrWarming(!e.payload.ready);
       }),
+
+      listen<string>("import-complete", () => {
+        setIsImporting(false);
+        setIsRunning(false);
+      }),
+
+      listen<string>("import-error", (e) => {
+        setIsImporting(false);
+        setIsRunning(false);
+        alert(`Import failed: ${e.payload}`);
+      }),
     ];
 
     return () => {
@@ -530,6 +542,28 @@ function App() {
       throw e;
     } finally {
       setIsStopping(false);
+    }
+  };
+
+  const handleImport = async () => {
+    try {
+      const sessionId = await invoke<string>("start_import_transcription");
+      setCurrentSessionId(sessionId);
+      setUtterances([]);
+      setSuggestions([]);
+      setCurrentSessionNotes(null);
+      setVolatileYouText("");
+      setVolatileThemText("");
+      setTranscriptionProgress({ capturedSegments: 0, processedSegments: 0 });
+      setIsImporting(true);
+      setIsRunning(true);
+      setTab("transcript");
+    } catch (e) {
+      const msg = String(e);
+      // "No file selected" is a normal cancellation — don't alert the user.
+      if (!msg.includes("No file selected")) {
+        alert(`Failed to import: ${msg}`);
+      }
     }
   };
 
@@ -803,12 +837,14 @@ function App() {
       {/* Control Bar */}
       <ControlBar
         isRunning={isRunning}
+        isImporting={isImporting}
         isStopping={isStopping}
         capturedSegments={transcriptionProgress.capturedSegments}
         processedSegments={transcriptionProgress.processedSegments}
         onStart={handleStart}
         onStop={handleStop}
-        disabled={isStopping || ((parakeetWarming || omniAsrWarming) && !isRunning)}
+        onImport={handleImport}
+        disabled={isStopping || isImporting || ((parakeetWarming || omniAsrWarming) && !isRunning)}
         engineWarming={(parakeetWarming || omniAsrWarming) && !isRunning}
         kbConnected={kbConnected}
         kbFileCount={0}

@@ -120,6 +120,75 @@ impl AudioRecorder {
     }
 }
 
+/// Read a WAV file and return its samples normalised to f32 at 16 kHz mono.
+///
+/// Handles:
+/// - 16-bit, 24-bit, and 32-bit integer PCM
+/// - 32-bit IEEE float
+/// - Any number of channels (mixed down to mono by averaging)
+/// - Any sample rate (linearly resampled to 16 kHz)
+pub fn read_wav_as_f32_16k(path: &std::path::Path) -> Result<Vec<f32>, String> {
+    let mut reader = hound::WavReader::open(path).map_err(|e| e.to_string())?;
+    let spec = reader.spec();
+
+    // Decode every sample to f32 in [-1.0, 1.0]
+    let raw: Vec<f32> = match (spec.sample_format, spec.bits_per_sample) {
+        (hound::SampleFormat::Float, 32) => {
+            reader.samples::<f32>().map(|s| s.unwrap_or(0.0)).collect()
+        }
+        (hound::SampleFormat::Int, 16) => reader
+            .samples::<i16>()
+            .map(|s| s.unwrap_or(0) as f32 / 32_768.0)
+            .collect(),
+        (hound::SampleFormat::Int, bits @ (24 | 32)) => {
+            let scale = if bits == 24 { 8_388_608.0f32 } else { 2_147_483_648.0f32 };
+            reader
+                .samples::<i32>()
+                .map(|s| s.unwrap_or(0) as f32 / scale)
+                .collect()
+        }
+        (fmt, bits) => {
+            return Err(format!("Unsupported WAV format: {fmt:?} {bits}-bit"));
+        }
+    };
+
+    // Mix down to mono
+    let channels = spec.channels as usize;
+    let mono: Vec<f32> = if channels == 1 {
+        raw
+    } else {
+        raw.chunks(channels)
+            .map(|ch| ch.iter().sum::<f32>() / channels as f32)
+            .collect()
+    };
+
+    // Resample to 16 kHz
+    if spec.sample_rate == 16_000 {
+        Ok(mono)
+    } else {
+        Ok(resample_linear(&mono, spec.sample_rate, 16_000))
+    }
+}
+
+/// Linear interpolation resampler.
+fn resample_linear(samples: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
+    if samples.is_empty() || from_hz == to_hz {
+        return samples.to_vec();
+    }
+    let ratio = from_hz as f64 / to_hz as f64;
+    let out_len = (samples.len() as f64 / ratio).ceil() as usize;
+    let mut out = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let src_pos = i as f64 * ratio;
+        let src_i = src_pos as usize;
+        let frac = (src_pos - src_i as f64) as f32;
+        let a = samples.get(src_i).copied().unwrap_or(0.0);
+        let b = samples.get(src_i + 1).copied().unwrap_or(a);
+        out.push(a + (b - a) * frac);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +294,75 @@ mod tests {
         let _ = std::fs::remove_file(mic_p);
         let _ = std::fs::remove_file(sys_p);
         let _ = std::fs::remove_file(out_p);
+    }
+
+    #[test]
+    fn test_read_wav_as_f32_16k_passthrough() {
+        // Native 16 kHz mono float32 — no resampling or conversion needed
+        let tmp = std::env::temp_dir();
+        let p = tmp.join("import_native.wav");
+        let mut w = hound::WavWriter::create(&p, WAV_SPEC).unwrap();
+        w.write_sample(0.5f32).unwrap();
+        w.write_sample(-0.5f32).unwrap();
+        w.finalize().unwrap();
+
+        let samples = read_wav_as_f32_16k(&p).unwrap();
+        assert_eq!(samples.len(), 2);
+        assert!((samples[0] - 0.5).abs() < 1e-5);
+        assert!((samples[1] + 0.5).abs() < 1e-5);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn test_read_wav_as_f32_16k_i16_conversion() {
+        let tmp = std::env::temp_dir();
+        let p = tmp.join("import_i16.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&p, spec).unwrap();
+        w.write_sample(16_384i16).unwrap(); // 0.5 of i16 range
+        w.finalize().unwrap();
+
+        let samples = read_wav_as_f32_16k(&p).unwrap();
+        assert_eq!(samples.len(), 1);
+        assert!((samples[0] - 0.5).abs() < 1e-3);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn test_read_wav_as_f32_16k_stereo_mixdown() {
+        let tmp = std::env::temp_dir();
+        let p = tmp.join("import_stereo.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 16_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(&p, spec).unwrap();
+        // Frame 0: L=1.0, R=0.0 → mono average = 0.5
+        w.write_sample(1.0f32).unwrap();
+        w.write_sample(0.0f32).unwrap();
+        w.finalize().unwrap();
+
+        let samples = read_wav_as_f32_16k(&p).unwrap();
+        assert_eq!(samples.len(), 1);
+        assert!((samples[0] - 0.5).abs() < 1e-5);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn test_resample_linear_doubles_length() {
+        // Resample from 8 kHz to 16 kHz — should approximately double sample count
+        let input: Vec<f32> = (0..8).map(|i| i as f32 / 8.0).collect();
+        let out = resample_linear(&input, 8_000, 16_000);
+        // out_len = ceil(8 / 0.5) = 16
+        assert_eq!(out.len(), 16);
+        // First and middle values should match input at those positions
+        assert!((out[0] - 0.0).abs() < 1e-5);
     }
 }
