@@ -166,6 +166,39 @@ export function SettingsView({
   const isWindows = navigator.userAgent.toLowerCase().includes("windows");
 
 
+  const countKBFiles = useCallback(async () => {
+    try {
+      setKbFileCount(0);
+    } catch {
+      setKbFileCount(0);
+    }
+  }, []);
+
+  const syncKnowledgeBase = useCallback(async () => {
+    if (!settings?.kbFolderPath) {
+      setKbStatus(null);
+      setIsIndexingKb(false);
+      return;
+    }
+
+    try {
+      setIsIndexingKb(true);
+      setKbStatus("Indexing knowledge base...");
+      const addedChunks = await invoke<number>("index_kb");
+      setKbStatus(
+        addedChunks > 0
+          ? `Knowledge base indexed · ${addedChunks} new chunks`
+          : "Knowledge base is ready"
+      );
+      setError(null);
+    } catch (err) {
+      setKbStatus("Knowledge base indexing failed");
+      setError(String(err));
+    } finally {
+      setIsIndexingKb(false);
+    }
+  }, [settings?.kbFolderPath]);
+
   useEffect(() => {
     invoke<ApiKeys>("get_api_keys")
       .then(setApiKeys)
@@ -176,7 +209,6 @@ export function SettingsView({
   useEffect(() => {
     if (!settings || activeTab !== "advanced") return;
     const provider = settings.sttProvider;
-    // WSL2 check — only matters for omni-asr on Windows
     if (provider === "omni-asr" && isWindows) {
       invoke<string>("check_wsl2")
         .then(() => setWsl2Status({ ok: true, message: "WSL2 is available and Python 3 is installed inside it." }))
@@ -184,7 +216,6 @@ export function SettingsView({
     } else {
       setWsl2Status(null);
     }
-    // Native Python check — for faster-whisper and parakeet
     if (provider === "faster-whisper" || provider === "parakeet") {
       invoke<string>("check_python")
         .then((cmd) => setPythonStatus({ ok: true, message: `Python 3 found (${cmd}).` }))
@@ -193,7 +224,6 @@ export function SettingsView({
       setPythonStatus(null);
     }
   }, [settings, activeTab, isWindows]);
-
 
   useEffect(() => {
     if (initialSettings) {
@@ -227,43 +257,10 @@ export function SettingsView({
     }
   }, [settings?.kbFolderPath, syncKnowledgeBase]);
 
-  const countKBFiles = useCallback(async () => {
-    try {
-      setKbFileCount(0);
-    } catch {
-      setKbFileCount(0);
-    }
-  }, []);
-
   const flashSaved = () => {
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   };
-
-  const syncKnowledgeBase = useCallback(async () => {
-    if (!settings?.kbFolderPath) {
-      setKbStatus(null);
-      setIsIndexingKb(false);
-      return;
-    }
-
-    try {
-      setIsIndexingKb(true);
-      setKbStatus("Indexing knowledge base...");
-      const addedChunks = await invoke<number>("index_kb");
-      setKbStatus(
-        addedChunks > 0
-          ? `Knowledge base indexed · ${addedChunks} new chunks`
-          : "Knowledge base is ready"
-      );
-      setError(null);
-    } catch (err) {
-      setKbStatus("Knowledge base indexing failed");
-      setError(String(err));
-    } finally {
-      setIsIndexingKb(false);
-    }
-  }, [settings?.kbFolderPath]);
 
   const saveSettings = async (updated: AppSettings) => {
     try {
@@ -356,7 +353,8 @@ export function SettingsView({
     container: {
       padding: spacing[4],
       overflowY: "auto" as const,
-      height: "100%",
+      flex: 1,
+      minHeight: 0,
       backgroundColor: colors.background,
     },
     header: {

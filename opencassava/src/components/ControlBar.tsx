@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { WaveformVisualizer } from "./WaveformVisualizer";
-import { SuggestionControls } from "./SuggestionControls";
 import type { AppSettings } from "../types";
 import { colors, typography, spacing } from "../theme";
 
@@ -20,9 +19,6 @@ interface Props {
   lastSuggestionCheckAt?: string | null;
   lastSuggestionCheckSurfaced?: boolean | null;
   suggestionsEnabled?: boolean;
-  suggestionIntervalSeconds?: number;
-  onSuggestionsEnabledChange?: (enabled: boolean) => void;
-  onSuggestionIntervalChange?: (seconds: number) => void;
   audioLevel?: number;
   audioLevelThem?: number;
   saveRecording: boolean;
@@ -66,9 +62,6 @@ export function ControlBar({
   lastSuggestionCheckAt = null,
   lastSuggestionCheckSurfaced = null,
   suggestionsEnabled = true,
-  suggestionIntervalSeconds = 30,
-  onSuggestionsEnabledChange,
-  onSuggestionIntervalChange,
   audioLevel = 0,
   audioLevelThem = 0,
   saveRecording,
@@ -448,15 +441,6 @@ export function ControlBar({
           </span>
         )}
 
-        {onSuggestionsEnabledChange && onSuggestionIntervalChange && (
-          <SuggestionControls
-            suggestionsEnabled={suggestionsEnabled}
-            suggestionIntervalSeconds={suggestionIntervalSeconds}
-            onSuggestionsEnabledChange={onSuggestionsEnabledChange}
-            onSuggestionIntervalChange={onSuggestionIntervalChange}
-            compact
-          />
-        )}
       </div>
 
       <style>{`

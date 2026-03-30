@@ -740,7 +740,7 @@ function App() {
 
   const tabs: { key: Tab; label: string; badge?: number }[] = [
     { key: "transcript", label: "Transcript" },
-    { key: "suggestions", label: "Suggestions", badge: suggestions.length },
+    { key: "suggestions", label: "Suggestions" },
     { key: "notes", label: "Notes" },
     { key: "settings", label: "Settings" },
   ];
@@ -816,9 +816,6 @@ function App() {
         lastSuggestionCheckAt={lastSuggestionCheckAt}
         lastSuggestionCheckSurfaced={lastSuggestionCheckSurfaced}
         suggestionsEnabled={settings?.suggestionsEnabled ?? true}
-        suggestionIntervalSeconds={settings?.suggestionIntervalSeconds ?? 30}
-        onSuggestionsEnabledChange={(enabled) => handleSuggestionSettingsChange({ suggestionsEnabled: enabled })}
-        onSuggestionIntervalChange={(seconds) => handleSuggestionSettingsChange({ suggestionIntervalSeconds: seconds })}
         audioLevel={audioLevel}
         audioLevelThem={audioLevelThem}
         saveRecording={saveRecording}

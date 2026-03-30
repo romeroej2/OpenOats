@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "OpenCassava",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "identifier": "com.opencassava.app",
   "build": {
     "frontendDist": "../dist",
@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "OpenCassava",
-        "width": 800,
-        "height": 600,
+        "width": 1100,
+        "height": 750,
         "resizable": true,
         "fullscreen": false,
         "contentProtected": false
