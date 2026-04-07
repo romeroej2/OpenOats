@@ -360,10 +360,16 @@ impl AppState {
 
     pub fn cohere_transcribe_config(settings: &AppSettings) -> CohereTranscribeConfig {
         let runtime_root = Self::cohere_transcribe_root();
+        let use_wsl = cfg!(windows) && settings.cohere_transcribe_device == "wsl-rocm";
+        let device_slug = settings
+            .cohere_transcribe_device
+            .trim()
+            .to_ascii_lowercase()
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
         CohereTranscribeConfig {
             worker_script_path: runtime_root.join("worker.py"),
             requirements_path: runtime_root.join("requirements.txt"),
-            venv_path: runtime_root.join("venv"),
+            venv_path: runtime_root.join(format!("venv-{device_slug}")),
             models_dir: runtime_root.join("models"),
             runtime_root,
             model: settings.cohere_transcribe_model.clone(),
@@ -371,6 +377,13 @@ impl AppState {
             hugging_face_token: keychain::KeyEntry::hugging_face_token()
                 .load()
                 .or_else(|| settings.hugging_face_token.clone()),
+            use_wsl,
+            wsl_venv_linux_path: if use_wsl {
+                omni_asr::detect_wsl_venv_linux_path()
+                    .replace("/omni-asr/", &format!("/cohere-transcribe/{device_slug}/"))
+            } else {
+                String::new()
+            },
         }
     }
 }

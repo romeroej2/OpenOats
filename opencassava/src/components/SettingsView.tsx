@@ -101,6 +101,8 @@ const cohereTranscribeDeviceOptions = [
   { value: "auto", label: "Auto" },
   { value: "cpu", label: "CPU" },
   { value: "cuda", label: "CUDA" },
+  { value: "rocm-windows", label: "ROCm (Windows Experimental)" },
+  { value: "wsl-rocm", label: "ROCm via WSL" },
 ];
 
 const fasterWhisperModelOptions = [
@@ -1254,11 +1256,11 @@ export function SettingsView({
                     {cohereTranscribeModelOptions.find((option) => option.value === settings.cohereTranscribeModel)?.description}
                   </span>
                 </div>
-                <div style={styles.fieldWrap}>
-                  <label style={styles.labelStyle}>Device</label>
-                  <select
-                    value={settings.cohereTranscribeDevice}
-                    onChange={(e) =>
+                  <div style={styles.fieldWrap}>
+                    <label style={styles.labelStyle}>Device</label>
+                    <select
+                      value={settings.cohereTranscribeDevice}
+                      onChange={(e) =>
                       saveSettings({ ...settings, cohereTranscribeDevice: e.target.value })
                     }
                     style={styles.selectStyle}
@@ -1266,10 +1268,17 @@ export function SettingsView({
                     {cohereTranscribeDeviceOptions.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                        </option>
+                      ))}
+                    </select>
+                    <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                      {settings.cohereTranscribeDevice === "rocm-windows"
+                        ? "Experimental AMD ROCm path on native Windows. Currently intended for Radeon 7900-class GPUs with Python 3.12."
+                        : settings.cohereTranscribeDevice === "wsl-rocm"
+                        ? "Uses ROCm through WSL on Windows. This is the more conservative AMD GPU path."
+                        : "Auto and CPU remain the most compatible options if GPU runtime setup fails."}
+                    </span>
+                  </div>
                 <div style={styles.fieldWrap}>
                   <label style={styles.labelStyle}>Hugging Face Token</label>
                   <input
