@@ -64,6 +64,20 @@ and the next one.
 
 ---
 
+## [0.3.0] — Local Cohere Transcribe
+
+### Transcription
+
+- **Local Cohere Transcribe provider** — added `cohere-transcribe` as a new
+  first-class STT backend using a local Python worker with Transformers for
+  `CohereLabs/cohere-transcribe-03-2026`.
+- **Cross-platform setup flow** — Cohere Transcribe can now be configured from
+  the desktop app on Windows, macOS, and Linux with app-managed runtime setup,
+  supported-locale checks, Hugging Face token support, and Whisper fallback
+  when Cohere is unavailable.
+
+---
+
 ## [0.2.1] — omniASR LLM Unlimited v2 & Linux fixes
 
 ### omniASR model migration

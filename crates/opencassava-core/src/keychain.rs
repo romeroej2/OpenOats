@@ -31,9 +31,23 @@ impl KeyEntry {
     pub fn open_ai_embed_api_key() -> Self {
         Self::new("openAIEmbedApiKey")
     }
+    pub fn hugging_face_token() -> Self {
+        Self::new("huggingFaceToken")
+    }
 
     pub fn save(&self, value: &str) -> Result<(), keyring::Error> {
         self.entry.set_password(value)
+    }
+
+    pub fn save_or_delete(&self, value: &str) -> Result<(), keyring::Error> {
+        if value.trim().is_empty() {
+            match self.entry.delete_credential() {
+                Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(err) => Err(err),
+            }
+        } else {
+            self.entry.set_password(value)
+        }
     }
 
     pub fn load(&self) -> Option<String> {

@@ -35,6 +35,8 @@ export interface AppSettings {
   parakeetDevice: string;
   omniAsrModel: string;
   omniAsrDevice: string;
+  cohereTranscribeModel: string;
+  cohereTranscribeDevice: string;
   diarizationEnabled: boolean;
   echoCancellationEnabled: boolean;
   micCalibrationRms: number | null;
@@ -66,6 +68,7 @@ export interface ApiKeys {
   voyageApiKey: string;
   openAiLlmApiKey: string;
   openAiEmbedApiKey: string;
+  huggingFaceToken: string;
 }
 
 export interface SttStatus {
@@ -80,6 +83,7 @@ export interface SttStatus {
   message: string;
   parakeetWarming: boolean;
   omniAsrWarming: boolean;
+  cohereTranscribeWarming: boolean;
 }
 
 export interface TranscriptionProgress {

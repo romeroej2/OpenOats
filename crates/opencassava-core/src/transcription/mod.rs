@@ -1,3 +1,4 @@
+pub mod cohere_transcribe;
 pub mod engine;
 pub mod faster_whisper;
 pub mod omni_asr;

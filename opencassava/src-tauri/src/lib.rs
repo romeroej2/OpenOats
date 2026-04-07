@@ -88,6 +88,11 @@ pub fn run() {
             engine::warm_parakeet_workers(Arc::clone(&_warmup_state), app.handle().clone());
             // Pre-warm OmniASR workers for the same reason.
             engine::warm_omni_asr_workers(Arc::clone(&_warmup_state), app.handle().clone());
+            // Pre-warm Cohere Transcribe workers for the same reason.
+            engine::warm_cohere_transcribe_workers(
+                Arc::clone(&_warmup_state),
+                app.handle().clone(),
+            );
             Ok(())
         })
         .run(tauri::generate_context!())

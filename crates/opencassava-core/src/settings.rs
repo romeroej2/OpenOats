@@ -52,8 +52,23 @@ pub struct AppSettings {
     #[serde(default = "default_omni_asr_device", alias = "omni_asr_device")]
     pub omni_asr_device: String,
 
+    #[serde(
+        default = "default_cohere_transcribe_model",
+        alias = "cohere_transcribe_model"
+    )]
+    pub cohere_transcribe_model: String,
+
+    #[serde(
+        default = "default_cohere_transcribe_device",
+        alias = "cohere_transcribe_device"
+    )]
+    pub cohere_transcribe_device: String,
+
     #[serde(default, alias = "system_audio_device_name")]
     pub system_audio_device_name: Option<String>,
+
+    #[serde(default, alias = "hugging_face_token")]
+    pub hugging_face_token: Option<String>,
 
     #[serde(default = "default_llm_provider", alias = "llm_provider")]
     pub llm_provider: String,
@@ -207,7 +222,10 @@ impl Default for AppSettings {
             parakeet_device: default_parakeet_device(),
             omni_asr_model: default_omni_asr_model(),
             omni_asr_device: default_omni_asr_device(),
+            cohere_transcribe_model: default_cohere_transcribe_model(),
+            cohere_transcribe_device: default_cohere_transcribe_device(),
             system_audio_device_name: None,
+            hugging_face_token: None,
             llm_provider: default_llm_provider(),
             embedding_provider: default_embedding_provider(),
             ollama_base_url: default_ollama_url(),
@@ -264,6 +282,12 @@ fn default_omni_asr_model() -> String {
     "omniASR_LLM_Unlimited_1B_v2".into()
 }
 fn default_omni_asr_device() -> String {
+    "auto".into()
+}
+fn default_cohere_transcribe_model() -> String {
+    "CohereLabs/cohere-transcribe-03-2026".into()
+}
+fn default_cohere_transcribe_device() -> String {
     "auto".into()
 }
 fn default_model() -> String {
@@ -363,6 +387,21 @@ mod tests {
     }
 
     #[test]
+    fn hugging_face_token_defaults_to_none_and_roundtrips() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let s = AppSettings::load_from(path.clone());
+        assert!(s.hugging_face_token.is_none());
+
+        let mut s2 = AppSettings::load_from(path.clone());
+        s2.hugging_face_token = Some("hf_test_token".into());
+        s2.save_to(path.clone());
+
+        let s3 = AppSettings::load_from(path);
+        assert_eq!(s3.hugging_face_token.as_deref(), Some("hf_test_token"));
+    }
+
+    #[test]
     fn whisper_model_missing_from_json_uses_default() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -433,6 +472,36 @@ mod tests {
         assert_eq!(s2.stt_provider, "parakeet");
         assert_eq!(s2.parakeet_model, "nvidia/parakeet-tdt-0.6b-v3");
         assert_eq!(s2.parakeet_device, "cuda");
+    }
+
+    #[test]
+    fn cohere_transcribe_provider_defaults() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+        let s = AppSettings::load_from(path);
+        assert_eq!(
+            s.cohere_transcribe_model,
+            "CohereLabs/cohere-transcribe-03-2026"
+        );
+        assert_eq!(s.cohere_transcribe_device, "auto");
+    }
+
+    #[test]
+    fn cohere_transcribe_provider_persists_and_reloads() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = AppSettings::load_from(path.clone());
+        s.stt_provider = "cohere-transcribe".into();
+        s.cohere_transcribe_model = "CohereLabs/cohere-transcribe-03-2026".into();
+        s.cohere_transcribe_device = "cuda".into();
+        s.save_to(path.clone());
+        let s2 = AppSettings::load_from(path);
+        assert_eq!(s2.stt_provider, "cohere-transcribe");
+        assert_eq!(
+            s2.cohere_transcribe_model,
+            "CohereLabs/cohere-transcribe-03-2026"
+        );
+        assert_eq!(s2.cohere_transcribe_device, "cuda");
     }
 
     #[test]

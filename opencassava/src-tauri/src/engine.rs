@@ -26,6 +26,7 @@ use opencassava_core::{
         transcript_logger::TranscriptLogger,
     },
     transcription::{
+        cohere_transcribe::{self, CohereTranscribeConfig},
         faster_whisper::{self, FasterWhisperConfig},
         omni_asr::{self, OmniAsrConfig},
         parakeet::{self, ParakeetConfig, ParakeetWorker},
@@ -91,6 +92,7 @@ pub struct ApiKeysPayload {
     pub voyage_api_key: String,
     pub open_ai_llm_api_key: String,
     pub open_ai_embed_api_key: String,
+    pub hugging_face_token: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -134,6 +136,8 @@ pub struct SttStatusPayload {
     pub parakeet_warming: bool,
     /// True while OmniASR workers are pre-warming in the background.
     pub omni_asr_warming: bool,
+    /// True while Cohere Transcribe workers are pre-warming in the background.
+    pub cohere_transcribe_warming: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -198,6 +202,12 @@ pub struct AppState {
     pub warmed_omni_asr_sys: Mutex<Option<omni_asr::OmniAsrWorker>>,
     /// True while OmniASR workers are being pre-warmed in the background.
     pub omni_asr_warming: Arc<std::sync::atomic::AtomicBool>,
+    /// Pre-warmed Cohere Transcribe worker for microphone audio.
+    pub warmed_cohere_transcribe_mic: Mutex<Option<cohere_transcribe::CohereTranscribeWorker>>,
+    /// Pre-warmed Cohere Transcribe worker for system audio.
+    pub warmed_cohere_transcribe_sys: Mutex<Option<cohere_transcribe::CohereTranscribeWorker>>,
+    /// True while Cohere Transcribe workers are being pre-warmed in the background.
+    pub cohere_transcribe_warming: Arc<std::sync::atomic::AtomicBool>,
     pub preview_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub preview_stop: Arc<std::sync::atomic::AtomicBool>,
     /// Holds the active audio recorder when the user opted in before the session.
@@ -243,6 +253,9 @@ impl AppState {
             warmed_omni_asr_mic: Mutex::new(None),
             warmed_omni_asr_sys: Mutex::new(None),
             omni_asr_warming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            warmed_cohere_transcribe_mic: Mutex::new(None),
+            warmed_cohere_transcribe_sys: Mutex::new(None),
+            cohere_transcribe_warming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             preview_task: Mutex::new(None),
             preview_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             audio_recorder: Mutex::new(None),
@@ -336,6 +349,28 @@ impl AppState {
             lang: omni_asr::locale_to_fairseq_lang(&settings.transcription_locale),
             use_wsl,
             wsl_venv_linux_path,
+        }
+    }
+
+    pub fn cohere_transcribe_root() -> PathBuf {
+        Self::persistent_data_dir()
+            .join("stt")
+            .join("cohere-transcribe")
+    }
+
+    pub fn cohere_transcribe_config(settings: &AppSettings) -> CohereTranscribeConfig {
+        let runtime_root = Self::cohere_transcribe_root();
+        CohereTranscribeConfig {
+            worker_script_path: runtime_root.join("worker.py"),
+            requirements_path: runtime_root.join("requirements.txt"),
+            venv_path: runtime_root.join("venv"),
+            models_dir: runtime_root.join("models"),
+            runtime_root,
+            model: settings.cohere_transcribe_model.clone(),
+            device: settings.cohere_transcribe_device.clone(),
+            hugging_face_token: keychain::KeyEntry::hugging_face_token()
+                .load()
+                .or_else(|| settings.hugging_face_token.clone()),
         }
     }
 }
@@ -467,6 +502,13 @@ struct OmniAsrWarmupStatus {
     message: String,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CohereTranscribeWarmupStatus {
+    ready: bool,
+    message: String,
+}
+
 /// Spawn background threads to pre-warm OmniASR workers so the model is loaded and ready
 /// before the user clicks record. Emits `omni-asr-warmup-status` events so the UI can show
 /// a loading indicator. Safe to call at any time — does nothing if omni-asr is not configured
@@ -537,11 +579,91 @@ pub fn warm_omni_asr_workers(state: Arc<AppState>, app: AppHandle) {
     }
 }
 
+pub fn warm_cohere_transcribe_workers(state: Arc<AppState>, app: AppHandle) {
+    let settings = state.settings.lock().unwrap().clone();
+    if selected_stt_provider(&settings) != "cohere-transcribe" {
+        return;
+    }
+    let config = AppState::cohere_transcribe_config(&settings);
+    let has_token = config
+        .hugging_face_token
+        .as_deref()
+        .map(|token| !token.trim().is_empty())
+        .unwrap_or(false);
+    if !has_token
+        || !config.is_installed()
+        || !cohere_transcribe::model_storage_exists(&config)
+        || !cohere_transcribe::supports_locale(&settings.transcription_locale)
+    {
+        return;
+    }
+    if state
+        .cohere_transcribe_warming
+        .swap(true, Ordering::Relaxed)
+    {
+        return;
+    }
+    app.emit(
+        "cohere-transcribe-warmup-status",
+        &CohereTranscribeWarmupStatus {
+            ready: false,
+            message: "Cohere Transcribe engine loading...".into(),
+        },
+    )
+    .ok();
+
+    let remaining = Arc::new(std::sync::atomic::AtomicU32::new(2));
+
+    for slot_name in ["mic", "sys"] {
+        let state_clone = Arc::clone(&state);
+        let config_clone = config.clone();
+        let app_clone = app.clone();
+        let remaining_clone = Arc::clone(&remaining);
+        let name = slot_name;
+        std::thread::spawn(move || {
+            log::info!("[cohere-transcribe] pre-warming {name} worker...");
+            match cohere_transcribe::CohereTranscribeWorker::spawn(&config_clone) {
+                Ok(mut worker) => match worker.ensure_model() {
+                    Ok(_) => {
+                        let mut slot = if name == "mic" {
+                            state_clone.warmed_cohere_transcribe_mic.lock().unwrap()
+                        } else {
+                            state_clone.warmed_cohere_transcribe_sys.lock().unwrap()
+                        };
+                        *slot = Some(worker);
+                        log::info!("[cohere-transcribe] {name} worker pre-warmed and ready");
+                    }
+                    Err(e) => {
+                        log::warn!("[cohere-transcribe] {name} worker ensure_model failed: {e}")
+                    }
+                },
+                Err(e) => log::warn!("[cohere-transcribe] failed to pre-warm {name} worker: {e}"),
+            }
+            if remaining_clone.fetch_sub(1, Ordering::Relaxed) == 1 {
+                state_clone
+                    .cohere_transcribe_warming
+                    .store(false, Ordering::Relaxed);
+                app_clone
+                    .emit(
+                        "cohere-transcribe-warmup-status",
+                        &CohereTranscribeWarmupStatus {
+                            ready: true,
+                            message: "Cohere Transcribe engine ready".into(),
+                        },
+                    )
+                    .ok();
+                log::info!("[cohere-transcribe] all workers pre-warmed");
+            }
+        });
+    }
+}
+
 fn selected_stt_provider(settings: &AppSettings) -> &str {
     match settings.stt_provider.trim() {
         "faster-whisper" => "faster-whisper",
         "parakeet" => "parakeet",
         "omni-asr" => "omni-asr",
+        "cohere-transcribe" => "cohere-transcribe",
         _ => "whisper-rs",
     }
 }
@@ -571,6 +693,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 message: format!("faster-whisper is ready with {}.", config.model),
                 parakeet_warming: false,
                 omni_asr_warming: false,
+                cohere_transcribe_warming: false,
             };
         }
 
@@ -587,6 +710,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 message: "faster-whisper is unavailable. Falling back to whisper-rs.".into(),
                 parakeet_warming: false,
                 omni_asr_warming: false,
+                cohere_transcribe_warming: false,
             };
         }
 
@@ -602,6 +726,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
             message: "faster-whisper needs setup before transcription can start.".into(),
             parakeet_warming: false,
             omni_asr_warming: false,
+            cohere_transcribe_warming: false,
         };
     }
 
@@ -623,6 +748,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 message: format!("parakeet is ready with {}.", config.model),
                 parakeet_warming: false,
                 omni_asr_warming: false,
+                cohere_transcribe_warming: false,
             };
         }
 
@@ -639,6 +765,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 message: "parakeet is unavailable. Falling back to whisper-rs.".into(),
                 parakeet_warming: false,
                 omni_asr_warming: false,
+                cohere_transcribe_warming: false,
             };
         }
 
@@ -654,6 +781,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
             message: "parakeet needs setup before transcription can start.".into(),
             parakeet_warming: false,
             omni_asr_warming: false,
+            cohere_transcribe_warming: false,
         };
     }
 
@@ -675,6 +803,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 message: format!("Omni-ASR is ready with {}.", config.model),
                 parakeet_warming: false,
                 omni_asr_warming: false,
+                cohere_transcribe_warming: false,
             };
         }
 
@@ -691,6 +820,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
                 message: "Omni-ASR is unavailable. Falling back to whisper-rs.".into(),
                 parakeet_warming: false,
                 omni_asr_warming: false,
+                cohere_transcribe_warming: false,
             };
         }
 
@@ -711,6 +841,91 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
             message: setup_message,
             parakeet_warming: false,
             omni_asr_warming: false,
+            cohere_transcribe_warming: false,
+        };
+    }
+
+    if selected_provider == "cohere-transcribe" {
+        let config = AppState::cohere_transcribe_config(settings);
+        let locale_supported = cohere_transcribe::supports_locale(&settings.transcription_locale);
+        let has_token = config
+            .hugging_face_token
+            .as_deref()
+            .map(|token| !token.trim().is_empty())
+            .unwrap_or(false);
+        let selected_ready = has_token
+            && locale_supported
+            && cohere_transcribe::health_check(&config).is_ok()
+            && cohere_transcribe::model_storage_exists(&config);
+
+        if selected_ready {
+            return SttStatusPayload {
+                selected_provider,
+                effective_provider: "cohere-transcribe".into(),
+                selected_model: config.model.clone(),
+                effective_model: config.model.clone(),
+                selected_provider_ready: true,
+                ready: true,
+                using_fallback: false,
+                download_required: false,
+                message: format!("Cohere Transcribe is ready with {}.", config.model),
+                parakeet_warming: false,
+                omni_asr_warming: false,
+                cohere_transcribe_warming: false,
+            };
+        }
+
+        if whisper_ready {
+            let fallback_message = if !has_token {
+                "Cohere Transcribe needs a Hugging Face token. Falling back to whisper-rs."
+                    .to_string()
+            } else if !locale_supported {
+                format!(
+                    "Cohere Transcribe does not support locale {}. Falling back to whisper-rs.",
+                    settings.transcription_locale
+                )
+            } else {
+                "Cohere Transcribe is unavailable. Falling back to whisper-rs.".into()
+            };
+            return SttStatusPayload {
+                selected_provider,
+                effective_provider: "whisper-rs".into(),
+                selected_model: config.model.clone(),
+                effective_model: whisper_model,
+                selected_provider_ready: false,
+                ready: true,
+                using_fallback: true,
+                download_required: has_token && locale_supported,
+                message: fallback_message,
+                parakeet_warming: false,
+                omni_asr_warming: false,
+                cohere_transcribe_warming: false,
+            };
+        }
+
+        let setup_message = if !has_token {
+            cohere_transcribe::missing_token_message()
+        } else if !locale_supported {
+            format!(
+                "Cohere Transcribe supports a limited language set and cannot use locale {}.",
+                settings.transcription_locale
+            )
+        } else {
+            "Cohere Transcribe needs setup before transcription can start.".into()
+        };
+        return SttStatusPayload {
+            selected_provider,
+            effective_provider: "cohere-transcribe".into(),
+            selected_model: config.model.clone(),
+            effective_model: config.model.clone(),
+            selected_provider_ready: false,
+            ready: false,
+            using_fallback: false,
+            download_required: has_token && locale_supported,
+            message: setup_message,
+            parakeet_warming: false,
+            omni_asr_warming: false,
+            cohere_transcribe_warming: false,
         };
     }
 
@@ -730,6 +945,7 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
         },
         parakeet_warming: false,
         omni_asr_warming: false,
+        cohere_transcribe_warming: false,
     }
 }
 
@@ -750,6 +966,8 @@ fn resolve_stt_backend(
         SttBackend::Parakeet(AppState::parakeet_config(settings))
     } else if status.effective_provider == "omni-asr" {
         SttBackend::OmniAsr(AppState::omni_asr_config(settings))
+    } else if status.effective_provider == "cohere-transcribe" {
+        SttBackend::CohereTranscribe(AppState::cohere_transcribe_config(settings))
     } else {
         let model_path = AppState::whisper_model_path_for(app, &status.effective_model)?
             .to_string_lossy()
@@ -984,6 +1202,7 @@ pub fn get_stt_status(
     let mut status = resolve_stt_status(&app, &settings);
     status.parakeet_warming = state.parakeet_warming.load(Ordering::Relaxed);
     status.omni_asr_warming = state.omni_asr_warming.load(Ordering::Relaxed);
+    status.cohere_transcribe_warming = state.cohere_transcribe_warming.load(Ordering::Relaxed);
     Ok(status)
 }
 
@@ -1011,6 +1230,7 @@ pub fn get_default_suggestion_prompts() -> DefaultSuggestionPrompts {
 
 #[tauri::command]
 pub fn get_api_keys() -> ApiKeysPayload {
+    let settings = AppSettings::load();
     ApiKeysPayload {
         open_router_api_key: keychain::KeyEntry::open_router_api_key()
             .load()
@@ -1024,23 +1244,41 @@ pub fn get_api_keys() -> ApiKeysPayload {
         open_ai_embed_api_key: keychain::KeyEntry::open_ai_embed_api_key()
             .load()
             .unwrap_or_default(),
+        hugging_face_token: keychain::KeyEntry::hugging_face_token()
+            .load()
+            .or_else(|| settings.hugging_face_token)
+            .unwrap_or_default(),
     }
 }
 
 #[tauri::command]
-pub fn save_api_keys(new_keys: ApiKeysPayload) -> Result<(), String> {
+pub fn save_api_keys(
+    new_keys: ApiKeysPayload,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
     keychain::KeyEntry::open_router_api_key()
-        .save(&new_keys.open_router_api_key)
+        .save_or_delete(&new_keys.open_router_api_key)
         .map_err(|e| e.to_string())?;
     keychain::KeyEntry::voyage_api_key()
-        .save(&new_keys.voyage_api_key)
+        .save_or_delete(&new_keys.voyage_api_key)
         .map_err(|e| e.to_string())?;
     keychain::KeyEntry::open_ai_llm_api_key()
-        .save(&new_keys.open_ai_llm_api_key)
+        .save_or_delete(&new_keys.open_ai_llm_api_key)
         .map_err(|e| e.to_string())?;
     keychain::KeyEntry::open_ai_embed_api_key()
-        .save(&new_keys.open_ai_embed_api_key)
+        .save_or_delete(&new_keys.open_ai_embed_api_key)
         .map_err(|e| e.to_string())?;
+    keychain::KeyEntry::hugging_face_token()
+        .save_or_delete(&new_keys.hugging_face_token)
+        .map_err(|e| e.to_string())?;
+    let mut settings = AppSettings::load();
+    settings.hugging_face_token = if new_keys.hugging_face_token.trim().is_empty() {
+        None
+    } else {
+        Some(new_keys.hugging_face_token.clone())
+    };
+    settings.save();
+    state.settings.lock().unwrap().hugging_face_token = settings.hugging_face_token.clone();
     Ok(())
 }
 
@@ -1061,6 +1299,8 @@ pub fn save_settings(
     *state.warmed_parakeet_sys.lock().unwrap() = None;
     *state.warmed_omni_asr_mic.lock().unwrap() = None;
     *state.warmed_omni_asr_sys.lock().unwrap() = None;
+    *state.warmed_cohere_transcribe_mic.lock().unwrap() = None;
+    *state.warmed_cohere_transcribe_sys.lock().unwrap() = None;
     set_content_protection(app, hide_from_screen_share)?;
     Ok(())
 }
@@ -1098,6 +1338,15 @@ pub fn start_transcription(
         return Err("OmniASR engine is still loading — please wait a moment and try again.".into());
     }
 
+    if selected_stt_provider(&settings) == "cohere-transcribe"
+        && state.cohere_transcribe_warming.load(Ordering::Relaxed)
+    {
+        return Err(
+            "Cohere Transcribe engine is still loading â€” please wait a moment and try again."
+                .into(),
+        );
+    }
+
     let (backend, language, stt_status) = resolve_stt_backend(&app, &settings)?;
 
     // Take any pre-warmed workers so they can be handed to the transcribers.
@@ -1105,6 +1354,8 @@ pub fn start_transcription(
     let warmed_sys = state.warmed_parakeet_sys.lock().unwrap().take();
     let warmed_omni_mic = state.warmed_omni_asr_mic.lock().unwrap().take();
     let warmed_omni_sys = state.warmed_omni_asr_sys.lock().unwrap().take();
+    let warmed_cohere_mic = state.warmed_cohere_transcribe_mic.lock().unwrap().take();
+    let warmed_cohere_sys = state.warmed_cohere_transcribe_sys.lock().unwrap().take();
 
     let mut running = state.is_running.lock().unwrap();
     if *running {
@@ -1327,6 +1578,9 @@ pub fn start_transcription(
             }
             if let Some(worker) = warmed_omni_sys {
                 transcriber = transcriber.with_omni_asr_worker(worker);
+            }
+            if let Some(worker) = warmed_cohere_sys {
+                transcriber = transcriber.with_cohere_transcribe_worker(worker);
             }
             transcriber.run(them_stream_leveled).await;
         });
@@ -1647,6 +1901,9 @@ pub fn start_transcription(
         if let Some(worker) = warmed_omni_mic {
             transcriber = transcriber.with_omni_asr_worker(worker);
         }
+        if let Some(worker) = warmed_cohere_mic {
+            transcriber = transcriber.with_cohere_transcribe_worker(worker);
+        }
         transcriber.run(mic_stream_leveled).await;
     });
 
@@ -1695,7 +1952,9 @@ pub async fn stop_transcription(
     emit_transcription_progress(&app, &state);
 
     // Kick off background pre-warming so the next record press is instant.
-    warm_parakeet_workers(Arc::clone(&*state), app);
+    warm_parakeet_workers(Arc::clone(&*state), app.clone());
+    warm_omni_asr_workers(Arc::clone(&*state), app.clone());
+    warm_cohere_transcribe_workers(Arc::clone(&*state), app);
     Ok(())
 }
 
@@ -1757,18 +2016,17 @@ pub async fn start_import_transcription(
 
     let handle = tauri::async_runtime::spawn(async move {
         // Read and normalise the WAV file to 16 kHz mono f32.
-        let samples =
-            match opencassava_core::audio::recorder::read_wav_as_f32_16k(&path) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::error!("[import] failed to read WAV: {e}");
-                    app_clone.emit("import-error", &e).ok();
-                    *state_clone.is_running.lock().unwrap() = false;
-                    state_clone.session_store.lock().unwrap().end_session();
-                    state_clone.transcript_logger.lock().unwrap().end_session();
-                    return;
-                }
-            };
+        let samples = match opencassava_core::audio::recorder::read_wav_as_f32_16k(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("[import] failed to read WAV: {e}");
+                app_clone.emit("import-error", &e).ok();
+                *state_clone.is_running.lock().unwrap() = false;
+                state_clone.session_store.lock().unwrap().end_session();
+                state_clone.transcript_logger.lock().unwrap().end_session();
+                return;
+            }
+        };
 
         let duration_secs = samples.len() as f32 / 16_000.0;
         log::info!(
@@ -1848,7 +2106,9 @@ pub async fn start_import_transcription(
             state_clone.captured_segments.load(Ordering::Relaxed),
             state_clone.processed_segments.load(Ordering::Relaxed),
         );
-        app_clone.emit("import-complete", &session_id_for_event).ok();
+        app_clone
+            .emit("import-complete", &session_id_for_event)
+            .ok();
     });
 
     *state.audio_task.lock().unwrap() = Some(handle);
@@ -2057,6 +2317,108 @@ pub async fn download_stt_model(
             },
         )
         .ok();
+        app.emit("model-download-done", ()).ok();
+        return Ok(());
+    }
+
+    if selected_provider == "cohere-transcribe" {
+        let config = AppState::cohere_transcribe_config(&settings);
+        let emit_log = |line: &str| {
+            app.emit("stt-install-log", line.to_string()).ok();
+        };
+        emit_log("[cohere-transcribe] Starting setup");
+        emit_log(&format!(
+            "[cohere-transcribe] Requested locale: {}",
+            settings.transcription_locale
+        ));
+        emit_log(&format!(
+            "[cohere-transcribe] Model: {} | Device: {}",
+            config.model, config.device
+        ));
+        if config
+            .hugging_face_token
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            emit_log("[cohere-transcribe] Setup blocked: missing Hugging Face token");
+            return Err(cohere_transcribe::missing_token_message());
+        }
+        if !cohere_transcribe::supports_locale(&settings.transcription_locale) {
+            emit_log(&format!(
+                "[cohere-transcribe] Setup blocked: unsupported locale {}",
+                settings.transcription_locale
+            ));
+            return Err(format!(
+                "Cohere Transcribe does not support locale {}. Choose a supported explicit locale before setup.",
+                settings.transcription_locale
+            ));
+        }
+        app.emit(
+            "stt-setup-status",
+            &SttSetupStatusPayload {
+                stage: "prepare".into(),
+                message: "Preparing Cohere Transcribe runtime directories...".into(),
+            },
+        )
+        .ok();
+        app.emit("model-download-progress", 5).ok();
+        emit_log("[cohere-transcribe] Runtime preparation started");
+        app.emit(
+            "stt-setup-status",
+            &SttSetupStatusPayload {
+                stage: "venv".into(),
+                message: "Creating and updating the Python environment...".into(),
+            },
+        )
+        .ok();
+        let app_log = app.clone();
+        cohere_transcribe::install_runtime(&config, move |line| {
+            app_log.emit("stt-install-log", line).ok();
+        })?;
+        emit_log("[cohere-transcribe] Runtime installation finished");
+        app.emit("model-download-progress", 35).ok();
+        app.emit(
+            "stt-setup-status",
+            &SttSetupStatusPayload {
+                stage: "health".into(),
+                message: "Validating the Cohere Transcribe worker...".into(),
+            },
+        )
+        .ok();
+        emit_log("[cohere-transcribe] Worker health check started");
+        cohere_transcribe::health_check(&config)?;
+        emit_log("[cohere-transcribe] Worker health check passed");
+        app.emit("model-download-progress", 60).ok();
+        app.emit(
+            "stt-setup-status",
+            &SttSetupStatusPayload {
+                stage: "model".into(),
+                message: format!(
+                    "Downloading or loading Cohere Transcribe model {}...",
+                    config.model
+                ),
+            },
+        )
+        .ok();
+        emit_log("[cohere-transcribe] Model ensure/download started");
+        let app_log2 = app.clone();
+        cohere_transcribe::ensure_model(&config, move |line| {
+            app_log2.emit("stt-install-log", line).ok();
+        })?;
+        emit_log("[cohere-transcribe] Model ensure/download finished");
+        app.emit("model-download-progress", 100).ok();
+        app.emit(
+            "stt-setup-status",
+            &SttSetupStatusPayload {
+                stage: "done".into(),
+                message: "Cohere Transcribe is ready.".into(),
+            },
+        )
+        .ok();
+        emit_log("[cohere-transcribe] Setup complete, warming workers");
+        warm_cohere_transcribe_workers(Arc::clone(&*state), app.clone());
         app.emit("model-download-done", ()).ok();
         return Ok(());
     }
@@ -2725,6 +3087,17 @@ mod tests {
             !state.omni_asr_warming.load(Ordering::Relaxed),
             "omni_asr_warming should start false"
         );
+        assert!(
+            !state.cohere_transcribe_warming.load(Ordering::Relaxed),
+            "cohere_transcribe_warming should start false"
+        );
+    }
+
+    #[test]
+    fn selected_stt_provider_recognizes_cohere_transcribe() {
+        let mut settings = AppSettings::default();
+        settings.stt_provider = "cohere-transcribe".into();
+        assert_eq!(selected_stt_provider(&settings), "cohere-transcribe");
     }
 }
 

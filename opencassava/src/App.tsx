@@ -86,6 +86,7 @@ function sttProviderLabel(provider: string): string {
   if (provider === "faster-whisper") return "faster-whisper";
   if (provider === "parakeet") return "parakeet";
   if (provider === "omni-asr") return "omni-asr";
+  if (provider === "cohere-transcribe") return "cohere-transcribe";
   return "whisper-rs";
 }
 
@@ -181,6 +182,7 @@ function App() {
   const [stopStatusMessage, setStopStatusMessage] = useState<string | null>(null);
   const [parakeetWarming, setParakeetWarming] = useState(false);
   const [omniAsrWarming, setOmniAsrWarming] = useState(false);
+  const [cohereTranscribeWarming, setCohereTranscribeWarming] = useState(false);
   const [speakerLabels, setSpeakerLabels] = useState<Record<string, string>>({});
   const [releaseCheck, setReleaseCheck] = useState<ReleaseCheckState>({
     status: "checking",
@@ -295,6 +297,10 @@ function App() {
       setSttStatus(status);
       setParakeetWarming(status.parakeetWarming);
       setOmniAsrWarming(status.omniAsrWarming);
+      setCohereTranscribeWarming(status.cohereTranscribeWarming);
+      if (status.ready) {
+        setTab("transcript");
+      }
       setModelError(null);
       setModelState(status.ready ? "ready" : "missing");
     } catch (err) {
@@ -306,7 +312,13 @@ function App() {
   // Keyboard shortcuts
   useKeyboardShortcuts({
     onStartStop: () => {
-      if (modelState === "ready" && !isStopping && !parakeetWarming && !omniAsrWarming) {
+      if (
+        modelState === "ready" &&
+        !isStopping &&
+        !parakeetWarming &&
+        !omniAsrWarming &&
+        !cohereTranscribeWarming
+      ) {
         if (isRunning) {
           void handleStop();
         } else {
@@ -394,7 +406,7 @@ function App() {
       listen<string>("stt-install-log", (e) => {
         const line = e.payload.trim();
         if (!line) return;
-        setInstallLogLines((prev) => [...prev.slice(-2), line]);
+        setInstallLogLines((prev) => [...prev, line].slice(-24));
         
         const percentMatch = line.match(/(\d{1,3})%/);
         if (percentMatch) {
@@ -451,6 +463,10 @@ function App() {
         setOmniAsrWarming(!e.payload.ready);
       }),
 
+      listen<{ ready: boolean; message: string }>("cohere-transcribe-warmup-status", (e) => {
+        setCohereTranscribeWarming(!e.payload.ready);
+      }),
+
       listen<string>("import-complete", () => {
         setIsImporting(false);
         setIsRunning(false);
@@ -474,11 +490,16 @@ function App() {
     setIsSettingUpStt(true);
     setSttSetupStage("prepare");
     setSttSetupMessage("Starting speech-to-text setup...");
+    setInstallLogLines([]);
     try {
       await invoke("download_stt_model");
       await refreshSttStatus();
     } catch (e) {
-      setModelError(String(e));
+      const message = String(e);
+      setModelError(message);
+      setSttSetupStage("error");
+      setSttSetupMessage(message);
+      setInstallLogLines((prev) => [...prev, `[error] ${message}`].slice(-24));
       setModelState("missing");
       setIsSettingUpStt(false);
     }
@@ -697,6 +718,23 @@ function App() {
   }
 
   if (modelState === "missing") {
+    if (tab === "settings") {
+      return (
+        <div style={{ height: "100vh", background: colors.background, color: colors.text }}>
+          <SettingsView
+            settings={settings}
+            onSettingsChange={handleSettingsChange}
+            onApiKeysSaved={() => {
+              refreshSttStatus().catch(console.error);
+            }}
+            sttStatus={sttStatus}
+            onSetupStt={handleDownload}
+            isSettingUpStt={isSettingUpStt}
+          />
+        </div>
+      );
+    }
+
     return (
       <div style={centerStyle}>
         <div style={{ textAlign: "center", maxWidth: 320 }}>
@@ -707,15 +745,49 @@ function App() {
           <p style={{ color: colors.textSecondary, fontSize: 13, margin: "0 0 20px", lineHeight: 1.5 }}>
             {sttStatus?.message || `OpenCassava needs ${sttProviderLabel(settings?.sttProvider || "whisper-rs")} to be ready before transcription can start.`}
           </p>
-          {modelError && (
-            <p style={{ color: colors.error, fontSize: 12, margin: "0 0 16px", lineHeight: 1.5 }}>
-              {modelError}
-            </p>
-          )}
-          <button onClick={handleDownload} style={primaryBtn}>
-            {settings?.sttProvider && settings.sttProvider !== "whisper-rs"
-              ? `Set up ${sttProviderLabel(settings.sttProvider)}`
-              : `Download ${activeWhisperModel} (~150 MB)`}
+            {modelError && (
+              <p style={{ color: colors.error, fontSize: 12, margin: "0 0 16px", lineHeight: 1.5 }}>
+                {modelError}
+              </p>
+            )}
+            {installLogLines.length > 0 && (
+              <div
+                style={{
+                  margin: "0 0 16px",
+                  maxHeight: 180,
+                  overflowY: "auto",
+                  textAlign: "left",
+                  fontFamily: "monospace",
+                  fontSize: 10,
+                  color: colors.textMuted,
+                  background: colors.surfaceElevated,
+                  borderRadius: 4,
+                  padding: "6px 8px",
+                  lineHeight: 1.6,
+                  wordBreak: "break-all",
+                }}
+              >
+                {installLogLines.map((line, i) => (
+                  <div key={i}>{line}</div>
+                ))}
+              </div>
+            )}
+            <button onClick={handleDownload} style={primaryBtn}>
+              {settings?.sttProvider && settings.sttProvider !== "whisper-rs"
+                ? `Set up ${sttProviderLabel(settings.sttProvider)}`
+                : `Download ${activeWhisperModel} (~150 MB)`}
+            </button>
+          <button
+            onClick={() => setTab("settings")}
+            style={{
+              ...primaryBtn,
+              marginTop: 12,
+              background: colors.surface,
+              color: colors.text,
+              border: `1px solid ${colors.border}`,
+            }}
+          >
+            Open Settings
           </button>
         </div>
       </div>
@@ -751,13 +823,13 @@ function App() {
             <p style={{ color: colors.textMuted, fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
               {sttSetupMessage}
             </p>
-          )}
-          {installLogLines.length > 0 && (
-            <div style={{ marginTop: 8, textAlign: "left", fontFamily: "monospace", fontSize: 10, color: colors.textMuted, background: colors.surfaceElevated, borderRadius: 4, padding: "6px 8px", lineHeight: 1.6, wordBreak: "break-all" }}>
-              {installLogLines.map((line, i) => (
-                <div key={i}>{line}</div>
-              ))}
-            </div>
+            )}
+            {installLogLines.length > 0 && (
+              <div style={{ marginTop: 8, maxHeight: 220, overflowY: "auto", textAlign: "left", fontFamily: "monospace", fontSize: 10, color: colors.textMuted, background: colors.surfaceElevated, borderRadius: 4, padding: "6px 8px", lineHeight: 1.6, wordBreak: "break-all" }}>
+                {installLogLines.map((line, i) => (
+                  <div key={i}>{line}</div>
+                ))}
+              </div>
           )}
         </div>
       </div>
@@ -844,8 +916,12 @@ function App() {
         onStart={handleStart}
         onStop={handleStop}
         onImport={handleImport}
-        disabled={isStopping || isImporting || ((parakeetWarming || omniAsrWarming) && !isRunning)}
-        engineWarming={(parakeetWarming || omniAsrWarming) && !isRunning}
+        disabled={
+          isStopping ||
+          isImporting ||
+          ((parakeetWarming || omniAsrWarming || cohereTranscribeWarming) && !isRunning)
+        }
+        engineWarming={(parakeetWarming || omniAsrWarming || cohereTranscribeWarming) && !isRunning}
         kbConnected={kbConnected}
         kbFileCount={0}
         isSuggestionAnalyzing={isGeneratingSuggestion}
@@ -961,6 +1037,9 @@ function App() {
           <SettingsView
             settings={settings}
             onSettingsChange={handleSettingsChange}
+            onApiKeysSaved={() => {
+              refreshSttStatus().catch(console.error);
+            }}
             sttStatus={sttStatus}
             onSetupStt={handleDownload}
             isSettingUpStt={isSettingUpStt}
@@ -1022,7 +1101,8 @@ function App() {
           {(() => {
             const isWarming =
               (parakeetWarming && activeSttProvider === "parakeet") ||
-              (omniAsrWarming && activeSttProvider === "omni-asr");
+              (omniAsrWarming && activeSttProvider === "omni-asr") ||
+              (cohereTranscribeWarming && activeSttProvider === "cohere-transcribe");
             return (
               <span
                 style={{

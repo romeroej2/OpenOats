@@ -57,6 +57,13 @@ const sttProviderOptions = [
   { value: "omni-asr", label: "Omni-ASR", description: "facebookresearch/omnilingual-asr — supports 1,600+ languages. Requires Python 3 (Linux/macOS) or WSL2 + Python 3 (Windows)." },
 ];
 
+sttProviderOptions.push({
+  value: "cohere-transcribe",
+  label: "Cohere Transcribe",
+  description:
+    "Local CohereLabs/cohere-transcribe-03-2026 via Transformers. Requires Python 3, a Hugging Face token, and a supported explicit locale.",
+});
+
 const parakeetModelOptions = [
   { value: "nvidia/parakeet-tdt-0.6b-v3", label: "Parakeet TDT 0.6B v3 (Recommended)", description: "600M params, 25 languages, best speed/accuracy balance." },
   { value: "nvidia/parakeet-tdt_ctc-1.1b", label: "Parakeet TDT 1.1B v2", description: "1.1B params, English-focused, highest accuracy." },
@@ -76,6 +83,21 @@ const omniAsrModelOptions = [
 ];
 
 const omniAsrDeviceOptions = [
+  { value: "auto", label: "Auto" },
+  { value: "cpu", label: "CPU" },
+  { value: "cuda", label: "CUDA" },
+];
+
+const cohereTranscribeModelOptions = [
+  {
+    value: "CohereLabs/cohere-transcribe-03-2026",
+    label: "Cohere Transcribe 03-2026",
+    description:
+      "Local Cohere multilingual speech-to-text model. Requires gated Hugging Face access.",
+  },
+];
+
+const cohereTranscribeDeviceOptions = [
   { value: "auto", label: "Auto" },
   { value: "cpu", label: "CPU" },
   { value: "cuda", label: "CUDA" },
@@ -136,6 +158,7 @@ function resolveWhisperModel(
 interface SettingsViewProps {
   settings?: AppSettings | null;
   onSettingsChange?: (settings: AppSettings) => void;
+  onApiKeysSaved?: () => void;
   sttStatus?: SttStatus | null;
   onSetupStt?: () => void;
   isSettingUpStt?: boolean;
@@ -144,6 +167,7 @@ interface SettingsViewProps {
 export function SettingsView({
   settings: initialSettings = null,
   onSettingsChange,
+  onApiKeysSaved,
   sttStatus = null,
   onSetupStt,
   isSettingUpStt = false,
@@ -160,6 +184,7 @@ export function SettingsView({
   const [calibrationCountdown, setCalibrationCountdown] = useState(0);
   const [calibrationLevel, setCalibrationLevel] = useState(0);
   const [calibrationError, setCalibrationError] = useState<string | null>(null);
+  const [huggingFaceTokenDraft, setHuggingFaceTokenDraft] = useState("");
   // Prerequisite check state
   const [wsl2Status, setWsl2Status] = useState<{ ok: boolean; message: string } | null>(null);
   const [pythonStatus, setPythonStatus] = useState<{ ok: boolean; message: string } | null>(null);
@@ -201,7 +226,10 @@ export function SettingsView({
 
   useEffect(() => {
     invoke<ApiKeys>("get_api_keys")
-      .then(setApiKeys)
+      .then((keys) => {
+        setApiKeys(keys);
+        setHuggingFaceTokenDraft(keys.huggingFaceToken || "");
+      })
       .catch((err) => setError(String(err)));
   }, []);
 
@@ -216,7 +244,11 @@ export function SettingsView({
     } else {
       setWsl2Status(null);
     }
-    if (provider === "faster-whisper" || provider === "parakeet") {
+    if (
+      provider === "faster-whisper" ||
+      provider === "parakeet" ||
+      provider === "cohere-transcribe"
+    ) {
       invoke<string>("check_python")
         .then((cmd) => setPythonStatus({ ok: true, message: `Python 3 found (${cmd}).` }))
         .catch((err: string) => setPythonStatus({ ok: false, message: err }));
@@ -307,14 +339,25 @@ export function SettingsView({
   };
 
   const saveApiKeys = async (updated: ApiKeys) => {
+    const previous = apiKeys;
+    setApiKeys(updated);
     try {
       await invoke("save_api_keys", { newKeys: updated });
-      setApiKeys(updated);
+      onApiKeysSaved?.();
       setError(null);
       flashSaved();
     } catch (err) {
+      if (previous) {
+        setApiKeys(previous);
+      }
       setError(String(err));
     }
+  };
+
+  const saveHuggingFaceToken = async () => {
+    if (!apiKeys) return;
+    const updated = { ...apiKeys, huggingFaceToken: huggingFaceTokenDraft };
+    await saveApiKeys(updated);
   };
 
   const chooseFolder = async (key: "kbFolderPath" | "notesFolderPath") => {
@@ -884,6 +927,7 @@ export function SettingsView({
               </>
             )}
           </div>
+
         </div>
       )}
 
@@ -937,6 +981,8 @@ export function SettingsView({
                   ? `OpenCassava will use Parakeet v3 (${settings.parakeetModel}). Language is auto-detected from audio.`
                   : settings.sttProvider === "omni-asr"
                   ? `OpenCassava will use Omni-ASR (${settings.omniAsrModel}).`
+                  : settings.sttProvider === "cohere-transcribe"
+                  ? `OpenCassava will use Cohere Transcribe (${settings.cohereTranscribeModel}) with the selected explicit locale. Unsupported or auto locales fall back to whisper-rs.`
                   : `OpenCassava will download and use ${resolveWhisperModel(settings.transcriptionLocale, settings.whisperModel)}. Choose Auto Detect for mixed-language conversations.`}
               </span>
             </div>
@@ -1187,6 +1233,76 @@ export function SettingsView({
                   </select>
                 </div>
               </>
+            ) : settings.sttProvider === "cohere-transcribe" ? (
+              <>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Cohere Model</label>
+                  <select
+                    value={settings.cohereTranscribeModel}
+                    onChange={(e) =>
+                      saveSettings({ ...settings, cohereTranscribeModel: e.target.value })
+                    }
+                    style={styles.selectStyle}
+                  >
+                    {cohereTranscribeModelOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                    {cohereTranscribeModelOptions.find((option) => option.value === settings.cohereTranscribeModel)?.description}
+                  </span>
+                </div>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Device</label>
+                  <select
+                    value={settings.cohereTranscribeDevice}
+                    onChange={(e) =>
+                      saveSettings({ ...settings, cohereTranscribeDevice: e.target.value })
+                    }
+                    style={styles.selectStyle}
+                  >
+                    {cohereTranscribeDeviceOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Hugging Face Token</label>
+                  <input
+                    type="password"
+                    value={huggingFaceTokenDraft}
+                    onChange={(e) => setHuggingFaceTokenDraft(e.target.value)}
+                    onBlur={() => {
+                      if (huggingFaceTokenDraft !== (apiKeys.huggingFaceToken || "")) {
+                        void saveHuggingFaceToken();
+                      }
+                    }}
+                    style={styles.inputStyle}
+                    placeholder="hf_..."
+                  />
+                  <div style={{ display: "flex", alignItems: "center", gap: spacing[2], marginTop: spacing[1] }}>
+                    <button
+                      style={styles.button}
+                      onClick={() => void saveHuggingFaceToken()}
+                    >
+                      Save token
+                    </button>
+                    <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
+                      Required for gated local model download.
+                    </span>
+                  </div>
+                </div>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Speaker diarization</label>
+                  <span style={{ fontSize: typography.sm, color: colors.textMuted, display: "block" }}>
+                    Cohere Transcribe does not provide diarization in this integration.
+                  </span>
+                </div>
+              </>
             ) : null}
             {/* WSL2 prerequisite banner — Windows + omni-asr only */}
             {wsl2Status && (
@@ -1270,6 +1386,29 @@ export function SettingsView({
                 </div>
               </div>
             )}
+            {settings.sttProvider === "cohere-transcribe" && (
+              <div style={{
+                marginTop: spacing[2],
+                padding: spacing[3],
+                background: apiKeys.huggingFaceToken ? `${colors.success}12` : `${colors.warning}12`,
+                border: `1px solid ${apiKeys.huggingFaceToken ? colors.success : colors.warning}`,
+                borderRadius: 6,
+              }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: spacing[2] }}>
+                  <span style={{ fontSize: 18 }}>{apiKeys.huggingFaceToken ? "âœ…" : "âš ï¸"}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: typography.base, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
+                      {apiKeys.huggingFaceToken ? "Hugging Face Token Saved" : "Hugging Face Token Required"}
+                    </div>
+                    <div style={{ fontSize: typography.sm, color: colors.textMuted, lineHeight: 1.5 }}>
+                      {apiKeys.huggingFaceToken
+                        ? "OpenCassava can use this token during local Cohere Transcribe setup."
+                        : "Save a Hugging Face token here and make sure your account has accepted access to CohereLabs/cohere-transcribe-03-2026."}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             {sttStatus && (
               <div style={{ marginTop: spacing[2], display: "flex", flexDirection: "column", gap: spacing[2] }}>
                 <span style={styles.statusBadge(sttStatus.ready ? (sttStatus.usingFallback ? "warning" : "success") : "error")}>
@@ -1278,7 +1417,7 @@ export function SettingsView({
                 <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
                   Active backend: `{sttStatus.effectiveProvider}` using `{sttStatus.effectiveModel}`.
                 </span>
-                {(settings.sttProvider === "faster-whisper" || settings.sttProvider === "parakeet" || settings.sttProvider === "omni-asr") && (
+                {(settings.sttProvider === "faster-whisper" || settings.sttProvider === "parakeet" || settings.sttProvider === "omni-asr" || settings.sttProvider === "cohere-transcribe") && (
                   <button
                     style={styles.button}
                     onClick={() => onSetupStt?.()}

@@ -19,6 +19,7 @@ pub enum SttBackend {
     FasterWhisper(crate::transcription::faster_whisper::FasterWhisperConfig),
     Parakeet(crate::transcription::parakeet::ParakeetConfig),
     OmniAsr(crate::transcription::omni_asr::OmniAsrConfig),
+    CohereTranscribe(crate::transcription::cohere_transcribe::CohereTranscribeConfig),
     Passthrough,
 }
 
@@ -31,6 +32,8 @@ pub struct StreamingTranscriber {
     stop_signal: Option<Arc<AtomicBool>>,
     parakeet_worker: Option<crate::transcription::parakeet::ParakeetWorker>,
     omni_asr_worker: Option<crate::transcription::omni_asr::OmniAsrWorker>,
+    cohere_transcribe_worker:
+        Option<crate::transcription::cohere_transcribe::CohereTranscribeWorker>,
     diarization_enabled: bool,
     clear_speakers_on_start: bool,
 }
@@ -46,6 +49,7 @@ impl StreamingTranscriber {
             stop_signal: None,
             parakeet_worker: None,
             omni_asr_worker: None,
+            cohere_transcribe_worker: None,
             diarization_enabled: false,
             clear_speakers_on_start: false,
         }
@@ -62,6 +66,7 @@ impl StreamingTranscriber {
             stop_signal: None,
             parakeet_worker: None,
             omni_asr_worker: None,
+            cohere_transcribe_worker: None,
             diarization_enabled: false,
             clear_speakers_on_start: false,
         }
@@ -82,6 +87,14 @@ impl StreamingTranscriber {
         worker: crate::transcription::omni_asr::OmniAsrWorker,
     ) -> Self {
         self.omni_asr_worker = Some(worker);
+        self
+    }
+
+    pub fn with_cohere_transcribe_worker(
+        mut self,
+        worker: crate::transcription::cohere_transcribe::CohereTranscribeWorker,
+    ) -> Self {
+        self.cohere_transcribe_worker = Some(worker);
         self
     }
 
@@ -126,6 +139,7 @@ impl StreamingTranscriber {
         let backend = self.backend.clone();
         let prewarmed_parakeet = self.parakeet_worker;
         let prewarmed_omni_asr = self.omni_asr_worker;
+        let prewarmed_cohere = self.cohere_transcribe_worker;
 
         // Run Whisper on a blocking thread-pool thread so that joining it is
         // async-friendly. Using std::thread::join() inside an async fn would
@@ -338,6 +352,59 @@ impl StreamingTranscriber {
                             }
                         }
                         Err(e) => log::error!("Failed to launch omni-asr worker: {e}"),
+                    }
+                }
+                SttBackend::CohereTranscribe(config) => {
+                    let worker_result = if let Some(mut w) = prewarmed_cohere {
+                        match w.ensure_model() {
+                            Ok(_) => {
+                                log::info!("[cohere-transcribe] using pre-warmed worker");
+                                Ok(w)
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "[cohere-transcribe] pre-warmed worker unhealthy ({e}), spawning fresh"
+                                );
+                                crate::transcription::cohere_transcribe::CohereTranscribeWorker::spawn(&config)
+                            }
+                        }
+                    } else {
+                        crate::transcription::cohere_transcribe::CohereTranscribeWorker::spawn(
+                            &config,
+                        )
+                    };
+                    match worker_result {
+                        Ok(mut worker) => {
+                            if let Err(e) = worker.ensure_model() {
+                                log::error!("cohere-transcribe ensure_model failed: {e}");
+                                return;
+                            }
+                            for samples in seg_rx.iter() {
+                                match worker.transcribe(&samples, &language) {
+                                    Ok(text) if !text.is_empty() => {
+                                        if let Some(ref on_progress) = progress_for_backend {
+                                            on_progress(SegmentProgress::Processed);
+                                        }
+                                        log::info!(
+                                            "[transcriber] {}",
+                                            text.chars().take(80).collect::<String>()
+                                        );
+                                        on_final(text, None);
+                                    }
+                                    Ok(_) => {
+                                        if let Some(ref on_progress) = progress_for_backend {
+                                            on_progress(SegmentProgress::Processed);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!("cohere-transcribe transcribe error: {e}")
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to launch cohere-transcribe worker: {e}")
+                        }
                     }
                 }
                 SttBackend::Passthrough => for _ in seg_rx.iter() {},
