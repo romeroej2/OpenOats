@@ -8,12 +8,56 @@ $repoUrls = @(
   "https://github.com/tazz4843/whisper-rs.git"
 )
 $repoCommit = "b202069aa891d8243206f89599c04f0e8e6a3d27"
+$registryWhisperVersion = "0.14.4"
+$registryWhisperSysVersion = "0.13.1"
 $cacheStamp = Join-Path $whisperRoot ".openoats-patched-commit"
 
 function Remove-WhisperRoot {
   if (Test-Path $whisperRoot) {
     Remove-Item -Recurse -Force $whisperRoot
   }
+}
+
+function Get-CargoHome {
+  if ($env:CARGO_HOME) {
+    return $env:CARGO_HOME
+  }
+
+  return Join-Path $env:USERPROFILE ".cargo"
+}
+
+function Get-RegistryPackagePath([string]$packageName, [string]$version) {
+  $registrySrcRoot = Join-Path (Get-CargoHome) "registry\src"
+  if (-not (Test-Path $registrySrcRoot)) {
+    return $null
+  }
+
+  $packageDir = Get-ChildItem -Path $registrySrcRoot -Directory -ErrorAction SilentlyContinue |
+    ForEach-Object { Join-Path $_.FullName "$packageName-$version" } |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
+
+  return $packageDir
+}
+
+function Copy-RegistryWorkspace {
+  $whisperRegistryRoot = Get-RegistryPackagePath "whisper-rs" $registryWhisperVersion
+  $whisperSysRegistryRoot = Get-RegistryPackagePath "whisper-rs-sys" $registryWhisperSysVersion
+
+  if (-not $whisperRegistryRoot -or -not $whisperSysRegistryRoot) {
+    return $false
+  }
+
+  Remove-WhisperRoot
+  New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
+
+  Write-Host "Preparing whisper-rs from local Cargo registry cache"
+  Copy-Item -Path $whisperRegistryRoot -Destination $whisperRoot -Recurse -Force
+  Copy-Item -Path $whisperSysRegistryRoot -Destination (Join-Path $whisperRoot "sys") -Recurse -Force
+  Copy-Item -Path (Join-Path $whisperRegistryRoot "Cargo.toml.orig") -Destination (Join-Path $whisperRoot "Cargo.toml") -Force
+  Copy-Item -Path (Join-Path $whisperSysRegistryRoot "Cargo.toml.orig") -Destination (Join-Path $whisperRoot "sys\Cargo.toml") -Force
+
+  return $true
 }
 
 function Invoke-WhisperClone {
@@ -51,14 +95,20 @@ function Invoke-WhisperClone {
 New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
 
 if (-not (Test-Path $whisperRoot)) {
-  Invoke-WhisperClone
+  if (-not (Copy-RegistryWorkspace)) {
+    Invoke-WhisperClone
+  }
 } elseif (Test-Path $cacheStamp) {
   $cachedCommit = (Get-Content $cacheStamp -Raw).Trim()
   if ($cachedCommit -ne $repoCommit) {
-    Invoke-WhisperClone
+    if (-not (Copy-RegistryWorkspace)) {
+      Invoke-WhisperClone
+    }
   }
 } elseif (-not (Test-Path (Join-Path $whisperRoot ".git"))) {
-  Invoke-WhisperClone
+  if (-not (Copy-RegistryWorkspace)) {
+    Invoke-WhisperClone
+  }
 }
 
 $sysRoot = Join-Path $whisperRoot "sys"
@@ -74,7 +124,9 @@ if (
   -not (Test-Path $grammar)
 ) {
   Write-Host "whisper-rs checkout is incomplete, refreshing clone"
-  Invoke-WhisperClone
+  if (-not (Copy-RegistryWorkspace)) {
+    Invoke-WhisperClone
+  }
 }
 
 $buildText = Get-Content $sysBuild -Raw

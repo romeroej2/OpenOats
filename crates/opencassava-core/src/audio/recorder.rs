@@ -1,8 +1,8 @@
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::BufWriter;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 const WAV_SPEC: WavSpec = WavSpec {
     channels: 1,
@@ -96,16 +96,16 @@ impl AudioRecorder {
 
     /// Mix two mono 16kHz WAV files by averaging samples.
     /// If one file is shorter it is zero-padded to match the longer one.
-    pub fn merge(mic: &std::path::Path, sys: &std::path::Path, out: &std::path::Path) -> Result<(), String> {
+    pub fn merge(
+        mic: &std::path::Path,
+        sys: &std::path::Path,
+        out: &std::path::Path,
+    ) -> Result<(), String> {
         let mut mic_r = hound::WavReader::open(mic).map_err(|e| e.to_string())?;
         let mut sys_r = hound::WavReader::open(sys).map_err(|e| e.to_string())?;
 
-        let mic_samples: Vec<f32> = mic_r.samples::<f32>()
-            .map(|s| s.unwrap_or(0.0))
-            .collect();
-        let sys_samples: Vec<f32> = sys_r.samples::<f32>()
-            .map(|s| s.unwrap_or(0.0))
-            .collect();
+        let mic_samples: Vec<f32> = mic_r.samples::<f32>().map(|s| s.unwrap_or(0.0)).collect();
+        let sys_samples: Vec<f32> = sys_r.samples::<f32>().map(|s| s.unwrap_or(0.0)).collect();
 
         let len = mic_samples.len().max(sys_samples.len());
         let mut writer = hound::WavWriter::create(out, WAV_SPEC).map_err(|e| e.to_string())?;
@@ -141,7 +141,11 @@ pub fn read_wav_as_f32_16k(path: &std::path::Path) -> Result<Vec<f32>, String> {
             .map(|s| s.unwrap_or(0) as f32 / 32_768.0)
             .collect(),
         (hound::SampleFormat::Int, bits @ (24 | 32)) => {
-            let scale = if bits == 24 { 8_388_608.0f32 } else { 2_147_483_648.0f32 };
+            let scale = if bits == 24 {
+                8_388_608.0f32
+            } else {
+                2_147_483_648.0f32
+            };
             reader
                 .samples::<i32>()
                 .map(|s| s.unwrap_or(0) as f32 / scale)
@@ -258,8 +262,16 @@ mod tests {
         let mut out_r = hound::WavReader::open(&out_p).unwrap();
         let samples: Vec<f32> = out_r.samples::<f32>().map(|s| s.unwrap()).collect();
         assert_eq!(samples.len(), 2);
-        assert!((samples[0] - 0.3).abs() < 1e-5, "expected 0.3, got {}", samples[0]);
-        assert!((samples[1] - 0.6).abs() < 1e-5, "expected 0.6, got {}", samples[1]);
+        assert!(
+            (samples[0] - 0.3).abs() < 1e-5,
+            "expected 0.3, got {}",
+            samples[0]
+        );
+        assert!(
+            (samples[1] - 0.6).abs() < 1e-5,
+            "expected 0.6, got {}",
+            samples[1]
+        );
 
         let _ = std::fs::remove_file(mic_p);
         let _ = std::fs::remove_file(sys_p);

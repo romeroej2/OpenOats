@@ -409,7 +409,7 @@ export function SuggestionsView({
 }: Props) {
 
   const handleInjectTest = async () => {
-    const fake = {
+    const fake: { id: string; kind: Suggestion["kind"]; text: string; kbHits: KBResult[] } = {
       id: crypto.randomUUID(),
       kind: "smart_question",
       text: "• Have you considered what their timeline looks like?\n> Understanding urgency helps prioritize the conversation.",
