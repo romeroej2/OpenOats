@@ -23,7 +23,19 @@ function Get-CargoHome {
     return $env:CARGO_HOME
   }
 
-  return Join-Path $env:USERPROFILE ".cargo"
+  $homeDir = if ($env:USERPROFILE) {
+    $env:USERPROFILE
+  } elseif ($env:HOME) {
+    $env:HOME
+  } else {
+    [Environment]::GetFolderPath("UserProfile")
+  }
+
+  if ([string]::IsNullOrWhiteSpace($homeDir)) {
+    throw "Unable to resolve Cargo home: neither CARGO_HOME nor a user home directory is available."
+  }
+
+  return Join-Path $homeDir ".cargo"
 }
 
 function Get-RegistryPackagePath([string]$packageName, [string]$version) {
