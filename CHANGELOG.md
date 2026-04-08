@@ -75,6 +75,12 @@ and the next one.
   the desktop app on Windows, macOS, and Linux with app-managed runtime setup,
   supported-locale checks, Hugging Face token support, and Whisper fallback
   when Cohere is unavailable.
+- **Windows AMD GPU path** â€” added experimental ROCm support for Cohere
+  Transcribe on Windows, including adapter-specific runtimes, setup diagnostics,
+  cached GPU wheel installs, and safer fallback behavior. This currently works
+  on supported Radeon setups, but can still be slow and remains experimental.
+- **Issue coverage** â€” this release closes [#32](https://github.com/romeroej2/OpenCassava/issues/32)
+  by shipping the new local Cohere Transcribe integration discussed there.
 
 ---
 

@@ -406,7 +406,7 @@ function App() {
       listen<string>("stt-install-log", (e) => {
         const line = e.payload.trim();
         if (!line) return;
-        setInstallLogLines((prev) => [...prev, line].slice(-24));
+        setInstallLogLines((prev) => [...prev, line].slice(-80));
         
         const percentMatch = line.match(/(\d{1,3})%/);
         if (percentMatch) {
@@ -718,23 +718,6 @@ function App() {
   }
 
   if (modelState === "missing") {
-    if (tab === "settings") {
-      return (
-        <div style={{ height: "100vh", background: colors.background, color: colors.text }}>
-          <SettingsView
-            settings={settings}
-            onSettingsChange={handleSettingsChange}
-            onApiKeysSaved={() => {
-              refreshSttStatus().catch(console.error);
-            }}
-            sttStatus={sttStatus}
-            onSetupStt={handleDownload}
-            isSettingUpStt={isSettingUpStt}
-          />
-        </div>
-      );
-    }
-
     return (
       <div style={centerStyle}>
         <div style={{ textAlign: "center", maxWidth: 320 }}>

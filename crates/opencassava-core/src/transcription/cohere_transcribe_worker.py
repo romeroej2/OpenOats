@@ -41,6 +41,10 @@ def send_err(message):
 
 def normalize_device(device):
     device = (device or "auto").lower()
+    if device == "rocm-windows":
+        if not torch.cuda.is_available():
+            raise RuntimeError("ROCm Windows was requested for Cohere Transcribe but no compatible AMD GPU is available.")
+        return "cuda", torch.float32
     if device == "cuda":
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA was requested for Cohere Transcribe but no CUDA device is available.")

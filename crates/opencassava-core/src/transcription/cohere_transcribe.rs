@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 const WORKER_SCRIPT: &str = include_str!("cohere_transcribe_worker.py");
 const REQUIREMENTS: &str = include_str!("cohere_transcribe_requirements.txt");
@@ -88,6 +89,10 @@ impl CohereTranscribeConfig {
             .join(format!("install-{}.stamp", self.variant_slug()))
     }
 
+    pub fn pip_cache_dir(&self) -> PathBuf {
+        self.runtime_root.join("pip-cache")
+    }
+
     pub fn model_stamp_path(&self) -> PathBuf {
         let device = self
             .device
@@ -107,6 +112,7 @@ impl CohereTranscribeConfig {
     pub fn ensure_files(&self) -> Result<(), String> {
         fs::create_dir_all(&self.runtime_root).map_err(|e| e.to_string())?;
         fs::create_dir_all(&self.models_dir).map_err(|e| e.to_string())?;
+        fs::create_dir_all(self.pip_cache_dir()).map_err(|e| e.to_string())?;
         fs::write(&self.worker_script_path, WORKER_SCRIPT).map_err(|e| e.to_string())?;
         fs::write(&self.requirements_path, REQUIREMENTS).map_err(|e| e.to_string())?;
         Ok(())
@@ -122,7 +128,7 @@ impl CohereTranscribeConfig {
     }
 
     pub fn worker_device(&self) -> &str {
-        if self.use_wsl || self.device.eq_ignore_ascii_case("rocm-windows") {
+        if self.use_wsl {
             "cuda"
         } else {
             self.device.as_str()
@@ -135,12 +141,29 @@ where
     F: Fn(&str) + Send + Clone + 'static,
 {
     config.ensure_files()?;
+    if config.is_installed() {
+        on_line(&format!(
+            "[cohere-transcribe] runtime already installed for variant={}, reusing existing venv",
+            config.variant_slug()
+        ));
+        return Ok(());
+    }
     let _lock = SetupLock::acquire(config)?;
+    on_line(&format!(
+        "[cohere-transcribe] install_runtime begin variant={} venv={}",
+        config.variant_slug(),
+        if config.use_wsl {
+            config.wsl_venv_linux_path.clone()
+        } else {
+            config.venv_path.display().to_string()
+        }
+    ));
     if config.use_wsl {
         return install_wsl_runtime(config, on_line);
     }
 
     if !config.python_path().exists() {
+        on_line("[cohere-transcribe] creating native venv");
         let python = detect_system_python()?;
         run_command(
             Command::new(&python.command)
@@ -154,9 +177,15 @@ where
     }
 
     let python_path = config.python_path();
+    on_line(&format!(
+        "[cohere-transcribe] native python path {}",
+        python_path.display()
+    ));
     install_native_torch(config, &python_path, on_line.clone())?;
+    on_line("[cohere-transcribe] torch install phase finished");
     run_command(
         Command::new(&python_path)
+            .env("PIP_CACHE_DIR", config.pip_cache_dir())
             .arg("-m")
             .arg("pip")
             .arg("install")
@@ -169,6 +198,7 @@ where
 
     run_command(
         Command::new(&python_path)
+            .env("PIP_CACHE_DIR", config.pip_cache_dir())
             .arg("-m")
             .arg("pip")
             .arg("install")
@@ -180,6 +210,10 @@ where
     )?;
 
     fs::write(config.install_stamp_path(), config.install_stamp_contents()).map_err(|e| e.to_string())?;
+    log::info!(
+        "[cohere-transcribe] install_runtime completed and wrote stamp {}",
+        config.install_stamp_path().display()
+    );
     Ok(())
 }
 
@@ -434,11 +468,17 @@ where
     F: Fn(&str) + Send + Clone + 'static,
 {
     log::info!("[cohere-transcribe] Starting {description}");
+    on_line(&format!("[cohere-transcribe] Starting {description}"));
+    let started_at = Instant::now();
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to {description}: {e}"))?;
+    on_line(&format!(
+        "[cohere-transcribe] Spawned process for {description} with pid {}",
+        child.id()
+    ));
 
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -472,6 +512,7 @@ where
         }
         buf_all
     });
+    let on_line_stderr = on_line.clone();
     let stderr_thread = thread::spawn(move || {
         let mut stderr = stderr;
         let mut buf_all = Vec::new();
@@ -487,7 +528,7 @@ where
                         if c == '\n' || c == '\r' {
                             if !line_buf.is_empty() {
                                 log::info!("[cohere-transcribe] {}", line_buf);
-                                on_line(&line_buf);
+                                on_line_stderr(&line_buf);
                                 line_buf.clear();
                             }
                         } else {
@@ -504,10 +545,18 @@ where
     let status = child
         .wait()
         .map_err(|e| format!("Failed to wait for {description}: {e}"))?;
+    on_line(&format!(
+        "[cohere-transcribe] Process for {description} exited with status {status} after {} ms",
+        started_at.elapsed().as_millis()
+    ));
     let stdout_buf = stdout_thread.join().unwrap_or_default();
     let stderr_buf = stderr_thread.join().unwrap_or_default();
 
     if status.success() {
+        on_line(&format!(
+            "[cohere-transcribe] Finished {description} successfully in {} ms",
+            started_at.elapsed().as_millis()
+        ));
         return Ok(());
     }
 
@@ -534,13 +583,15 @@ where
     F: Fn(&str) + Send + Clone + 'static,
 {
     if config.device.eq_ignore_ascii_case("rocm-windows") {
+        on_line("[cohere-transcribe] validating Python 3.12 for rocm-windows");
         ensure_python_312(python_path)?;
+        on_line("[cohere-transcribe] installing AMD ROCm Windows SDK wheels");
         run_command(
             Command::new(python_path)
+                .env("PIP_CACHE_DIR", config.pip_cache_dir())
                 .arg("-m")
                 .arg("pip")
                 .arg("install")
-                .arg("--no-cache-dir")
                 .arg(ROCM_WINDOWS_SDK_CORE)
                 .arg(ROCM_WINDOWS_SDK_DEVEL)
                 .arg(ROCM_WINDOWS_SDK_LIBS)
@@ -548,23 +599,27 @@ where
             "install AMD ROCm Windows SDK packages for Cohere Transcribe",
             on_line.clone(),
         )?;
+        on_line("[cohere-transcribe] installing ROCm PyTorch wheels");
         run_command(
             Command::new(python_path)
+                .env("PIP_CACHE_DIR", config.pip_cache_dir())
                 .arg("-m")
                 .arg("pip")
                 .arg("install")
-                .arg("--no-cache-dir")
                 .arg(ROCM_WINDOWS_TORCH)
                 .arg(ROCM_WINDOWS_TORCHAUDIO)
                 .arg(ROCM_WINDOWS_TORCHVISION),
             "install ROCm PyTorch wheels for Cohere Transcribe",
-            on_line,
+            on_line.clone(),
         )?;
+        on_line("[cohere-transcribe] rocm-windows torch phase completed");
         return Ok(());
     }
 
+    on_line("[cohere-transcribe] installing CPU/default torch package");
     run_command(
         Command::new(python_path)
+            .env("PIP_CACHE_DIR", config.pip_cache_dir())
             .arg("-m")
             .arg("pip")
             .arg("install")
@@ -598,51 +653,103 @@ fn ensure_python_312(python_path: &Path) -> Result<(), String> {
 }
 
 fn validate_rocm_windows_runtime(config: &CohereTranscribeConfig) -> Result<(), String> {
-    let output = Command::new(config.python_path())
+    log::info!("[cohere-transcribe] validating rocm-windows runtime via torch probe");
+    let mut child = Command::new(config.python_path())
         .arg("-c")
         .arg(
-            "import json, torch; \
-             result = {\
-               'torch_version': torch.__version__, \
-               'cuda_available': torch.cuda.is_available(), \
-               'device_count': torch.cuda.device_count()\
-             }; \
-             if result['cuda_available'] and result['device_count'] > 0: \
-                 result['device_name'] = torch.cuda.get_device_name(0); \
-             print(json.dumps(result))",
+            r#"
+import json
+import torch
+
+print("[probe] imported torch", flush=True)
+result = {"torch_version": torch.__version__}
+print("[probe] checking cuda availability", flush=True)
+result["cuda_available"] = torch.cuda.is_available()
+print("[probe] checking device count", flush=True)
+result["device_count"] = torch.cuda.device_count()
+if result["cuda_available"] and result["device_count"] > 0:
+    print("[probe] reading device name", flush=True)
+    result["device_name"] = torch.cuda.get_device_name(0)
+print(json.dumps(result), flush=True)
+"#,
         )
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("Failed to validate ROCm Windows runtime for cohere-transcribe: {e}"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "ROCm Windows runtime validation failed before loading Cohere Transcribe. {}",
-            if stderr.is_empty() {
-                "PyTorch exited unsuccessfully while probing AMD GPU support.".to_string()
-            } else {
-                stderr
+    let started_at = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("Failed while waiting for ROCm Windows probe: {e}"))?
+        {
+            let output = child
+                .wait_with_output()
+                .map_err(|e| format!("Failed to collect ROCm Windows probe output: {e}"))?;
+            if !status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                return Err(format!(
+                    "ROCm Windows runtime validation failed before loading Cohere Transcribe. stdout: {} stderr: {}",
+                    stdout,
+                    stderr
+                ));
             }
-        ));
-    }
 
-    let stdout = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
-    let json: serde_json::Value =
-        serde_json::from_str(stdout.trim()).map_err(|e| format!("Invalid ROCm probe output: {e}"))?;
-    let cuda_available = json["cuda_available"].as_bool().unwrap_or(false);
-    let device_count = json["device_count"].as_u64().unwrap_or(0);
-    if cuda_available && device_count > 0 {
-        log::info!(
-            "[cohere-transcribe] ROCm Windows probe succeeded with device {}",
-            json["device_name"].as_str().unwrap_or("unknown")
-        );
-        return Ok(());
-    }
+            let stdout = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+            log::info!(
+                "[cohere-transcribe] rocm-windows probe raw output: {}",
+                stdout.trim()
+            );
+            let json_line = stdout
+                .lines()
+                .rev()
+                .find(|line| line.trim_start().starts_with('{'))
+                .ok_or_else(|| {
+                    format!(
+                        "ROCm probe did not emit JSON output. Raw output: {}",
+                        stdout.trim()
+                    )
+                })?;
+            let json: serde_json::Value = serde_json::from_str(json_line.trim())
+                .map_err(|e| format!("Invalid ROCm probe output: {e}"))?;
+            let cuda_available = json["cuda_available"].as_bool().unwrap_or(false);
+            let device_count = json["device_count"].as_u64().unwrap_or(0);
+            if cuda_available && device_count > 0 {
+                log::info!(
+                    "[cohere-transcribe] ROCm Windows probe succeeded with device {}",
+                    json["device_name"].as_str().unwrap_or("unknown")
+                );
+                return Ok(());
+            }
 
-    Err(format!(
-        "ROCm Windows runtime installed, but PyTorch did not detect a usable AMD GPU. Probe result: {}. Try updating AMD drivers, confirming Python 3.12, or switching Cohere to WSL ROCm.",
-        stdout.trim()
-    ))
+            return Err(format!(
+                "ROCm Windows runtime installed, but PyTorch did not detect a usable AMD GPU. Probe result: {}. Try updating AMD drivers, confirming Python 3.12, or switching Cohere to WSL ROCm.",
+                json_line.trim()
+            ));
+        }
+
+        if started_at.elapsed() > Duration::from_secs(20) {
+            let _ = child.kill();
+            let output = child.wait_with_output().ok();
+            let stdout = output
+                .as_ref()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            let stderr = output
+                .as_ref()
+                .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
+                .unwrap_or_default();
+            return Err(format!(
+                "ROCm Windows runtime probe timed out after 20 seconds. stdout: {} stderr: {}. The native ROCm stack appears hung while initializing torch.cuda; try WSL ROCm instead.",
+                stdout,
+                stderr
+            ));
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn install_wsl_runtime<F>(config: &CohereTranscribeConfig, on_line: F) -> Result<(), String>
@@ -936,6 +1043,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut config = sample_config(dir.path().join("cohere"));
         config.device = "rocm-windows".into();
-        assert_eq!(config.worker_device(), "cuda");
+        assert_eq!(config.worker_device(), "rocm-windows");
     }
 }
