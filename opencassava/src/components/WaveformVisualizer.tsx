@@ -5,32 +5,52 @@ interface Props {
   level: number; // 0-1
   isActive: boolean;
   color?: string;
+  thresholdLevel?: number | null;
+  thresholdColor?: string;
+  gain?: number;
 }
 
-const BAR_COUNT = 12;
-const BAR_WIDTH = 6;
-const BAR_GAP = 4;
+const BAR_COUNT = 16;
+const BAR_WIDTH = 7;
+const BAR_GAP = 5;
 const BAR_STRIDE = BAR_WIDTH + BAR_GAP;
-const CLUSTER_WIDTH = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP; // 116px
-const MAX_BAR_HEIGHT = 18; // full canvas height
-const MIN_ACTIVE_BAR_HEIGHT = 2;
-const SILENCE_BAR_HEIGHT = 3;
-const CORNER_RADIUS = 2;
+const CLUSTER_WIDTH = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP;
+const MAX_BAR_HEIGHT = 28;
+const MIN_ACTIVE_BAR_HEIGHT = 3;
+const SILENCE_BAR_HEIGHT = 4;
+const CORNER_RADIUS = 3;
 // Wave speed scales with audio level — stationary at silence, fast at loud
 const SPATIAL_FREQ = (2 * Math.PI) / BAR_COUNT;
 const BASE_TEMPORAL_FREQ = 0.004; // radians per ms at full volume
+
+function normalizeLevel(level: number): number {
+  return Math.max(0, Math.min(1, (level - 0.015) / 0.985));
+}
+
+function toVisualLevel(normalizedLevel: number): number {
+  return Math.pow(normalizedLevel, 0.65);
+}
 
 export function WaveformVisualizer({
   level,
   isActive,
   color = colors.accent,
+  thresholdLevel = null,
+  thresholdColor = colors.warning,
+  gain = 1,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number>(0);
-  const width = 140;
-  const height = 18;
-  const normalizedLevel = Math.max(0, Math.min(1, (level - 0.015) / 0.985));
-  const visualLevel = Math.pow(normalizedLevel, 0.65);
+  const width = 240;
+  const height = 32;
+  const normalizedLevel = normalizeLevel(level * gain);
+  const visualLevel = toVisualLevel(normalizedLevel);
+  const normalizedThreshold =
+    thresholdLevel == null ? null : normalizeLevel(thresholdLevel * gain);
+  const visualThreshold =
+    normalizedThreshold == null ? null : toVisualLevel(normalizedThreshold);
+  const thresholdY =
+    visualThreshold == null ? null : height - visualThreshold * MAX_BAR_HEIGHT;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -48,6 +68,19 @@ export function WaveformVisualizer({
       ctx.fill();
     };
 
+    const drawThreshold = () => {
+      if (thresholdY == null) return;
+      ctx.save();
+      ctx.strokeStyle = thresholdColor;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(startX - 6, thresholdY);
+      ctx.lineTo(startX + CLUSTER_WIDTH + 6, thresholdY);
+      ctx.stroke();
+      ctx.restore();
+    };
+
     const isSilent = !isActive || normalizedLevel < 0.02;
 
     if (isSilent) {
@@ -56,6 +89,7 @@ export function WaveformVisualizer({
       for (let i = 0; i < BAR_COUNT; i++) {
         drawRoundedBar(startX + i * BAR_STRIDE, SILENCE_BAR_HEIGHT, colors.border);
       }
+      drawThreshold();
       return;
     }
 
@@ -71,13 +105,14 @@ export function WaveformVisualizer({
         );
         drawRoundedBar(startX + i * BAR_STRIDE, barHeight, color);
       }
+      drawThreshold();
       animFrameRef.current = requestAnimationFrame(loop);
     };
 
     animFrameRef.current = requestAnimationFrame(loop);
 
     return () => cancelAnimationFrame(animFrameRef.current);
-  }, [level, isActive, color, normalizedLevel, visualLevel]);
+  }, [level, isActive, color, normalizedLevel, visualLevel, thresholdColor, thresholdY]);
 
   return (
     <canvas

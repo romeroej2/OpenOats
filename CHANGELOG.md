@@ -2,6 +2,13 @@
 
 ## [Unreleased] - Next version
 
+### Non-versioned
+
+- **Recording UI cleanup** - consolidated the main header, moved workspace state
+  into the bottom status rail, simplified import wording, and reworked the live
+  recording controls so diagnostics and mic gate use space more cleanly without
+  changing the underlying information.
+
 ### Save recordings
 
 - **Record Audio toggle** — a new checkbox in the ControlBar lets users opt in to

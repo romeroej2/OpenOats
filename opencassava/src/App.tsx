@@ -174,6 +174,7 @@ function App() {
   const [searchResults, setSearchResults] = useState<number[]>([]);
   const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [audioLevelRaw, setAudioLevelRaw] = useState(0);
   const [audioLevelThem, setAudioLevelThem] = useState(0);
   const [isSettingUpStt, setIsSettingUpStt] = useState(false);
   const [sttSetupMessage, setSttSetupMessage] = useState("");
@@ -285,6 +286,40 @@ function App() {
         await invoke("save_settings", { newSettings: nextSettings });
       } catch (err) {
         console.error("Failed to save suggestion settings:", err);
+        setSettings(settings);
+      }
+    },
+    [settings],
+  );
+
+  const handleMicThresholdMultiplierChange = useCallback(
+    async (multiplier: number) => {
+      if (!settings) {
+        return;
+      }
+      const nextSettings = { ...settings, micThresholdMultiplier: multiplier };
+      setSettings(nextSettings);
+      try {
+        await invoke("save_settings", { newSettings: nextSettings });
+      } catch (err) {
+        console.error("Failed to save mic threshold:", err);
+        setSettings(settings);
+      }
+    },
+    [settings],
+  );
+
+  const handleMicCalibrationRmsChange = useCallback(
+    async (micCalibrationRms: number) => {
+      if (!settings) {
+        return;
+      }
+      const nextSettings = { ...settings, micCalibrationRms };
+      setSettings(nextSettings);
+      try {
+        await invoke("save_settings", { newSettings: nextSettings });
+      } catch (err) {
+        console.error("Failed to save mic calibration:", err);
         setSettings(settings);
       }
     },
@@ -446,8 +481,9 @@ function App() {
         setLastSuggestionCheckSurfaced(e.payload.surfaced);
       }),
 
-      listen<{ you: number; them: number }>("audio-level", (e) => {
-        setAudioLevel(e.payload.you);
+      listen<{ micInput: number; micPostGate: number; them: number }>("audio-level", (e) => {
+        setAudioLevelRaw(e.payload.micInput);
+        setAudioLevel(e.payload.micPostGate);
         setAudioLevelThem(e.payload.them);
       }),
 
@@ -828,9 +864,9 @@ function App() {
   const kbConnected = !!settings?.kbFolderPath;
 
   const tabs: { key: Tab; label: string; badge?: number }[] = [
-    { key: "transcript", label: "Transcript" },
-    { key: "suggestions", label: "Suggestions" },
-    { key: "notes", label: "Notes" },
+    { key: "transcript", label: "Transcript", badge: utterances.length > 0 ? utterances.length : undefined },
+    { key: "suggestions", label: "Suggestions", badge: suggestions.length > 0 ? suggestions.length : undefined },
+    { key: "notes", label: "Notes", badge: currentSessionNotes ? 1 : undefined },
     { key: "settings", label: "Settings" },
   ];
 
@@ -859,32 +895,71 @@ function App() {
       {/* Export Modal */}
       {showExport && <ExportMenu utterances={utterances} onClose={() => setShowExport(false)} />}
 
-      {/* Main Toolbar */}
-      <div style={{ display: "flex", alignItems: "center", gap: spacing[2], padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.surface, borderBottom: `1px solid ${colors.border}` }}>
+      {/* Unified Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: spacing[2], flexWrap: "wrap", padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.surface, borderBottom: `1px solid ${colors.border}` }}>
         <button
           onClick={() => setSidebarOpen(true)}
-          style={{ padding: `${spacing[2]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 6, fontSize: typography.md, cursor: "pointer", color: colors.text }}
+          style={{ padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 10, fontSize: typography.md, cursor: "pointer", color: colors.text, fontWeight: 600 }}
           title="Session History (Cmd/Ctrl+B)"
         >
-          ☰
+          History
         </button>
-        <div style={{ flex: 1 }} />
-        <div style={{ display: "flex", gap: spacing[2] }}>
+        <div style={{ display: "flex", alignItems: "center", gap: spacing[1], padding: spacing[1], background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 14, flex: "1 1 auto", minWidth: 240, flexWrap: "wrap" }}>
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              style={{
+                padding: "8px 12px",
+                background: tab === t.key ? colors.surface : "transparent",
+                color: tab === t.key ? colors.accent : colors.textSecondary,
+                border: tab === t.key ? `1px solid ${colors.border}` : "1px solid transparent",
+                borderRadius: 10,
+                cursor: "pointer",
+                fontSize: typography.md,
+                fontWeight: tab === t.key ? 700 : 500,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                boxShadow: tab === t.key ? "0 1px 3px rgba(0, 0, 0, 0.04)" : "none",
+              }}
+            >
+              {t.label}
+              {t.badge !== undefined && t.badge > 0 && (
+                <span
+                  style={{
+                    background: tab === t.key ? `${colors.accent}14` : colors.surface,
+                    color: tab === t.key ? colors.accent : colors.textMuted,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    padding: "2px 6px",
+                    borderRadius: 999,
+                    minWidth: 18,
+                    textAlign: "center",
+                  }}
+                >
+                  {t.badge > 99 ? "99+" : t.badge}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: spacing[2], flexWrap: "wrap" }}>
           <button
             onClick={() => setShowSearch(true)}
             disabled={utterances.length === 0}
-            style={{ padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 6, fontSize: typography.md, cursor: utterances.length === 0 ? "not-allowed" : "pointer", opacity: utterances.length === 0 ? 0.5 : 1, color: colors.text }}
+            style={{ padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 10, fontSize: typography.md, cursor: utterances.length === 0 ? "not-allowed" : "pointer", opacity: utterances.length === 0 ? 0.5 : 1, color: colors.text, fontWeight: 500 }}
             title="Search (Cmd/Ctrl+F)"
           >
-            🔍 Search
+            Search
           </button>
           <button
             onClick={() => setShowExport(true)}
             disabled={utterances.length === 0}
-            style={{ padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 6, fontSize: typography.md, cursor: utterances.length === 0 ? "not-allowed" : "pointer", opacity: utterances.length === 0 ? 0.5 : 1, color: colors.text }}
+            style={{ padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 10, fontSize: typography.md, cursor: utterances.length === 0 ? "not-allowed" : "pointer", opacity: utterances.length === 0 ? 0.5 : 1, color: colors.text, fontWeight: 500 }}
             title="Export (Cmd/Ctrl+E)"
           >
-            📤 Export
+            Export
           </button>
         </div>
       </div>
@@ -905,16 +980,16 @@ function App() {
           ((parakeetWarming || omniAsrWarming || cohereTranscribeWarming) && !isRunning)
         }
         engineWarming={(parakeetWarming || omniAsrWarming || cohereTranscribeWarming) && !isRunning}
-        kbConnected={kbConnected}
-        kbFileCount={0}
-        isSuggestionAnalyzing={isGeneratingSuggestion}
-        lastSuggestionCheckAt={lastSuggestionCheckAt}
-        lastSuggestionCheckSurfaced={lastSuggestionCheckSurfaced}
-        suggestionsEnabled={settings?.suggestionsEnabled ?? true}
+        audioLevelRaw={audioLevelRaw}
         audioLevel={audioLevel}
         audioLevelThem={audioLevelThem}
         saveRecording={saveRecording}
         onSaveRecordingChange={setSaveRecording}
+        micCalibrationRms={settings?.micCalibrationRms ?? null}
+        micThresholdMultiplier={settings?.micThresholdMultiplier ?? 0.6}
+        onMicCalibrationRmsChange={handleMicCalibrationRmsChange}
+        onMicThresholdMultiplierChange={handleMicThresholdMultiplierChange}
+        onOpenSettings={() => setTab("settings")}
       />
 
       {recordingFiles && currentSessionId && (
@@ -947,36 +1022,6 @@ function App() {
           </span>
         </div>
       )}
-
-      {/* Tab Bar */}
-      <div style={{ display: "flex", borderBottom: `1px solid ${colors.border}`, background: colors.surface }}>
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            style={{
-              padding: "10px 16px",
-              background: "transparent",
-              color: tab === t.key ? colors.accent : colors.textSecondary,
-              border: "none",
-              borderBottom: tab === t.key ? `2px solid ${colors.accent}` : "2px solid transparent",
-              cursor: "pointer",
-              fontSize: typography.md,
-              fontWeight: tab === t.key ? 600 : 400,
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            {t.label}
-            {t.badge !== undefined && t.badge > 0 && (
-              <span style={{ background: colors.accent, color: colors.textInverse, fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 10, minWidth: 18, textAlign: "center" }}>
-                {t.badge > 99 ? "99+" : t.badge}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
 
       {/* Tab Content */}
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
@@ -1059,6 +1104,50 @@ function App() {
           <span
             style={{
               padding: `${spacing[1]}px ${spacing[2]}px`,
+              background: kbConnected ? `${colors.accent}12` : colors.background,
+              color: kbConnected ? colors.accent : colors.textSecondary,
+              borderRadius: 12,
+              fontWeight: 600,
+            }}
+            title={kbConnected ? "Knowledge base connected" : "No knowledge base connected"}
+          >
+            {kbConnected ? "KB Connected" : "No KB"}
+          </span>
+          <span
+            style={{
+              padding: `${spacing[1]}px ${spacing[2]}px`,
+              background:
+                !(settings?.suggestionsEnabled ?? true)
+                  ? colors.background
+                  : isGeneratingSuggestion
+                    ? `${colors.them}14`
+                    : lastSuggestionCheckSurfaced
+                      ? `${colors.success}12`
+                      : colors.background,
+              color:
+                !(settings?.suggestionsEnabled ?? true)
+                  ? colors.textSecondary
+                  : isGeneratingSuggestion
+                    ? colors.them
+                    : lastSuggestionCheckSurfaced
+                      ? colors.success
+                      : colors.textSecondary,
+              borderRadius: 12,
+              fontWeight: 600,
+            }}
+            title="Suggestion engine status"
+          >
+            {!(settings?.suggestionsEnabled ?? true)
+              ? "Suggestions Off"
+              : isGeneratingSuggestion
+                ? "Suggestions Analyzing"
+                : lastSuggestionCheckAt
+                  ? `Suggestions ${lastSuggestionCheckSurfaced ? "Ready" : "Checked"}`
+                  : "Suggestions Waiting"}
+          </span>
+          <span
+            style={{
+              padding: `${spacing[1]}px ${spacing[2]}px`,
               background: `${(isLocalMode ? colors.success : colors.you)}15`,
               color: isLocalMode ? colors.success : colors.you,
               borderRadius: 12,
@@ -1110,12 +1199,12 @@ function App() {
           })()}
         </div>
 
-        <div style={{ display: "flex", gap: spacing[4], flexWrap: "wrap", justifyContent: "center" }}>
-          <span>Cmd/Ctrl+Shift+S: Start/Stop</span>
-          <span>Cmd/Ctrl+F: Search</span>
-          <span>Cmd/Ctrl+E: Export</span>
-          <span>Cmd/Ctrl+B: History</span>
-          <span>Esc: Close</span>
+        <div style={{ display: "flex", gap: spacing[3], flexWrap: "wrap", justifyContent: "center" }}>
+          <span>Start/Stop: Cmd/Ctrl+Shift+S</span>
+          <span>Search: Cmd/Ctrl+F</span>
+          <span>Export: Cmd/Ctrl+E</span>
+          <span>History: Cmd/Ctrl+B</span>
+          <span>Close: Esc</span>
         </div>
       </div>
     </div>

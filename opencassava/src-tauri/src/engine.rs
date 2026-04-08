@@ -96,8 +96,10 @@ pub struct ApiKeysPayload {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioLevelPayload {
-    pub you: f32,
+    pub mic_input: f32,
+    pub mic_post_gate: f32,
     pub them: f32,
 }
 
@@ -186,6 +188,8 @@ pub struct AppState {
     pub overlay_suggestion: Mutex<Option<SuggestionPayload>>,
     pub is_running: Mutex<bool>,
     pub stop_requested: Arc<std::sync::atomic::AtomicBool>,
+    pub mic_gate_threshold: Arc<AtomicU32>,
+    pub mic_input_level: Arc<AtomicU32>,
     pub mic_level: Arc<AtomicU32>,
     pub sys_level: Arc<AtomicU32>,
     pub captured_segments: Arc<AtomicU32>,
@@ -225,6 +229,7 @@ impl AppState {
 
     pub fn new() -> Self {
         let settings = AppSettings::load();
+        let initial_mic_gate_threshold = mic_gate_threshold(&settings).to_bits();
         // Derive KB cache path from the stable OpenCassava data dir.
         let kb_cache = Self::persistent_data_dir().join("kb_cache.json");
         let (embed_url, _, embed_model) = embed_config(&settings);
@@ -243,6 +248,8 @@ impl AppState {
             overlay_suggestion: Mutex::new(None),
             is_running: Mutex::new(false),
             stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            mic_gate_threshold: Arc::new(AtomicU32::new(initial_mic_gate_threshold)),
+            mic_input_level: Arc::new(AtomicU32::new(0)),
             mic_level: Arc::new(AtomicU32::new(0)),
             sys_level: Arc::new(AtomicU32::new(0)),
             captured_segments: Arc::new(AtomicU32::new(0)),
@@ -386,6 +393,10 @@ impl AppState {
             },
         }
     }
+}
+
+fn mic_gate_threshold(settings: &AppSettings) -> f32 {
+    settings.mic_calibration_rms.unwrap_or(0.0) * settings.mic_threshold_multiplier
 }
 
 fn resolve_whisper_model(settings: &AppSettings) -> &'static str {
@@ -1303,6 +1314,9 @@ pub fn save_settings(
 ) -> Result<(), String> {
     let mut s = state.settings.lock().unwrap();
     *s = new_settings;
+    state
+        .mic_gate_threshold
+        .store(mic_gate_threshold(&s).to_bits(), Ordering::Relaxed);
     s.save();
     let hide_from_screen_share = s.hide_from_screen_share;
     drop(s);
@@ -1431,6 +1445,7 @@ pub fn start_transcription(
     let handle = tauri::async_runtime::spawn(async move {
         // Audio level polling task — runs until is_running goes false
         let app_lvl = app_clone.clone();
+        let mil = Arc::clone(&state_clone.mic_input_level);
         let ml = Arc::clone(&state_clone.mic_level);
         let sl = Arc::clone(&state_clone.sys_level);
         let running_flag = Arc::clone(&state_clone);
@@ -1441,10 +1456,18 @@ pub fn start_transcription(
                 if !*running_flag.is_running.lock().unwrap() {
                     break;
                 }
-                let you = f32::from_bits(ml.load(Ordering::Relaxed));
+                let mic_input = f32::from_bits(mil.load(Ordering::Relaxed));
+                let mic_post_gate = f32::from_bits(ml.load(Ordering::Relaxed));
                 let them = f32::from_bits(sl.load(Ordering::Relaxed));
                 app_lvl
-                    .emit("audio-level", &AudioLevelPayload { you, them })
+                    .emit(
+                        "audio-level",
+                        &AudioLevelPayload {
+                            mic_input,
+                            mic_post_gate,
+                            them,
+                        },
+                    )
                     .ok();
             }
         });
@@ -1795,13 +1818,20 @@ pub fn start_transcription(
         let mic = CpalMicCapture::new().with_stop_signal(Arc::clone(&state_clone.stop_requested));
         let mic_stream = mic.buffer_stream_for_device(device_name.as_deref());
         use futures::StreamExt;
+        let mic_input_level_w = Arc::clone(&state_clone.mic_input_level);
         let mic_level_w = Arc::clone(&state_clone.mic_level);
+        let mic_gate_threshold_w = Arc::clone(&state_clone.mic_gate_threshold);
         let mut echo_processor = MicEchoProcessor::new(echo_reference.clone());
         echo_processor.set_enabled(settings.echo_cancellation_enabled);
-        let mic_gate_threshold =
-            settings.mic_calibration_rms.unwrap_or(0.0) * settings.mic_threshold_multiplier;
-        echo_processor.set_threshold(mic_gate_threshold);
+        echo_processor.set_threshold(f32::from_bits(
+            mic_gate_threshold_w.load(Ordering::Relaxed),
+        ));
         let mic_stream_leveled = mic_stream.map(move |chunk: Vec<f32>| {
+            let input_rms = compute_rms(&chunk);
+            mic_input_level_w.store(input_rms.to_bits(), Ordering::Relaxed);
+            echo_processor.set_threshold(f32::from_bits(
+                mic_gate_threshold_w.load(Ordering::Relaxed),
+            ));
             let cleaned = echo_processor.process_chunk(&chunk);
             let rms = compute_rms(&cleaned);
             mic_level_w.store(rms.to_bits(), Ordering::Relaxed);
@@ -1960,6 +1990,7 @@ pub async fn stop_transcription(
     if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
         let _ = overlay.hide();
     }
+    state.mic_input_level.store(0u32, Ordering::Relaxed);
     state.mic_level.store(0u32, Ordering::Relaxed);
     state.sys_level.store(0u32, Ordering::Relaxed);
     emit_transcription_progress(&app, &state);
@@ -3017,6 +3048,9 @@ pub async fn calibrate_mic_threshold(
     {
         let mut settings = state.settings.lock().unwrap();
         settings.mic_calibration_rms = Some(calibrated_rms);
+        state
+            .mic_gate_threshold
+            .store(mic_gate_threshold(&settings).to_bits(), Ordering::Relaxed);
         settings.save();
     }
 
@@ -3026,11 +3060,28 @@ pub async fn calibrate_mic_threshold(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opencassava_core::settings::AppSettings;
 
     #[test]
     fn app_state_initializes_without_panic() {
         let state = AppState::new();
         assert!(!*state.is_running.lock().unwrap());
+    }
+
+    #[test]
+    fn mic_gate_threshold_uses_calibration_and_multiplier() {
+        let mut settings = AppSettings::default();
+        settings.mic_calibration_rms = Some(0.05);
+        settings.mic_threshold_multiplier = 0.6;
+        assert!((super::mic_gate_threshold(&settings) - 0.03).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mic_gate_threshold_is_zero_without_calibration() {
+        let mut settings = AppSettings::default();
+        settings.mic_calibration_rms = None;
+        settings.mic_threshold_multiplier = 0.6;
+        assert_eq!(super::mic_gate_threshold(&settings), 0.0);
     }
 
     #[test]

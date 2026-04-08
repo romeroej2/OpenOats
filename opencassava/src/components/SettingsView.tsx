@@ -1191,7 +1191,7 @@ export function SettingsView({
                         {settings && settings.micCalibrationRms == null ? "Calibrate" : "Recalibrate"}
                       </button>
                       <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
-                        Audio below this level will be silenced. Recalibrate if you change microphones.
+                        Audio below this level will be silenced. Recalibrate if you change microphones. You can also tweak sensitivity from the main screen while recording.
                       </span>
                     </>
                   )}
