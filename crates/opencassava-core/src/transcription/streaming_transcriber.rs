@@ -413,8 +413,10 @@ impl StreamingTranscriber {
 
         let mut vad = Vad::new();
         let mut vad_buf: Vec<f32> = Vec::new();
+        let mut pending_speech_buf: Vec<f32> = Vec::new();
         let mut speech_buf: Vec<f32> = Vec::new();
         let mut speaking = false;
+        let mut active_start_count = 0usize;
         let mut silence_count = 0usize;
         let mut last_volatile_at = std::time::Instant::now();
         let volatile_interval = std::time::Duration::from_millis(500);
@@ -438,8 +440,16 @@ impl StreamingTranscriber {
 
                 if active {
                     silence_count = 0;
-                    speaking = true;
-                    speech_buf.extend_from_slice(&chunk);
+                    if speaking {
+                        speech_buf.extend_from_slice(&chunk);
+                    } else {
+                        active_start_count += 1;
+                        pending_speech_buf.extend_from_slice(&chunk);
+                        if active_start_count >= Vad::MIN_START_CHUNKS {
+                            speaking = true;
+                            speech_buf.append(&mut pending_speech_buf);
+                        }
+                    }
                 } else if speaking {
                     silence_count += 1;
                     speech_buf.extend_from_slice(&chunk);
@@ -447,6 +457,8 @@ impl StreamingTranscriber {
                     if silence_count >= Vad::SILENCE_END_CHUNKS {
                         speaking = false;
                         silence_count = 0;
+                        active_start_count = 0;
+                        pending_speech_buf.clear();
                         if speech_buf.len() > Vad::MIN_SPEECH_SAMPLES {
                             match seg_tx.try_send(std::mem::take(&mut speech_buf)) {
                                 Ok(_) => {
@@ -462,6 +474,9 @@ impl StreamingTranscriber {
                             speech_buf.clear();
                         }
                     }
+                } else {
+                    active_start_count = 0;
+                    pending_speech_buf.clear();
                 }
 
                 if speaking && speech_buf.len() >= Vad::FLUSH_SAMPLES {
@@ -561,5 +576,66 @@ mod tests {
             !calls.lock().unwrap().is_empty(),
             "volatile should have fired at least once"
         );
+    }
+
+    #[tokio::test]
+    async fn short_noise_burst_does_not_capture_segment() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let captured = Arc::new(AtomicUsize::new(0));
+        let captured_clone = Arc::clone(&captured);
+        let on_final = Box::new(|_text: String, _speaker_id: Option<String>| {});
+        let on_progress = Arc::new(move |progress: SegmentProgress| {
+            if matches!(progress, SegmentProgress::Captured) {
+                captured_clone.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        let transcriber = StreamingTranscriber::new_passthrough(on_final).with_progress(on_progress);
+        let speech_chunk: Vec<f32> = (0..1600).map(|i| (i as f32 / 100.0).sin() * 0.5).collect();
+        let silence_chunk = vec![0.0f32; 1600];
+        let chunks = vec![
+            speech_chunk,
+            silence_chunk.clone(),
+            silence_chunk.clone(),
+            silence_chunk.clone(),
+            silence_chunk.clone(),
+            silence_chunk.clone(),
+            silence_chunk.clone(),
+            silence_chunk.clone(),
+            silence_chunk,
+        ];
+
+        transcriber.run(futures::stream::iter(chunks)).await;
+        assert_eq!(captured.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn sustained_speech_still_captures_segment() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let captured = Arc::new(AtomicUsize::new(0));
+        let captured_clone = Arc::clone(&captured);
+        let on_final = Box::new(|_text: String, _speaker_id: Option<String>| {});
+        let on_progress = Arc::new(move |progress: SegmentProgress| {
+            if matches!(progress, SegmentProgress::Captured) {
+                captured_clone.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        let transcriber = StreamingTranscriber::new_passthrough(on_final).with_progress(on_progress);
+        let speech_chunk: Vec<f32> = (0..1600).map(|i| (i as f32 / 100.0).sin() * 0.5).collect();
+        let silence_chunk = vec![0.0f32; 1600];
+        let mut chunks = vec![speech_chunk.clone(); 6];
+        chunks.extend(vec![silence_chunk; 8]);
+
+        transcriber.run(futures::stream::iter(chunks)).await;
+        assert_eq!(captured.load(Ordering::Relaxed), 1);
     }
 }

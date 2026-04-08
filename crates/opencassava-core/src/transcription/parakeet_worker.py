@@ -2,9 +2,16 @@ import json
 import os
 import sys
 import tempfile
+import warnings
 
 import numpy as np
 import soundfile as sf
+
+warnings.filterwarnings(
+    "ignore",
+    message="Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work",
+    category=RuntimeWarning,
+)
 
 
 MODELS = {}
