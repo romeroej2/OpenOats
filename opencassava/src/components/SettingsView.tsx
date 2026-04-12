@@ -713,7 +713,7 @@ export function SettingsView({
           style={styles.tab(activeTab === "advanced")}
           onClick={() => setActiveTab("advanced")}
         >
-          Advanced
+          STT Provider
         </button>
         <button
           style={styles.tab(activeTab === "prompts")}
@@ -1017,7 +1017,7 @@ export function SettingsView({
                 >
                   {isRecordingPushToTalkHotkey
                     ? "Press a key or combination now. Escape cancels."
-                    : `Current shortcut: ${normalizeShortcut(settings.pushToTalkHotkey) || "Space"}. The shortcut works while OpenCassava is focused.`}
+                    : `Current shortcut: ${normalizeShortcut(settings.pushToTalkHotkey) || "Space"}. The shortcut is registered globally while live transcription is running.`}
                 </span>
               </div>
             )}

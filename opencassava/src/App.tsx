@@ -177,11 +177,9 @@ function App() {
   const [saveRecording, setSaveRecording] = useState(false);
   const [recordingFiles, setRecordingFiles] = useState<{ micPath: string; sysPath: string } | null>(null);
   const [pushToTalkButtonHeld, setPushToTalkButtonHeld] = useState(false);
-  const [pushToTalkShortcutHeld, setPushToTalkShortcutHeld] = useState(false);
 
   const isPushToTalkMode = settings?.micCaptureMode === "push-to-talk";
-  const desiredMicTransmitActive =
-    !isPushToTalkMode || pushToTalkButtonHeld || pushToTalkShortcutHeld;
+  const desiredMicTransmitActive = !isPushToTalkMode || pushToTalkButtonHeld;
 
   const handleRenameParticipant = useCallback((key: string, newName: string) => {
     setSpeakerLabels((prev) => ({ ...prev, [key]: newName }));
@@ -311,7 +309,6 @@ function App() {
     }
 
     setPushToTalkButtonHeld(false);
-    setPushToTalkShortcutHeld(false);
   }, [isPushToTalkMode, isRunning]);
 
   useEffect(() => {
@@ -351,10 +348,6 @@ function App() {
     },
     onToggleSidebar: () =>
       setActiveDrawer((previous) => (previous === "history" ? null : "history")),
-    pushToTalkEnabled: isRunning && isPushToTalkMode,
-    pushToTalkShortcut: settings?.pushToTalkHotkey ?? "Space",
-    onPushToTalkPress: () => setPushToTalkShortcutHeld(true),
-    onPushToTalkRelease: () => setPushToTalkShortcutHeld(false),
   });
 
   // Check STT readiness whenever settings change

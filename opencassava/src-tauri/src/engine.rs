@@ -41,14 +41,60 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutEvent, ShortcutState};
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
 const OVERLAY_LABEL: &str = "overlay";
 const OVERLAY_SUGGESTION_EVENT: &str = "overlay-suggestion";
-const APP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const APP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+const PARAKEET_WARM_TTL: Duration = Duration::from_secs(300);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParakeetWorkerSlot {
+    Mic,
+    Sys,
+}
+
+struct CachedParakeetWorker {
+    worker: ParakeetWorker,
+    config_key: String,
+    cached_at: Instant,
+}
+
+impl CachedParakeetWorker {
+    fn new(config: &ParakeetConfig, worker: ParakeetWorker) -> Self {
+        Self {
+            worker,
+            config_key: config.runtime_cache_key(),
+            cached_at: Instant::now(),
+        }
+    }
+}
+
+fn parakeet_cache_entry_is_valid(
+    cached_key: &str,
+    expected_key: &str,
+    cached_at: Instant,
+    now: Instant,
+) -> bool {
+    cached_key == expected_key && now.duration_since(cached_at) <= PARAKEET_WARM_TTL
+}
+
+fn parakeet_slot_label(slot: ParakeetWorkerSlot) -> &'static str {
+    match slot {
+        ParakeetWorkerSlot::Mic => "mic",
+        ParakeetWorkerSlot::Sys => "sys",
+    }
+}
+
+fn parakeet_warmup_slots() -> [ParakeetWorkerSlot; 2] {
+    [ParakeetWorkerSlot::Sys, ParakeetWorkerSlot::Mic]
+}
 
 fn ensure_overlay_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
@@ -222,14 +268,17 @@ pub struct AppState {
     pub mic_gate_threshold: Arc<AtomicU32>,
     pub mic_input_level: Arc<AtomicU32>,
     pub mic_level: Arc<AtomicU32>,
+    pub mic_transmit_button_active: Arc<AtomicBool>,
+    pub mic_transmit_shortcut_active: Arc<AtomicBool>,
     pub mic_transmit_active: Arc<AtomicBool>,
+    pub registered_push_to_talk_shortcut: Mutex<Option<String>>,
     pub sys_level: Arc<AtomicU32>,
     pub captured_segments: Arc<AtomicU32>,
     pub processed_segments: Arc<AtomicU32>,
-    /// Pre-warmed Parakeet worker for microphone audio (taken on record start, replaced after stop).
-    pub warmed_parakeet_mic: Mutex<Option<ParakeetWorker>>,
-    /// Pre-warmed Parakeet worker for system audio (taken on record start, replaced after stop).
-    pub warmed_parakeet_sys: Mutex<Option<ParakeetWorker>>,
+    /// Cached Parakeet worker for microphone audio reuse between sessions.
+    warmed_parakeet_mic: Mutex<Option<CachedParakeetWorker>>,
+    /// Cached Parakeet worker for system audio reuse between sessions.
+    warmed_parakeet_sys: Mutex<Option<CachedParakeetWorker>>,
     /// True while Parakeet workers are being pre-warmed in the background.
     pub parakeet_warming: Arc<std::sync::atomic::AtomicBool>,
     /// Pre-warmed OmniASR worker for microphone audio.
@@ -288,7 +337,10 @@ impl AppState {
             mic_gate_threshold: Arc::new(AtomicU32::new(initial_mic_gate_threshold)),
             mic_input_level: Arc::new(AtomicU32::new(0)),
             mic_level: Arc::new(AtomicU32::new(0)),
+            mic_transmit_button_active: Arc::new(AtomicBool::new(false)),
+            mic_transmit_shortcut_active: Arc::new(AtomicBool::new(false)),
             mic_transmit_active: Arc::new(AtomicBool::new(initial_mic_transmit_active)),
+            registered_push_to_talk_shortcut: Mutex::new(None),
             sys_level: Arc::new(AtomicU32::new(0)),
             captured_segments: Arc::new(AtomicU32::new(0)),
             processed_segments: Arc::new(AtomicU32::new(0)),
@@ -447,6 +499,138 @@ impl AppState {
     }
 }
 
+fn parakeet_worker_slot(
+    state: &AppState,
+    slot: ParakeetWorkerSlot,
+) -> &Mutex<Option<CachedParakeetWorker>> {
+    match slot {
+        ParakeetWorkerSlot::Mic => &state.warmed_parakeet_mic,
+        ParakeetWorkerSlot::Sys => &state.warmed_parakeet_sys,
+    }
+}
+
+fn store_cached_parakeet_worker(
+    state: Arc<AppState>,
+    slot: ParakeetWorkerSlot,
+    config: ParakeetConfig,
+    worker: ParakeetWorker,
+) {
+    let entry = CachedParakeetWorker::new(&config, worker);
+    let config_key = entry.config_key.clone();
+    let cached_at = entry.cached_at;
+    {
+        let mut guard = parakeet_worker_slot(&state, slot).lock().unwrap();
+        *guard = Some(entry);
+    }
+
+    std::thread::spawn(move || {
+        std::thread::sleep(PARAKEET_WARM_TTL);
+        if state.shutdown_in_progress.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut guard = parakeet_worker_slot(&state, slot).lock().unwrap();
+        let should_evict = guard
+            .as_ref()
+            .map(|entry| entry.config_key == config_key && entry.cached_at == cached_at)
+            .unwrap_or(false);
+        if should_evict {
+            *guard = None;
+            log::info!(
+                "[parakeet] evicted idle {} worker after {:?}",
+                parakeet_slot_label(slot),
+                PARAKEET_WARM_TTL
+            );
+        }
+    });
+}
+
+fn take_cached_parakeet_worker(
+    state: &Arc<AppState>,
+    slot: ParakeetWorkerSlot,
+    config: &ParakeetConfig,
+) -> Option<ParakeetWorker> {
+    let expected_key = config.runtime_cache_key();
+    let now = Instant::now();
+    let mut guard = parakeet_worker_slot(state, slot).lock().unwrap();
+    match guard.take() {
+        Some(entry)
+            if parakeet_cache_entry_is_valid(
+                &entry.config_key,
+                &expected_key,
+                entry.cached_at,
+                now,
+            ) =>
+        {
+            Some(entry.worker)
+        }
+        Some(_) => {
+            log::info!(
+                "[parakeet] dropped stale {} worker cache entry",
+                parakeet_slot_label(slot)
+            );
+            None
+        }
+        None => None,
+    }
+}
+
+fn has_cached_parakeet_worker(
+    state: &Arc<AppState>,
+    slot: ParakeetWorkerSlot,
+    config: &ParakeetConfig,
+) -> bool {
+    let expected_key = config.runtime_cache_key();
+    let now = Instant::now();
+    let mut guard = parakeet_worker_slot(state, slot).lock().unwrap();
+    let is_valid = guard
+        .as_ref()
+        .map(|entry| {
+            parakeet_cache_entry_is_valid(&entry.config_key, &expected_key, entry.cached_at, now)
+        })
+        .unwrap_or(false);
+    if !is_valid {
+        *guard = None;
+    }
+    is_valid
+}
+
+fn warm_parakeet_worker_slot(
+    state: &Arc<AppState>,
+    slot: ParakeetWorkerSlot,
+    config: &ParakeetConfig,
+) -> bool {
+    if has_cached_parakeet_worker(state, slot, config) {
+        return true;
+    }
+
+    let slot_name = parakeet_slot_label(slot);
+    log::info!("[parakeet] pre-warming {slot_name} worker...");
+    match ParakeetWorker::spawn(config) {
+        Ok(mut worker) => match worker.ensure_model(config.diarization_enabled) {
+            Ok(_) => {
+                if state.shutdown_in_progress.load(Ordering::Relaxed) {
+                    log::info!(
+                        "[parakeet] dropping {slot_name} worker because shutdown is in progress"
+                    );
+                    false
+                } else {
+                    store_cached_parakeet_worker(Arc::clone(state), slot, config.clone(), worker);
+                    log::info!("[parakeet] {slot_name} worker pre-warmed and ready");
+                    true
+                }
+            }
+            Err(err) => {
+                log::warn!("[parakeet] {slot_name} worker ensure_model failed: {err}");
+                false
+            }
+        },
+        Err(err) => {
+            log::warn!("[parakeet] failed to pre-warm {slot_name} worker: {err}");
+            false
+        }
+    }
+}
+
 fn mic_gate_threshold(settings: &AppSettings) -> f32 {
     settings.mic_calibration_rms.unwrap_or(0.0) * settings.mic_threshold_multiplier
 }
@@ -455,12 +639,193 @@ fn mic_transmit_enabled_by_default(settings: &AppSettings) -> bool {
     settings.mic_capture_mode != MicCaptureMode::PushToTalk
 }
 
-fn mic_transmit_active_for_request(settings: &AppSettings, requested_active: bool) -> bool {
+fn mic_transmit_active_for_sources(
+    settings: &AppSettings,
+    button_active: bool,
+    shortcut_active: bool,
+) -> bool {
     if settings.mic_capture_mode == MicCaptureMode::PushToTalk {
-        requested_active
+        button_active || shortcut_active
     } else {
         true
     }
+}
+
+fn refresh_mic_transmit_active(state: &AppState, settings: &AppSettings) {
+    state.mic_transmit_active.store(
+        mic_transmit_active_for_sources(
+            settings,
+            state.mic_transmit_button_active.load(Ordering::Relaxed),
+            state.mic_transmit_shortcut_active.load(Ordering::Relaxed),
+        ),
+        Ordering::Relaxed,
+    );
+}
+
+fn reset_mic_transmit_sources(state: &AppState, settings: &AppSettings) {
+    state
+        .mic_transmit_button_active
+        .store(false, Ordering::Relaxed);
+    state
+        .mic_transmit_shortcut_active
+        .store(false, Ordering::Relaxed);
+    refresh_mic_transmit_active(state, settings);
+}
+
+fn push_to_talk_shortcut_for_plugin(shortcut: &str) -> Result<String, String> {
+    let tokens: Vec<&str> = shortcut
+        .split('+')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .collect();
+
+    if tokens.is_empty() {
+        return Err("Push-to-talk shortcut cannot be empty.".into());
+    }
+
+    let mut mapped = Vec::with_capacity(tokens.len());
+    let mut saw_key = false;
+
+    for token in tokens {
+        let plugin_token = match token {
+            "Ctrl" => "ctrl".to_string(),
+            "Alt" => "alt".to_string(),
+            "Shift" => "shift".to_string(),
+            "Meta" => "super".to_string(),
+            "Space" => "space".to_string(),
+            "Enter" => "enter".to_string(),
+            "Escape" => "escape".to_string(),
+            "Tab" => "tab".to_string(),
+            "Backspace" => "backspace".to_string(),
+            "Delete" => "delete".to_string(),
+            "ArrowLeft" => "left".to_string(),
+            "ArrowRight" => "right".to_string(),
+            "ArrowUp" => "up".to_string(),
+            "ArrowDown" => "down".to_string(),
+            "Minus" => "minus".to_string(),
+            "Plus" => "equal".to_string(),
+            "Quote" => "quote".to_string(),
+            "Semicolon" => "semicolon".to_string(),
+            "Slash" => "slash".to_string(),
+            "Comma" => "comma".to_string(),
+            "Period" => "period".to_string(),
+            "BracketLeft" => "bracketleft".to_string(),
+            "BracketRight" => "bracketright".to_string(),
+            "Backslash" => "backslash".to_string(),
+            "Backquote" => "backquote".to_string(),
+            other if other.len() == 1 && other.chars().all(|ch| ch.is_ascii_alphanumeric()) => {
+                saw_key = true;
+                other.to_ascii_lowercase()
+            }
+            other if other.starts_with('F') && other[1..].chars().all(|ch| ch.is_ascii_digit()) => {
+                saw_key = true;
+                other.to_ascii_lowercase()
+            }
+            other => {
+                return Err(format!(
+                    "Push-to-talk shortcut key `{other}` is not supported for the global hotkey."
+                ));
+            }
+        };
+
+        if !matches!(token, "Ctrl" | "Alt" | "Shift" | "Meta") {
+            saw_key = true;
+        }
+
+        mapped.push(plugin_token);
+    }
+
+    if !saw_key {
+        return Err("Push-to-talk shortcut must include a non-modifier key.".into());
+    }
+
+    Ok(mapped.join("+"))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn sync_push_to_talk_shortcut_registration(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    settings: &AppSettings,
+    should_register: bool,
+) -> Result<(), String> {
+    let desired_shortcut =
+        if should_register && settings.mic_capture_mode == MicCaptureMode::PushToTalk {
+            Some(push_to_talk_shortcut_for_plugin(
+                &settings.push_to_talk_hotkey,
+            )?)
+        } else {
+            None
+        };
+
+    let mut registered_shortcut = state.registered_push_to_talk_shortcut.lock().unwrap();
+
+    if registered_shortcut.as_ref() == desired_shortcut.as_ref() {
+        return Ok(());
+    }
+
+    if let Some(desired) = desired_shortcut.as_ref() {
+        app.global_shortcut()
+            .register(desired.as_str())
+            .map_err(|error| {
+                format!(
+                    "Failed to register push-to-talk hotkey `{}`: {error}",
+                    settings.push_to_talk_hotkey
+                )
+            })?;
+    }
+
+    if let Some(existing) = registered_shortcut.take() {
+        if let Err(error) = app.global_shortcut().unregister(existing.as_str()) {
+            log::warn!("Failed to unregister previous push-to-talk shortcut `{existing}`: {error}");
+        }
+    }
+
+    *registered_shortcut = desired_shortcut;
+
+    Ok(())
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn sync_push_to_talk_shortcut_registration(
+    _app: &AppHandle,
+    _state: &Arc<AppState>,
+    _settings: &AppSettings,
+    _should_register: bool,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn handle_global_shortcut_event(
+    app: &AppHandle,
+    _shortcut: &tauri_plugin_global_shortcut::Shortcut,
+    event: ShortcutEvent,
+) {
+    let state = app.state::<Arc<AppState>>();
+    let settings = state.settings.lock().unwrap().clone();
+
+    if settings.mic_capture_mode != MicCaptureMode::PushToTalk {
+        return;
+    }
+
+    if !*state.is_running.lock().unwrap() {
+        state
+            .mic_transmit_shortcut_active
+            .store(false, Ordering::Relaxed);
+        refresh_mic_transmit_active(&state, &settings);
+        return;
+    }
+
+    let next_active = match event.state {
+        ShortcutState::Pressed => true,
+        ShortcutState::Released => false,
+    };
+
+    state
+        .mic_transmit_shortcut_active
+        .store(next_active, Ordering::Relaxed);
+    refresh_mic_transmit_active(&state, &settings);
 }
 
 fn resolve_whisper_model(settings: &AppSettings) -> &'static str {
@@ -529,70 +894,69 @@ pub fn warm_parakeet_workers(state: Arc<AppState>, app: AppHandle) {
     if !config.is_installed() || !parakeet::model_storage_exists(&config) {
         return;
     }
+    let [first_slot, second_slot] = parakeet_warmup_slots();
+    let first_ready = has_cached_parakeet_worker(&state, first_slot, &config);
+    let second_ready = has_cached_parakeet_worker(&state, second_slot, &config);
+    if first_ready && second_ready {
+        return;
+    }
     // Don't start a second warmup if one is already in progress.
     if state.parakeet_warming.swap(true, Ordering::Relaxed) {
         return;
     }
-    app.emit(
-        "parakeet-warmup-status",
-        &ParakeetWarmupStatus {
-            ready: false,
-            message: "Parakeet engine loading...".into(),
-        },
-    )
-    .ok();
-
-    // Counter: decremented by each thread; last one to finish emits "ready".
-    let remaining = Arc::new(std::sync::atomic::AtomicU32::new(2));
-
-    for slot_name in ["mic", "sys"] {
-        let state_clone = Arc::clone(&state);
-        let config_clone = config.clone();
-        let app_clone = app.clone();
-        let remaining_clone = Arc::clone(&remaining);
-        let name = slot_name;
-        std::thread::spawn(move || {
-            log::info!("[parakeet] pre-warming {name} worker...");
-            match ParakeetWorker::spawn(&config_clone) {
-                Ok(mut worker) => match worker.ensure_model(config_clone.diarization_enabled) {
-                    Ok(_) => {
-                        if state_clone.shutdown_in_progress.load(Ordering::Relaxed) {
-                            log::info!(
-                                "[parakeet] dropping {name} worker because shutdown is in progress"
-                            );
-                            return;
-                        }
-                        let mut slot = if name == "mic" {
-                            state_clone.warmed_parakeet_mic.lock().unwrap()
-                        } else {
-                            state_clone.warmed_parakeet_sys.lock().unwrap()
-                        };
-                        *slot = Some(worker);
-                        log::info!("[parakeet] {name} worker pre-warmed and ready");
-                    }
-                    Err(e) => log::warn!("[parakeet] {name} worker ensure_model failed: {e}"),
-                },
-                Err(e) => log::warn!("[parakeet] failed to pre-warm {name} worker: {e}"),
-            }
-            // When the last thread finishes, clear the warming flag and notify the UI.
-            if remaining_clone.fetch_sub(1, Ordering::Relaxed) == 1 {
-                state_clone.parakeet_warming.store(false, Ordering::Relaxed);
-                if state_clone.shutdown_in_progress.load(Ordering::Relaxed) {
-                    return;
-                }
-                app_clone
-                    .emit(
-                        "parakeet-warmup-status",
-                        &ParakeetWarmupStatus {
-                            ready: true,
-                            message: "Parakeet engine ready".into(),
-                        },
-                    )
-                    .ok();
-                log::info!("[parakeet] all workers pre-warmed");
-            }
-        });
+    let should_gate_until_first_ready = !first_ready;
+    if should_gate_until_first_ready {
+        app.emit(
+            "parakeet-warmup-status",
+            &ParakeetWarmupStatus {
+                ready: false,
+                message: format!(
+                    "Parakeet engine loading {} worker...",
+                    parakeet_slot_label(first_slot)
+                ),
+            },
+        )
+        .ok();
     }
+
+    let state_clone = Arc::clone(&state);
+    let config_clone = config.clone();
+    let app_clone = app.clone();
+    std::thread::spawn(move || {
+        let first_warm_succeeded =
+            warm_parakeet_worker_slot(&state_clone, first_slot, &config_clone);
+        state_clone.parakeet_warming.store(false, Ordering::Relaxed);
+        if state_clone.shutdown_in_progress.load(Ordering::Relaxed) {
+            return;
+        }
+
+        if should_gate_until_first_ready {
+            app_clone
+                .emit(
+                    "parakeet-warmup-status",
+                    &ParakeetWarmupStatus {
+                        ready: true,
+                        message: if first_warm_succeeded {
+                            format!(
+                                "Parakeet {} worker ready; warming {} in background.",
+                                parakeet_slot_label(first_slot),
+                                parakeet_slot_label(second_slot)
+                            )
+                        } else {
+                            "Parakeet warmup finished without a cached worker".into()
+                        },
+                    },
+                )
+                .ok();
+        }
+
+        if first_warm_succeeded
+            && !second_ready
+            && !state_clone.shutdown_in_progress.load(Ordering::Relaxed)
+        {
+            warm_parakeet_worker_slot(&state_clone, second_slot, &config_clone);
+        }
+    });
 }
 
 #[derive(Serialize, Clone)]
@@ -859,10 +1223,8 @@ async fn stop_transcription_inner(
         .map(str::to_owned);
 
     *state.is_running.lock().unwrap() = false;
-    state.mic_transmit_active.store(
-        mic_transmit_enabled_by_default(&settings),
-        Ordering::Relaxed,
-    );
+    reset_mic_transmit_sources(state, &settings);
+    sync_push_to_talk_shortcut_registration(app, state, &settings, false)?;
 
     if let Some(handle) = suggestion_handle {
         handle.abort();
@@ -1736,14 +2098,18 @@ pub fn save_settings(
     app: AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
+    if new_settings.mic_capture_mode == MicCaptureMode::PushToTalk {
+        push_to_talk_shortcut_for_plugin(&new_settings.push_to_talk_hotkey)?;
+    }
+    let is_running = *state.is_running.lock().unwrap();
+    sync_push_to_talk_shortcut_registration(&app, &state, &new_settings, is_running)?;
+
     let mut s = state.settings.lock().unwrap();
     *s = new_settings;
     state
         .mic_gate_threshold
         .store(mic_gate_threshold(&s).to_bits(), Ordering::Relaxed);
-    state
-        .mic_transmit_active
-        .store(mic_transmit_enabled_by_default(&s), Ordering::Relaxed);
+    reset_mic_transmit_sources(&state, &s);
     s.save();
     reinitialize_knowledge_base(&state, &s);
     let hide_from_screen_share = s.hide_from_screen_share;
@@ -1761,10 +2127,10 @@ pub fn set_mic_transmit_active(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let settings = state.settings.lock().unwrap().clone();
-    state.mic_transmit_active.store(
-        mic_transmit_active_for_request(&settings, active),
-        Ordering::Relaxed,
-    );
+    state
+        .mic_transmit_button_active
+        .store(active, Ordering::Relaxed);
+    refresh_mic_transmit_active(&state, &settings);
     Ok(())
 }
 
@@ -1786,8 +2152,9 @@ pub fn start_transcription(
 ) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
 
-    // Prevent starting a Parakeet session while the model is still loading.
-    // Two processes loading NeMo simultaneously causes resource contention.
+    // Prevent starting a Parakeet session while the primary warmup worker is still loading.
+    // Once the first worker is ready we allow recording to start and warm the second worker
+    // in the background.
     if selected_stt_provider(&settings) == "parakeet"
         && state.parakeet_warming.load(Ordering::Relaxed)
     {
@@ -1812,14 +2179,6 @@ pub fn start_transcription(
 
     let (backend, language, stt_status) = resolve_stt_backend(&app, &settings)?;
 
-    // Take any pre-warmed workers so they can be handed to the transcribers.
-    let warmed_mic = state.warmed_parakeet_mic.lock().unwrap().take();
-    let warmed_sys = state.warmed_parakeet_sys.lock().unwrap().take();
-    let warmed_omni_mic = state.warmed_omni_asr_mic.lock().unwrap().take();
-    let warmed_omni_sys = state.warmed_omni_asr_sys.lock().unwrap().take();
-    let warmed_cohere_mic = state.warmed_cohere_transcribe_mic.lock().unwrap().take();
-    let warmed_cohere_sys = state.warmed_cohere_transcribe_sys.lock().unwrap().take();
-
     let mut running = state.is_running.lock().unwrap();
     if *running {
         let session_id = state
@@ -1837,13 +2196,30 @@ pub fn start_transcription(
     state
         .stop_requested
         .store(false, std::sync::atomic::Ordering::Relaxed);
-    state.mic_transmit_active.store(
-        mic_transmit_enabled_by_default(&settings),
-        Ordering::Relaxed,
-    );
+    reset_mic_transmit_sources(&state, &settings);
     state.captured_segments.store(0, Ordering::Relaxed);
     state.processed_segments.store(0, Ordering::Relaxed);
     drop(running);
+
+    if let Err(error) = sync_push_to_talk_shortcut_registration(&app, &state, &settings, true) {
+        *state.is_running.lock().unwrap() = false;
+        return Err(error);
+    }
+
+    let parakeet_config = match &backend {
+        SttBackend::Parakeet(config) => Some(config.clone()),
+        _ => None,
+    };
+    let warmed_mic = parakeet_config
+        .as_ref()
+        .and_then(|config| take_cached_parakeet_worker(&state, ParakeetWorkerSlot::Mic, config));
+    let warmed_sys = parakeet_config
+        .as_ref()
+        .and_then(|config| take_cached_parakeet_worker(&state, ParakeetWorkerSlot::Sys, config));
+    let warmed_omni_mic = state.warmed_omni_asr_mic.lock().unwrap().take();
+    let warmed_omni_sys = state.warmed_omni_asr_sys.lock().unwrap().take();
+    let warmed_cohere_mic = state.warmed_cohere_transcribe_mic.lock().unwrap().take();
+    let warmed_cohere_sys = state.warmed_cohere_transcribe_sys.lock().unwrap().take();
 
     let session_id = {
         let mut session_store = state.session_store.lock().unwrap();
@@ -1869,6 +2245,8 @@ pub fn start_transcription(
     let suggestion_interval_secs = settings.suggestion_interval_seconds.max(30);
     let suggestion_context_window_secs =
         (suggestion_interval_secs.saturating_mul(2).min(180)) as i64;
+    let parakeet_config_for_them = parakeet_config.clone();
+    let parakeet_config_for_you = parakeet_config.clone();
 
     let recent_utterances: Arc<Mutex<Vec<opencassava_core::models::Utterance>>> =
         Arc::new(Mutex::new(Vec::new()));
@@ -2054,6 +2432,20 @@ pub fn start_transcription(
                     .with_clear_speakers_on_start(true);
             if let Some(worker) = warmed_sys {
                 transcriber = transcriber.with_parakeet_worker(worker);
+            }
+            if let Some(config) = parakeet_config_for_them.clone() {
+                let idle_state = Arc::clone(&them_state);
+                transcriber = transcriber.with_parakeet_worker_idle(Box::new(move |worker| {
+                    if idle_state.shutdown_in_progress.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    store_cached_parakeet_worker(
+                        Arc::clone(&idle_state),
+                        ParakeetWorkerSlot::Sys,
+                        config.clone(),
+                        worker,
+                    );
+                }));
             }
             if let Some(worker) = warmed_omni_sys {
                 transcriber = transcriber.with_omni_asr_worker(worker);
@@ -2384,6 +2776,20 @@ pub fn start_transcription(
             .with_clear_speakers_on_start(false);
         if let Some(worker) = warmed_mic {
             transcriber = transcriber.with_parakeet_worker(worker);
+        }
+        if let Some(config) = parakeet_config_for_you.clone() {
+            let idle_state = Arc::clone(&state_clone);
+            transcriber = transcriber.with_parakeet_worker_idle(Box::new(move |worker| {
+                if idle_state.shutdown_in_progress.load(Ordering::Relaxed) {
+                    return;
+                }
+                store_cached_parakeet_worker(
+                    Arc::clone(&idle_state),
+                    ParakeetWorkerSlot::Mic,
+                    config.clone(),
+                    worker,
+                );
+            }));
         }
         if let Some(worker) = warmed_omni_mic {
             transcriber = transcriber.with_omni_asr_worker(worker);
@@ -3621,7 +4027,9 @@ mod tests {
     fn mic_transmit_defaults_to_enabled_in_auto_mode() {
         let settings = AppSettings::default();
         assert!(super::mic_transmit_enabled_by_default(&settings));
-        assert!(super::mic_transmit_active_for_request(&settings, false));
+        assert!(super::mic_transmit_active_for_sources(
+            &settings, false, false
+        ));
     }
 
     #[test]
@@ -3629,8 +4037,36 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.mic_capture_mode = MicCaptureMode::PushToTalk;
         assert!(!super::mic_transmit_enabled_by_default(&settings));
-        assert!(!super::mic_transmit_active_for_request(&settings, false));
-        assert!(super::mic_transmit_active_for_request(&settings, true));
+        assert!(!super::mic_transmit_active_for_sources(
+            &settings, false, false
+        ));
+        assert!(super::mic_transmit_active_for_sources(
+            &settings, true, false
+        ));
+        assert!(super::mic_transmit_active_for_sources(
+            &settings, false, true
+        ));
+    }
+
+    #[test]
+    fn push_to_talk_shortcut_maps_to_plugin_format() {
+        assert_eq!(
+            super::push_to_talk_shortcut_for_plugin("Ctrl+Shift+Space").unwrap(),
+            "ctrl+shift+space"
+        );
+        assert_eq!(
+            super::push_to_talk_shortcut_for_plugin("Meta+F9").unwrap(),
+            "super+f9"
+        );
+    }
+
+    #[test]
+    fn push_to_talk_shortcut_rejects_modifier_only_bindings() {
+        let error = super::push_to_talk_shortcut_for_plugin("Ctrl+Shift").unwrap_err();
+        assert!(
+            error.contains("non-modifier"),
+            "unexpected error message: {error}"
+        );
     }
 
     #[test]
@@ -3703,6 +4139,37 @@ mod tests {
         assert!(
             !state.cohere_transcribe_warming.load(Ordering::Relaxed),
             "cohere_transcribe_warming should start false"
+        );
+    }
+
+    #[test]
+    fn parakeet_cache_entry_requires_matching_config() {
+        let now = Instant::now();
+        assert!(!parakeet_cache_entry_is_valid(
+            "model-a::cpu::en",
+            "model-b::cpu::en",
+            now,
+            now,
+        ));
+    }
+
+    #[test]
+    fn parakeet_cache_entry_expires_after_ttl() {
+        let cached_at = Instant::now();
+        let expired_now = cached_at + PARAKEET_WARM_TTL + Duration::from_secs(1);
+        assert!(!parakeet_cache_entry_is_valid(
+            "model-a::cpu::en",
+            "model-a::cpu::en",
+            cached_at,
+            expired_now,
+        ));
+    }
+
+    #[test]
+    fn parakeet_warmup_prefers_sys_then_mic() {
+        assert_eq!(
+            parakeet_warmup_slots(),
+            [ParakeetWorkerSlot::Sys, ParakeetWorkerSlot::Mic]
         );
     }
 

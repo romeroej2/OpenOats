@@ -79,6 +79,13 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            app.handle().plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(engine::handle_global_shortcut_event)
+                    .build(),
+            )?;
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
