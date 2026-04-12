@@ -14,7 +14,7 @@ This package contains the desktop UI layer for OpenCassava.
 - `src/components/TranscriptView.tsx` - real-time transcript stream.
 - `src/components/NotesView.tsx` - structured notes and template output.
 - `src/components/SessionSidebar.tsx` - history and session selection.
-- `src/components/SettingsView.tsx` - model providers, prompts, and app behavior.
+- `src/components/SettingsView.tsx` - model providers, prompts, Obsidian vault setup, and app behavior.
 
 ## Design Goals
 

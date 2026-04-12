@@ -49,9 +49,10 @@ Found a bug or have an idea? [Open an issue](https://github.com/romeroej2/OpenCa
 
 ### Knowledge and note workflows
 
-- **Knowledge base search** - point OpenCassava to a folder of `.md`/`.txt` notes and retrieve relevant passages with embeddings.
+- **Obsidian vault integration** - connect a local Obsidian vault, choose which folders feed suggestions, and publish canonical meeting notes back into the vault.
+- **Knowledge base search** - use selected Obsidian folders or a legacy folder of `.md`/`.txt` notes and retrieve relevant passages with embeddings.
 - **Custom prompts and templates** - tailor prompts for retrieval, suggestions, question generation, and post-call note formatting.
-- **Structured note generation** - convert transcripts into clean markdown notes using built-in or custom templates.
+- **Structured note generation** - convert transcripts into clean markdown notes using built-in or custom templates, then keep a canonical copy in Obsidian.
 - **Session history** - every session is automatically saved and accessible from the History sidebar.
 
 ### AI & deployment flexibility
@@ -91,9 +92,10 @@ OpenCassava is designed for high-pressure conversations (interviews, sales calls
 
 1. You start a call and click **Start Session**.
 2. OpenCassava captures your microphone and (on Windows & Mac) system audio - the other side's voice is captured as "them".
-3. As important moments happen, it searches your notes and surfaces relevant talking points.
+3. As important moments happen, it searches your selected Obsidian knowledge folders (or legacy knowledge base folder) and surfaces relevant talking points.
 4. During or after the call, use summaries and note templates to turn raw dialogue into structured documentation.
-5. Review, search, and export session artifacts from Session History.
+5. When the session ends, OpenCassava can publish a canonical note into Obsidian and reindex it for future suggestions.
+6. Review, search, and export session artifacts from Session History.
 
 ---
 
@@ -134,7 +136,7 @@ The installers are output to `opencassava/src-tauri/target/release/bundle/`.
 ### Windows & macOS
 
 - **OS:** Windows 10/11 (64-bit) or macOS 15+ (Apple Silicon)
-- **For local mode (Tested):** LM Studio (or [Ollama](https://ollama.com/)) running locally with your preferred models (e.g., `qwen3:8b` for suggestions, `nomic-embed-text` for embeddings).
+- **For local mode (Tested):** LM Studio (or [Ollama](https://ollama.com/)) running locally with your preferred models. For LM Studio, use `text-embedding-nomic-embed-text-v1.5` for embeddings. For Ollama, use `nomic-embed-text`.
 - **For cloud mode (Untested):** [OpenRouter](https://openrouter.ai/) API key + [Voyage AI](https://www.voyageai.com/) API key.
 - **For OpenAI-compatible embeddings:** any server implementing `/v1/embeddings`.
 
@@ -169,8 +171,47 @@ The app will detect missing prerequisites automatically and show guided setup st
 
 1. Open the app and grant microphone permissions (and system audio recording on Windows).
 2. Open Settings (`Cmd+,` or `Ctrl+,`) and configure your chosen cloud or local providers.
-3. Point it at a folder of `.md` or `.txt` files - that's your knowledge base.
+3. In **Settings -> General**, either connect a local Obsidian vault or point OpenCassava at a legacy folder of `.md` or `.txt` files.
 4. Click **Start Session** to go live. *(The first run downloads the required local Whisper speech model.)*
+
+---
+
+## Obsidian
+
+OpenCassava integrates with Obsidian through the local filesystem. This release does not require an Obsidian plugin, MCP server, or URI-based integration.
+
+### Setup
+
+1. Open **Settings -> General -> Obsidian**.
+2. Choose your local Obsidian vault folder.
+3. Add one or more vault-relative folders to include in the knowledge base.
+4. Optionally choose a default notes template for automatic post-call note generation.
+
+### What OpenCassava reads
+
+- The vault folders you explicitly add under the Obsidian knowledge base include list.
+- The canonical notes that OpenCassava publishes under `OpenCassava/Meetings`.
+- Markdown and text files (`.md` and `.txt`).
+
+### What OpenCassava does not index
+
+- `.obsidian`
+- `OpenCassava/Transcripts`
+- Non-text attachments and other unsupported file types
+
+### What OpenCassava writes
+
+- Canonical meeting notes go to `OpenCassava/Meetings/YYYY/MM/<session_id>.md`.
+- Transcript companion files go to `OpenCassava/Transcripts/YYYY/MM/<session_id>.md`.
+- Internal session data still remains in the app's normal storage under AppData. Obsidian is the human-readable knowledge layer, not a replacement for internal session persistence.
+
+### Behavior and clarifications
+
+- The canonical Obsidian note is generated automatically when a session stops.
+- If you manually regenerate notes later, OpenCassava rewrites the same canonical Obsidian note for that session instead of creating duplicates.
+- `OpenCassava/Transcripts` is intentionally excluded from retrieval so raw transcripts do not pollute suggestions.
+- Once an Obsidian vault is connected, the legacy knowledge base folder setting is kept only for backwards compatibility and is ignored for retrieval.
+- Suggestion sources are shown using vault-relative paths so you can see exactly which note and section was retrieved.
 
 ---
 

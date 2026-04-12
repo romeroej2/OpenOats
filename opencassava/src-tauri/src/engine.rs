@@ -22,7 +22,9 @@ use opencassava_core::{
     models::{EnhancedNotes, MeetingTemplate, SessionRecord, Speaker, SuggestionFeedbackEntry},
     settings::AppSettings,
     storage::{
-        session_store::SessionStore, template_store::TemplateStore,
+        obsidian::{normalize_relative_folder, ObsidianVaultConfig},
+        session_store::SessionStore,
+        template_store::TemplateStore,
         transcript_logger::TranscriptLogger,
     },
     transcription::{
@@ -34,12 +36,14 @@ use opencassava_core::{
     },
 };
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex as AsyncMutex;
+use uuid::Uuid;
 
 const OVERLAY_LABEL: &str = "overlay";
 const OVERLAY_SUGGESTION_EVENT: &str = "overlay-suggestion";
@@ -172,6 +176,30 @@ pub struct SessionDetailsPayload {
     pub notes: Option<EnhancedNotes>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesPublishStatusPayload {
+    pub session_id: String,
+    pub stage: String,
+    pub message: String,
+}
+
+fn emit_notes_publish_status(
+    app: &AppHandle,
+    session_id: &str,
+    stage: &str,
+    message: impl Into<String>,
+) {
+    let _ = app.emit(
+        "notes-publish-status",
+        &NotesPublishStatusPayload {
+            session_id: session_id.to_string(),
+            stage: stage.to_string(),
+            message: message.into(),
+        },
+    );
+}
+
 // ── AppState ────────────────────────────────────────────────────────────────
 
 pub struct AppState {
@@ -230,12 +258,14 @@ impl AppState {
     pub fn new() -> Self {
         let settings = AppSettings::load();
         let initial_mic_gate_threshold = mic_gate_threshold(&settings).to_bits();
-        // Derive KB cache path from the stable OpenCassava data dir.
         let kb_cache = Self::persistent_data_dir().join("kb_cache.json");
-        let (embed_url, _, embed_model) = embed_config(&settings);
-        let kb_fingerprint = format!("{}:{}", embed_url, embed_model);
+        let kb_context = knowledge_base_context(&settings, kb_cache);
         Self {
-            knowledge_base: AsyncMutex::new(KnowledgeBase::new(kb_cache, kb_fingerprint)),
+            knowledge_base: AsyncMutex::new(KnowledgeBase::new(
+                kb_context.cache_path,
+                kb_context.config_fingerprint,
+                kb_context.root_marker,
+            )),
             suggestion_engine: AsyncMutex::new(SuggestionEngine::new()),
             session_store: Mutex::new(SessionStore::with_default_path()),
             template_store: Mutex::new(TemplateStore::load()),
@@ -1071,6 +1101,148 @@ fn embed_config(settings: &AppSettings) -> (String, Option<String>, String) {
     }
 }
 
+struct KnowledgeBaseContext {
+    cache_path: PathBuf,
+    config_fingerprint: String,
+    root_marker: String,
+}
+
+struct ResolvedKbIndexConfig {
+    root: PathBuf,
+    include_paths: Vec<PathBuf>,
+    exclude_relative_paths: Vec<PathBuf>,
+}
+
+fn knowledge_base_context(settings: &AppSettings, cache_path: PathBuf) -> KnowledgeBaseContext {
+    let (embed_url, _, embed_model) = embed_config(settings);
+    let root_marker = resolved_kb_index_config(settings)
+        .map(|config| config.root.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    KnowledgeBaseContext {
+        cache_path,
+        config_fingerprint: format!("{embed_url}:{embed_model}"),
+        root_marker,
+    }
+}
+
+fn configured_obsidian(settings: &AppSettings) -> Option<ObsidianVaultConfig> {
+    let vault_path = settings.obsidian_vault_pathbuf()?;
+    Some(ObsidianVaultConfig::new(
+        vault_path,
+        &settings.obsidian_notes_folder,
+        &settings.obsidian_transcripts_folder,
+    ))
+}
+
+fn resolved_kb_index_config(settings: &AppSettings) -> Option<ResolvedKbIndexConfig> {
+    if let Some(obsidian) = configured_obsidian(settings) {
+        let mut seen = HashSet::new();
+        let mut include_paths = Vec::new();
+
+        for relative_path in &settings.obsidian_kb_include_paths {
+            let normalized = normalize_relative_folder(relative_path);
+            let normalized_key = normalized.to_string_lossy().replace('\\', "/");
+            if normalized_key.is_empty() || !seen.insert(normalized_key) {
+                continue;
+            }
+            include_paths.push(normalized);
+        }
+
+        let notes_folder_key = obsidian.notes_folder.to_string_lossy().replace('\\', "/");
+        if !notes_folder_key.is_empty() && seen.insert(notes_folder_key) {
+            include_paths.push(obsidian.notes_folder.clone());
+        }
+
+        let mut exclude_relative_paths = vec![PathBuf::from(".obsidian")];
+        if !obsidian.transcripts_folder.as_os_str().is_empty() {
+            exclude_relative_paths.push(obsidian.transcripts_folder.clone());
+        }
+
+        return Some(ResolvedKbIndexConfig {
+            root: obsidian.vault_path,
+            include_paths,
+            exclude_relative_paths,
+        });
+    }
+
+    settings
+        .kb_folder_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|root| ResolvedKbIndexConfig {
+            root: root.clone(),
+            include_paths: vec![root],
+            exclude_relative_paths: Vec::new(),
+        })
+}
+
+fn reinitialize_knowledge_base(state: &Arc<AppState>, settings: &AppSettings) {
+    let cache_path = AppState::persistent_data_dir().join("kb_cache.json");
+    let context = knowledge_base_context(settings, cache_path);
+    *state.knowledge_base.blocking_lock() = KnowledgeBase::new(
+        context.cache_path,
+        context.config_fingerprint,
+        context.root_marker,
+    );
+}
+
+async fn sync_knowledge_base(
+    app: Option<&AppHandle>,
+    state: &Arc<AppState>,
+    settings: &AppSettings,
+) -> Result<usize, String> {
+    let Some(config) = resolved_kb_index_config(settings) else {
+        return Err("No knowledge base source configured".into());
+    };
+
+    let (embed_url, embed_key, embed_model) = embed_config(settings);
+    let embed_fn = {
+        let url = embed_url.clone();
+        let key = embed_key.clone();
+        let model = embed_model.clone();
+        move |texts: Vec<String>| {
+            let url = url.clone();
+            let key = key.clone();
+            let model = model.clone();
+            async move {
+                embedding_client::embed(&url, key.as_deref(), &model, &texts, None, None).await
+            }
+        }
+    };
+
+    let count = {
+        let mut kb = state.knowledge_base.lock().await;
+        kb.index_with_paths(
+            &config.root,
+            &config.include_paths,
+            &config.exclude_relative_paths,
+            embed_fn,
+        )
+        .await?
+    };
+
+    if let Some(app) = app {
+        app.emit("kb-indexed", count).ok();
+    }
+
+    Ok(count)
+}
+
+fn parse_session_started_at(session_id: &str) -> chrono::DateTime<chrono::Utc> {
+    let date_part = session_id.trim_start_matches("session_");
+    chrono::NaiveDateTime::parse_from_str(date_part, "%Y-%m-%d_%H-%M-%S")
+        .map(|dt| dt.and_utc())
+        .unwrap_or_else(|_| chrono::Utc::now())
+}
+
+fn default_template_id(settings: &AppSettings) -> Uuid {
+    settings
+        .default_notes_template_id
+        .unwrap_or_else(|| Uuid::parse_str("00000000-0000-0000-0000-000000000000").unwrap())
+}
+
 fn normalize_openai_base_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     if trimmed.ends_with("/v1") {
@@ -1318,6 +1490,7 @@ pub fn save_settings(
         .mic_gate_threshold
         .store(mic_gate_threshold(&s).to_bits(), Ordering::Relaxed);
     s.save();
+    reinitialize_knowledge_base(&state, &s);
     let hide_from_screen_share = s.hide_from_screen_share;
     drop(s);
     // Drop any pre-warmed workers so they don't carry stale config
@@ -1823,15 +1996,12 @@ pub fn start_transcription(
         let mic_gate_threshold_w = Arc::clone(&state_clone.mic_gate_threshold);
         let mut echo_processor = MicEchoProcessor::new(echo_reference.clone());
         echo_processor.set_enabled(settings.echo_cancellation_enabled);
-        echo_processor.set_threshold(f32::from_bits(
-            mic_gate_threshold_w.load(Ordering::Relaxed),
-        ));
+        echo_processor.set_threshold(f32::from_bits(mic_gate_threshold_w.load(Ordering::Relaxed)));
         let mic_stream_leveled = mic_stream.map(move |chunk: Vec<f32>| {
             let input_rms = compute_rms(&chunk);
             mic_input_level_w.store(input_rms.to_bits(), Ordering::Relaxed);
-            echo_processor.set_threshold(f32::from_bits(
-                mic_gate_threshold_w.load(Ordering::Relaxed),
-            ));
+            echo_processor
+                .set_threshold(f32::from_bits(mic_gate_threshold_w.load(Ordering::Relaxed)));
             let cleaned = echo_processor.process_chunk(&chunk);
             let rms = compute_rms(&cleaned);
             mic_level_w.store(rms.to_bits(), Ordering::Relaxed);
@@ -1960,6 +2130,7 @@ pub async fn stop_transcription(
     app: AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
+    let settings = state.settings.lock().unwrap().clone();
     state
         .stop_requested
         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1975,6 +2146,13 @@ pub async fn stop_transcription(
     if let Some(handle) = system_audio_handle {
         let _ = handle.await;
     }
+
+    let session_id = state
+        .session_store
+        .lock()
+        .unwrap()
+        .current_session_id()
+        .map(str::to_owned);
 
     *state.is_running.lock().unwrap() = false;
 
@@ -1994,6 +2172,18 @@ pub async fn stop_transcription(
     state.mic_level.store(0u32, Ordering::Relaxed);
     state.sys_level.store(0u32, Ordering::Relaxed);
     emit_transcription_progress(&app, &state);
+
+    if let (Some(session_id), Some(_)) = (session_id, configured_obsidian(&settings)) {
+        let app_clone = app.clone();
+        let state_clone = Arc::clone(&state);
+        tauri::async_runtime::spawn(async move {
+            if let Err(err) =
+                generate_notes_for_session(&app_clone, &state_clone, session_id, None, false).await
+            {
+                log::error!("Failed to auto-publish notes to Obsidian: {err}");
+            }
+        });
+    }
 
     // Kick off background pre-warming so the next record press is instant.
     warm_parakeet_workers(Arc::clone(&*state), app.clone());
@@ -2471,14 +2661,75 @@ pub async fn download_stt_model(
     download_model(app, model).await
 }
 
-#[tauri::command]
-pub async fn generate_notes(
-    app: AppHandle,
-    state: tauri::State<'_, Arc<AppState>>,
+async fn maybe_publish_to_obsidian(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    settings: &AppSettings,
+    session_id: &str,
+    notes: &EnhancedNotes,
+    records: &[SessionRecord],
+) -> Result<(), String> {
+    let Some(obsidian) = configured_obsidian(settings) else {
+        return Ok(());
+    };
+
+    emit_notes_publish_status(
+        app,
+        session_id,
+        "publishing",
+        "Publishing summary to Obsidian...",
+    );
+
+    let started_at = parse_session_started_at(session_id);
+    if let Err(err) = obsidian.publish_session(session_id, started_at, notes, records) {
+        emit_notes_publish_status(
+            app,
+            session_id,
+            "error",
+            format!("Failed to save summary to Obsidian: {err}"),
+        );
+        return Err(err);
+    }
+
+    if let Err(err) = sync_knowledge_base(Some(app), state, settings).await {
+        log::warn!("Obsidian note published but KB reindex failed: {err}");
+        emit_notes_publish_status(
+            app,
+            session_id,
+            "ready",
+            "Summary saved to Obsidian. Vault refresh failed; reindex from Settings if needed.",
+        );
+        return Ok(());
+    }
+
+    emit_notes_publish_status(app, session_id, "ready", "Summary saved to Obsidian.");
+    Ok(())
+}
+
+fn resolve_template_for_generation(
+    state: &Arc<AppState>,
+    settings: &AppSettings,
+    template_id: Option<&str>,
+) -> MeetingTemplate {
+    let requested_template_id = template_id
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .or_else(|| Some(default_template_id(settings)));
+
+    let store = state.template_store.lock().unwrap();
+    requested_template_id
+        .and_then(|id| store.get(id).cloned())
+        .unwrap_or_else(|| MeetingTemplate::built_ins().into_iter().next().unwrap())
+}
+
+async fn generate_notes_for_session(
+    app: &AppHandle,
+    state: &Arc<AppState>,
     session_id: String,
     template_id: Option<String>,
+    emit_chunks: bool,
 ) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
+    let will_publish_to_obsidian = configured_obsidian(&settings).is_some();
     let records = state
         .session_store
         .lock()
@@ -2500,14 +2751,18 @@ pub async fn generate_notes(
         return Err(format!("No transcript found for session `{session_id}`."));
     }
 
-    let template = {
-        let store = state.template_store.lock().unwrap();
-        template_id
-            .as_deref()
-            .and_then(|id| uuid::Uuid::parse_str(id).ok())
-            .and_then(|uuid| store.get(uuid).cloned())
-            .unwrap_or_else(|| MeetingTemplate::built_ins().into_iter().next().unwrap())
-    };
+    emit_notes_publish_status(
+        app,
+        &session_id,
+        "generating",
+        if will_publish_to_obsidian {
+            "Generating summary for Obsidian..."
+        } else {
+            "Generating notes..."
+        },
+    );
+
+    let template = resolve_template_for_generation(state, &settings, template_id.as_deref());
     let (base_url, api_key) = llm_base_url_and_key(&settings);
     let model = if settings.llm_provider == "ollama" {
         settings.ollama_llm_model.clone()
@@ -2515,33 +2770,90 @@ pub async fn generate_notes(
         settings.selected_model.clone()
     };
 
-    let app_c = app.clone();
-    let on_chunk = move |chunk: String| {
-        app_c.emit("notes-chunk", chunk).ok();
+    let result = if emit_chunks {
+        let app_c = app.clone();
+        let on_chunk = move |chunk: String| {
+            app_c.emit("notes-chunk", chunk).ok();
+        };
+
+        notes_engine::generate_notes(
+            &records,
+            &template,
+            &base_url,
+            api_key.as_deref(),
+            &model,
+            &settings.transcription_locale,
+            on_chunk,
+        )
+        .await
+    } else {
+        notes_engine::generate_notes(
+            &records,
+            &template,
+            &base_url,
+            api_key.as_deref(),
+            &model,
+            &settings.transcription_locale,
+            |_| {},
+        )
+        .await
     };
 
-    let result = notes_engine::generate_notes(
-        &records,
-        &template,
-        &base_url,
-        api_key.as_deref(),
-        &model,
-        &settings.transcription_locale,
-        on_chunk,
-    )
-    .await?;
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            emit_notes_publish_status(
+                app,
+                &session_id,
+                "error",
+                if will_publish_to_obsidian {
+                    format!("Failed to generate summary for Obsidian: {err}")
+                } else {
+                    format!("Failed to generate notes: {err}")
+                },
+            );
+            return Err(err);
+        }
+    };
 
-    state.session_store.lock().unwrap().save_notes(
-        &session_id,
-        opencassava_core::models::EnhancedNotes {
-            template: (&template).into(),
-            generated_at: chrono::Utc::now(),
-            markdown: result.clone(),
-        },
-    );
+    let enhanced_notes = opencassava_core::models::EnhancedNotes {
+        template: (&template).into(),
+        generated_at: chrono::Utc::now(),
+        markdown: result.clone(),
+    };
+
+    state
+        .session_store
+        .lock()
+        .unwrap()
+        .save_notes(&session_id, enhanced_notes.clone());
 
     app.emit("notes-ready", ()).ok();
+    if let Err(err) = maybe_publish_to_obsidian(
+        app,
+        state,
+        &settings,
+        &session_id,
+        &enhanced_notes,
+        &records,
+    )
+    .await
+    {
+        log::warn!("Notes generated but publishing to Obsidian failed: {err}");
+    } else if !will_publish_to_obsidian {
+        emit_notes_publish_status(app, &session_id, "ready", "Notes generated.");
+    }
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn generate_notes(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    session_id: String,
+    template_id: Option<String>,
+) -> Result<String, String> {
+    generate_notes_for_session(&app, &state, session_id, template_id, true).await
 }
 
 #[tauri::command]
@@ -2550,33 +2862,7 @@ pub async fn index_kb(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<usize, String> {
     let settings = state.settings.lock().unwrap().clone();
-    let folder = match &settings.kb_folder_path {
-        Some(p) => PathBuf::from(p),
-        None => return Err("No KB folder configured".into()),
-    };
-
-    let (embed_url, embed_key, embed_model) = embed_config(&settings);
-    let embed_fn = {
-        let url = embed_url.clone();
-        let key = embed_key.clone();
-        let model = embed_model.clone();
-        move |texts: Vec<String>| {
-            let url = url.clone();
-            let key = key.clone();
-            let model = model.clone();
-            async move {
-                embedding_client::embed(&url, key.as_deref(), &model, &texts, None, None).await
-            }
-        }
-    };
-
-    let count = {
-        let mut kb = state.knowledge_base.lock().await;
-        kb.index(&folder, embed_fn).await?
-    };
-
-    app.emit("kb-indexed", count).ok();
-    Ok(count)
+    sync_knowledge_base(Some(&app), &state, &settings).await
 }
 
 #[tauri::command]
@@ -2584,6 +2870,7 @@ pub fn update_kb_folder(folder: String, state: tauri::State<'_, Arc<AppState>>) 
     let mut s = state.settings.lock().unwrap();
     s.kb_folder_path = Some(folder);
     s.save();
+    reinitialize_knowledge_base(&state, &s);
 }
 
 #[tauri::command]
@@ -2709,6 +2996,35 @@ pub async fn choose_folder(app: AppHandle) -> Option<String> {
     .await
     .ok()
     .flatten()
+}
+
+#[tauri::command]
+pub async fn choose_obsidian_include_folder(
+    app: AppHandle,
+    vault_path: String,
+) -> Result<String, String> {
+    let vault_path_buf = PathBuf::from(vault_path);
+    let dialog_directory = vault_path_buf.clone();
+    let selected = tokio::task::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_directory(&dialog_directory)
+            .blocking_pick_folder()
+            .and_then(|folder| folder.into_path().ok())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .ok_or_else(|| "No folder selected".to_string())?;
+
+    let relative = selected
+        .strip_prefix(&vault_path_buf)
+        .map_err(|_| "Selected folder must be inside the Obsidian vault".to_string())?;
+    let normalized = normalize_relative_folder(&relative.to_string_lossy());
+    if normalized.as_os_str().is_empty() {
+        return Err("Choose a subfolder inside the vault, not the vault root".into());
+    }
+
+    Ok(normalized.to_string_lossy().replace('\\', "/"))
 }
 
 #[tauri::command]

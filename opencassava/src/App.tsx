@@ -34,6 +34,12 @@ type SttSetupStatusEvent = {
   stage: string;
   message: string;
 };
+type NotesPublishStatusEvent = {
+  sessionId: string;
+  stage: "generating" | "publishing" | "ready" | "error";
+  message: string;
+};
+type StatusTone = "warning" | "info" | "success" | "error";
 type ReleaseCheckState =
   | { status: "checking"; currentVersion: string | null; latestVersion: null; releaseUrl: string }
   | { status: "current"; currentVersion: string; latestVersion: string; releaseUrl: string }
@@ -181,6 +187,7 @@ function App() {
   const [sttSetupStage, setSttSetupStage] = useState("");
   const [installLogLines, setInstallLogLines] = useState<string[]>([]);
   const [stopStatusMessage, setStopStatusMessage] = useState<string | null>(null);
+  const [stopStatusTone, setStopStatusTone] = useState<StatusTone>("success");
   const [parakeetWarming, setParakeetWarming] = useState(false);
   const [omniAsrWarming, setOmniAsrWarming] = useState(false);
   const [cohereTranscribeWarming, setCohereTranscribeWarming] = useState(false);
@@ -269,6 +276,12 @@ function App() {
     invoke<AppSettings>("get_settings")
       .then(setSettings)
       .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    const handleOpenSettings = () => setTab("settings");
+    window.addEventListener("open-settings", handleOpenSettings);
+    return () => window.removeEventListener("open-settings", handleOpenSettings);
   }, []);
 
   const handleSettingsChange = useCallback((updated: AppSettings) => {
@@ -491,6 +504,24 @@ function App() {
         setTranscriptionProgress(e.payload);
       }),
 
+      listen<NotesPublishStatusEvent>("notes-publish-status", (e) => {
+        const { stage, message } = e.payload;
+        setStopStatusTone(
+          stage === "error"
+            ? "error"
+            : stage === "ready"
+              ? "success"
+              : "info",
+        );
+        setStopStatusMessage(message);
+
+        if (stage === "ready" || stage === "error") {
+          window.setTimeout(() => {
+            setStopStatusMessage((current) => (current === message ? null : current));
+          }, 5000);
+        }
+      }),
+
       listen<{ ready: boolean; message: string }>("parakeet-warmup-status", (e) => {
         setParakeetWarming(!e.payload.ready);
       }),
@@ -553,6 +584,7 @@ function App() {
       setSpeakerLabels({});
       setTranscriptionProgress({ capturedSegments: 0, processedSegments: 0 });
       setIsStopping(false);
+      setStopStatusTone("success");
       setStopStatusMessage(null);
       setIsRunning(true);
       setTab("transcript");
@@ -567,6 +599,7 @@ function App() {
     }
 
     setIsStopping(true);
+    setStopStatusTone("warning");
     setStopStatusMessage(
       `Recording stopped. Processing remaining segments (${transcriptionProgress.processedSegments}/${transcriptionProgress.capturedSegments}).`,
     );
@@ -584,17 +617,25 @@ function App() {
           setRecordingFiles(files);
         } catch (e) {
           // Rust cleans up temp files on finalize failure; surface the error to the user.
+          setStopStatusTone("error");
           setStopStatusMessage(`Recording could not be saved: ${e}`);
         }
       }
 
-      setStopStatusMessage("Recording fully stopped.");
-      window.setTimeout(() => {
-        setStopStatusMessage((current) =>
-          current === "Recording fully stopped." ? null : current,
-        );
-      }, 3000);
+      if (settings?.obsidianVaultPath) {
+        setStopStatusTone("info");
+        setStopStatusMessage("Recording fully stopped. Generating summary for Obsidian...");
+      } else {
+        setStopStatusTone("success");
+        setStopStatusMessage("Recording fully stopped.");
+        window.setTimeout(() => {
+          setStopStatusMessage((current) =>
+            current === "Recording fully stopped." ? null : current,
+          );
+        }, 3000);
+      }
     } catch (e) {
+      setStopStatusTone("error");
       setStopStatusMessage(`Failed to stop recording: ${e}`);
       throw e;
     } finally {
@@ -861,7 +902,12 @@ function App() {
     (settings?.llmProvider === "openai" && settings?.embeddingProvider === "openai" &&
       isLocalUrl(settings?.openAiLlmBaseUrl) && isLocalUrl(settings?.openAiEmbedBaseUrl));
   const modelName = settings?.llmProvider === "ollama" ? settings.ollamaLlmModel || "Unknown" : settings?.selectedModel || "Unknown";
-  const kbConnected = !!settings?.kbFolderPath;
+  const kbConnected = !!(settings?.obsidianVaultPath || settings?.kbFolderPath);
+  const kbFileCount = settings?.obsidianVaultPath
+    ? new Set([...(settings.obsidianKbIncludePaths || []), settings.obsidianNotesFolder]).size
+    : settings?.kbFolderPath
+      ? 1
+      : 0;
 
   const tabs: { key: Tab; label: string; badge?: number }[] = [
     { key: "transcript", label: "Transcript", badge: utterances.length > 0 ? utterances.length : undefined },
@@ -1007,19 +1053,36 @@ function App() {
             alignItems: "center",
             gap: spacing[2],
             padding: `${spacing[2]}px ${spacing[4]}px`,
-            background: isStopping ? `${colors.warning}10` : `${colors.success}10`,
-            borderBottom: `1px solid ${isStopping ? `${colors.warning}25` : `${colors.success}25`}`,
-            color: isStopping ? colors.warning : colors.success,
+            background:
+              stopStatusTone === "warning"
+                ? `${colors.warning}10`
+                : stopStatusTone === "error"
+                  ? `${colors.error}10`
+                  : stopStatusTone === "info"
+                    ? `${colors.accent}10`
+                    : `${colors.success}10`,
+            borderBottom:
+              stopStatusTone === "warning"
+                ? `1px solid ${colors.warning}25`
+                : stopStatusTone === "error"
+                  ? `1px solid ${colors.error}25`
+                  : stopStatusTone === "info"
+                    ? `1px solid ${colors.accent}25`
+                    : `1px solid ${colors.success}25`,
+            color:
+              stopStatusTone === "warning"
+                ? colors.warning
+                : stopStatusTone === "error"
+                  ? colors.error
+                  : stopStatusTone === "info"
+                    ? colors.accent
+                    : colors.success,
             fontSize: typography.md,
             fontWeight: 500,
           }}
         >
-          <span style={{ fontSize: 8 }}>{isStopping ? "O" : "o"}</span>
-          <span>
-            {isStopping
-              ? `Recording stopped. Processing remaining segments (${transcriptionProgress.processedSegments}/${transcriptionProgress.capturedSegments}).`
-              : stopStatusMessage}
-          </span>
+          <span style={{ fontSize: 8 }}>{stopStatusTone === "warning" ? "O" : "o"}</span>
+          <span>{stopStatusMessage}</span>
         </div>
       )}
 
@@ -1042,7 +1105,7 @@ function App() {
             suggestions={suggestions}
             isGenerating={isGeneratingSuggestion}
             kbConnected={kbConnected}
-            kbFileCount={0}
+            kbFileCount={kbFileCount}
             lastCheckedAt={lastSuggestionCheckAt}
             lastCheckSurfaced={lastSuggestionCheckSurfaced}
             suggestionsEnabled={settings?.suggestionsEnabled ?? true}

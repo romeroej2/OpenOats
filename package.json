@@ -1,5 +1,8 @@
 {
   "scripts": {
+    "dev": "npm --prefix ./opencassava run dev",
+    "build": "npm --prefix ./opencassava run build",
+    "tauri": "npm --prefix ./opencassava run tauri --",
     "lint": "npm --prefix ./opencassava run lint",
     "lint:fix": "npm --prefix ./opencassava run lint:fix"
   },

@@ -279,7 +279,11 @@ impl ParakeetWorker {
                 break serde_json::from_str::<serde_json::Value>(trimmed)
                     .map_err(|e| format!("Invalid parakeet worker response: {e}"))?;
             }
-            log::warn!("[parakeet][stdout] {trimmed}");
+            if is_benign_worker_stdout(trimmed) {
+                log::debug!("[parakeet] suppressed stdout: {trimmed}");
+            } else {
+                log::warn!("[parakeet][stdout] {trimmed}");
+            }
         };
         if json["ok"].as_bool().unwrap_or(false) {
             Ok(json["result"].clone())
@@ -312,6 +316,7 @@ where
     thread::spawn(move || {
         let mut line_buf = String::new();
         let mut buf = [0u8; 1024];
+        let mut suppress_indented_block = false;
         loop {
             match stderr.read(&mut buf) {
                 Ok(0) => break,
@@ -319,20 +324,19 @@ where
                     let text = String::from_utf8_lossy(&buf[..n]);
                     for c in text.chars() {
                         if c == '\n' || c == '\r' {
-                            if !line_buf.is_empty() {
-                                log::warn!("[parakeet] {}", line_buf);
-                                on_line(&line_buf);
-                                if let Ok(mut tail_buf) = tail.lock() {
-                                    if !tail_buf.is_empty() {
-                                        tail_buf.push('\n');
-                                    }
-                                    tail_buf.push_str(&line_buf);
-                                    if tail_buf.len() > 4000 {
-                                        let start = tail_buf.len().saturating_sub(4000);
-                                        *tail_buf = tail_buf[start..].to_string();
-                                    }
+                            let trimmed = line_buf.trim_end().to_string();
+                            line_buf.clear();
+                            if !trimmed.is_empty() {
+                                let (suppress_line, continue_block) =
+                                    classify_worker_stderr(&trimmed, suppress_indented_block);
+                                suppress_indented_block = continue_block;
+                                if suppress_line {
+                                    log::debug!("[parakeet] suppressed stderr: {trimmed}");
+                                } else {
+                                    log::warn!("[parakeet] {trimmed}");
+                                    on_line(&trimmed);
+                                    append_stderr_tail(&tail, &trimmed);
                                 }
-                                line_buf.clear();
                             }
                         } else {
                             line_buf.push(c);
@@ -343,6 +347,59 @@ where
             }
         }
     });
+}
+
+fn is_benign_worker_stdout(line: &str) -> bool {
+    line.starts_with("[NeMo I ")
+        || line.starts_with("Loss tdt_kwargs:")
+        || line.starts_with("Restoring model :")
+}
+
+fn classify_worker_stderr(line: &str, suppress_indented_block: bool) -> (bool, bool) {
+    let trimmed_start = line.trim_start();
+    let is_indented = line.chars().next().is_some_and(|c| c.is_whitespace());
+    if suppress_indented_block {
+        if is_indented {
+            return (true, true);
+        }
+    }
+
+    let suppress_block = trimmed_start.starts_with("Train config :")
+        || trimmed_start.starts_with("Validation config :")
+        || trimmed_start.starts_with("Test config :")
+        || trimmed_start.contains("No conditional node support for Cuda.");
+
+    let suppress_line = suppress_block
+        || trimmed_start
+            .contains("Megatron num_microbatches_calculator not found, using Apex version.")
+        || trimmed_start.contains("Redirects are currently not supported in Windows or MacOs.")
+        || trimmed_start.starts_with("OneLogger: Setting error_handling_strategy")
+        || trimmed_start.starts_with("No exporters were provided.")
+        || trimmed_start.starts_with("Cuda graphs with while loops are disabled")
+        || trimmed_start.starts_with("Reason: CUDA is not available")
+        || trimmed_start.contains("If you intend to do training or fine-tuning")
+        || trimmed_start.contains("If you intend to do validation")
+        || trimmed_start
+            .contains("The following configuration keys are ignored by Lhotse dataloader")
+        || trimmed_start.contains(
+            "You are using a non-tarred dataset and requested tokenization during data sampling",
+        )
+        || trimmed_start.starts_with("Transcribing:");
+
+    (suppress_line, suppress_block)
+}
+
+fn append_stderr_tail(tail: &Arc<Mutex<String>>, line: &str) {
+    if let Ok(mut tail_buf) = tail.lock() {
+        if !tail_buf.is_empty() {
+            tail_buf.push('\n');
+        }
+        tail_buf.push_str(line);
+        if tail_buf.len() > 4000 {
+            let start = tail_buf.len().saturating_sub(4000);
+            *tail_buf = tail_buf[start..].to_string();
+        }
+    }
 }
 
 fn format_worker_exit_error(status: Option<std::process::ExitStatus>, stderr: &str) -> String {
@@ -554,5 +611,80 @@ mod tests {
             serde_json::from_str(r#"{"speaker_id":"speaker_0"}"#).unwrap();
         let speaker_id: Option<String> = result_obj["speaker_id"].as_str().map(|s| s.to_string());
         assert_eq!(speaker_id, Some("speaker_0".to_string()));
+    }
+
+    #[test]
+    fn benign_worker_stdout_patterns_are_suppressed() {
+        assert!(is_benign_worker_stdout(
+            "[NeMo I 2026-04-11 18:56:05 save_restore_connector:285] Model EncDecRNNTBPEModel was successfully restored from C:\\cache\\parakeet.nemo."
+        ));
+        assert!(is_benign_worker_stdout(
+            "Loss tdt_kwargs: {'fastemit_lambda': 0.0, 'clamp': -1.0}"
+        ));
+    }
+
+    #[test]
+    fn benign_worker_stderr_patterns_are_suppressed() {
+        assert!(classify_worker_stderr(
+            "[NeMo W 2026-04-11 18:49:21 megatron_init:62] Megatron num_microbatches_calculator not found, using Apex version.",
+            false
+        )
+        .0);
+        assert!(classify_worker_stderr(
+            "W0411 18:49:21.470000 99200 venv\\Lib\\site-packages\\torch\\distributed\\elastic\\multiprocessing\\redirects.py:29] NOTE: Redirects are currently not supported in Windows or MacOs.",
+            false
+        )
+        .0);
+        assert!(classify_worker_stderr(
+            "OneLogger: Setting error_handling_strategy to DISABLE_QUIETLY_AND_REPORT_METRIC_ERROR for rank (rank=0) with OneLogger disabled. To override: explicitly set error_handling_strategy parameter.",
+            false
+        )
+        .0);
+        assert!(
+            classify_worker_stderr(
+                "No exporters were provided. This means that no telemetry data will be collected.",
+                false
+            )
+            .0
+        );
+        assert!(classify_worker_stderr("Transcribing: 1it [00:00,  2.32it/s]", false).0);
+        assert!(classify_worker_stderr(
+            "[NeMo W 2026-04-11 18:56:07 dataloader:826] The following configuration keys are ignored by Lhotse dataloader: use_start_end_token",
+            false
+        )
+        .0);
+    }
+
+    #[test]
+    fn benign_worker_stderr_block_continues_for_indented_lines() {
+        let (_, in_block) = classify_worker_stderr("    Train config :", false);
+        assert!(in_block);
+        let (suppress_line, still_in_block) =
+            classify_worker_stderr("    num_workers: 15", in_block);
+        assert!(suppress_line);
+        assert!(still_in_block);
+        let (suppress_line, still_in_block) =
+            classify_worker_stderr("next top-level line", still_in_block);
+        assert!(!suppress_line);
+        assert!(!still_in_block);
+    }
+
+    #[test]
+    fn actionable_worker_stderr_patterns_are_not_suppressed() {
+        assert!(
+            !classify_worker_stderr(
+                "[parakeet] Warning: TitaNet pre-load failed: model download failed",
+                false
+            )
+            .0
+        );
+        assert!(
+            !classify_worker_stderr(
+                "Traceback (most recent call last): RuntimeError: CUDA out of memory",
+                false
+            )
+            .0
+        );
+        assert!(!is_benign_worker_stdout("unexpected plain stdout line"));
     }
 }

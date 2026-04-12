@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,6 +110,27 @@ pub struct AppSettings {
     #[serde(default = "default_notes_folder", alias = "notes_folder_path")]
     pub notes_folder_path: String,
 
+    #[serde(default, alias = "obsidian_vault_path")]
+    pub obsidian_vault_path: Option<String>,
+
+    #[serde(default, alias = "obsidian_kb_include_paths")]
+    pub obsidian_kb_include_paths: Vec<String>,
+
+    #[serde(
+        default = "default_obsidian_notes_folder",
+        alias = "obsidian_notes_folder"
+    )]
+    pub obsidian_notes_folder: String,
+
+    #[serde(
+        default = "default_obsidian_transcripts_folder",
+        alias = "obsidian_transcripts_folder"
+    )]
+    pub obsidian_transcripts_folder: String,
+
+    #[serde(default, alias = "default_notes_template_id")]
+    pub default_notes_template_id: Option<Uuid>,
+
     #[serde(default, alias = "has_acknowledged_recording_consent")]
     pub has_acknowledged_recording_consent: bool,
 
@@ -204,6 +226,14 @@ impl AppSettings {
     pub fn notes_folder_url(&self) -> PathBuf {
         PathBuf::from(&self.notes_folder_path)
     }
+
+    pub fn obsidian_vault_pathbuf(&self) -> Option<PathBuf> {
+        self.obsidian_vault_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
 }
 
 impl Default for AppSettings {
@@ -238,6 +268,11 @@ impl Default for AppSettings {
             suggestions_enabled: default_true(),
             kb_folder_path: None,
             notes_folder_path: default_notes_folder(),
+            obsidian_vault_path: None,
+            obsidian_kb_include_paths: Vec::new(),
+            obsidian_notes_folder: default_obsidian_notes_folder(),
+            obsidian_transcripts_folder: default_obsidian_transcripts_folder(),
+            default_notes_template_id: None,
             has_acknowledged_recording_consent: false,
             hide_from_screen_share: true,
             has_completed_onboarding: false,
@@ -321,7 +356,7 @@ fn default_openai_embed_url() -> String {
     "http://127.0.0.1:1234".into()
 }
 fn default_openai_embed_model() -> String {
-    "jina-embeddings-v5-text-small-retrieval".into()
+    "text-embedding-nomic-embed-text-v1.5".into()
 }
 fn default_suggestion_interval_seconds() -> u64 {
     30
@@ -344,6 +379,14 @@ fn default_notes_folder() -> String {
         .join("OpenCassava")
         .to_string_lossy()
         .into_owned()
+}
+
+fn default_obsidian_notes_folder() -> String {
+    "OpenCassava/Meetings".into()
+}
+
+fn default_obsidian_transcripts_folder() -> String {
+    "OpenCassava/Transcripts".into()
 }
 
 #[cfg(test)]
@@ -399,6 +442,34 @@ mod tests {
 
         let s3 = AppSettings::load_from(path);
         assert_eq!(s3.hugging_face_token.as_deref(), Some("hf_test_token"));
+    }
+
+    #[test]
+    fn obsidian_defaults_are_set() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = AppSettings::load_from(path);
+        assert!(settings.obsidian_vault_path.is_none());
+        assert!(settings.obsidian_kb_include_paths.is_empty());
+        assert_eq!(settings.obsidian_notes_folder, "OpenCassava/Meetings");
+        assert_eq!(
+            settings.obsidian_transcripts_folder,
+            "OpenCassava/Transcripts"
+        );
+        assert!(settings.default_notes_template_id.is_none());
+    }
+
+    #[test]
+    fn openai_compatible_embedding_defaults_use_lm_studio_safe_model() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = AppSettings::load_from(path);
+        assert_eq!(settings.embedding_provider, "openai");
+        assert_eq!(settings.open_ai_embed_base_url, "http://127.0.0.1:1234");
+        assert_eq!(
+            settings.open_ai_embed_model,
+            "text-embedding-nomic-embed-text-v1.5"
+        );
     }
 
     #[test]

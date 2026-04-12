@@ -209,7 +209,8 @@ where
         on_line,
     )?;
 
-    fs::write(config.install_stamp_path(), config.install_stamp_contents()).map_err(|e| e.to_string())?;
+    fs::write(config.install_stamp_path(), config.install_stamp_contents())
+        .map_err(|e| e.to_string())?;
     log::info!(
         "[cohere-transcribe] install_runtime completed and wrote stamp {}",
         config.install_stamp_path().display()
@@ -239,19 +240,19 @@ pub fn health_check(config: &CohereTranscribeConfig) -> Result<(), String> {
 pub fn ensure_model<F>(config: &CohereTranscribeConfig, on_line: F) -> Result<(), String>
 where
     F: Fn(&str) + Send + Clone + 'static,
-    {
-        if !config.is_installed() {
-            install_runtime(config, on_line.clone())?;
-        }
-        log::info!("[cohere-transcribe] ensure_model: spawning worker");
-        let mut worker = CohereTranscribeWorker::spawn_with_log(config, on_line.clone())?;
-        log::info!("[cohere-transcribe] ensure_model: sending ensure_model command");
-        worker.ensure_model()?;
-        log::info!("[cohere-transcribe] ensure_model: worker reported model ready");
-        fs::write(config.model_stamp_path(), &config.model).map_err(|e| e.to_string())?;
-        let _ = worker.shutdown();
-        Ok(())
+{
+    if !config.is_installed() {
+        install_runtime(config, on_line.clone())?;
     }
+    log::info!("[cohere-transcribe] ensure_model: spawning worker");
+    let mut worker = CohereTranscribeWorker::spawn_with_log(config, on_line.clone())?;
+    log::info!("[cohere-transcribe] ensure_model: sending ensure_model command");
+    worker.ensure_model()?;
+    log::info!("[cohere-transcribe] ensure_model: worker reported model ready");
+    fs::write(config.model_stamp_path(), &config.model).map_err(|e| e.to_string())?;
+    let _ = worker.shutdown();
+    Ok(())
+}
 
 pub struct CohereTranscribeWorker {
     child: Child,
@@ -676,7 +677,9 @@ print(json.dumps(result), flush=True)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to validate ROCm Windows runtime for cohere-transcribe: {e}"))?;
+        .map_err(|e| {
+            format!("Failed to validate ROCm Windows runtime for cohere-transcribe: {e}")
+        })?;
 
     let started_at = Instant::now();
     loop {
@@ -827,8 +830,20 @@ struct RocmWheels {
 }
 
 fn detect_rocm_wheels() -> Result<RocmWheels, String> {
-    let ubuntu_version = wsl_stdout("bash", &["-lc", "source /etc/os-release && printf '%s' \"$VERSION_ID\""])?;
-    let python_tag = wsl_stdout("python3", &["-c", "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}', end='')"])?;
+    let ubuntu_version = wsl_stdout(
+        "bash",
+        &[
+            "-lc",
+            "source /etc/os-release && printf '%s' \"$VERSION_ID\"",
+        ],
+    )?;
+    let python_tag = wsl_stdout(
+        "python3",
+        &[
+            "-c",
+            "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}', end='')",
+        ],
+    )?;
     match (ubuntu_version.trim(), python_tag.trim()) {
         ("22.04", "cp310") => Ok(RocmWheels {
             torch: ROCM_TORCH_WHEEL_UBUNTU_2204_CP310,

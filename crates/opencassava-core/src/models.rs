@@ -116,6 +116,7 @@ pub enum SuggestionKind {
 // ── KBResult ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KBResult {
     pub id: Uuid,
     pub text: String,
@@ -357,6 +358,20 @@ mod tests {
         assert_eq!(back.speaker, Speaker::Them);
         assert_eq!(back.stable_participant_id(), "remote_1");
         assert_eq!(back.display_label(), "Speaker A");
+    }
+
+    #[test]
+    fn kb_result_serializes_with_camel_case_fields() {
+        let result = KBResult::new(
+            "Relevant text".into(),
+            "Customer Notes/account.md".into(),
+            "Pain Points".into(),
+            0.91,
+        );
+        let json = serde_json::to_value(result).unwrap();
+        assert!(json.get("sourceFile").is_some());
+        assert!(json.get("headerContext").is_some());
+        assert!(json.get("source_file").is_none());
     }
 
     #[test]

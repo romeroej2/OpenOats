@@ -123,7 +123,7 @@ function EmptyState({
             margin: `0 0 ${spacing[2]}px`,
           }}
         >
-          Connect your knowledge base
+          Connect your vault
         </h4>
         <p
           style={{
@@ -134,7 +134,7 @@ function EmptyState({
             lineHeight: 1.6,
           }}
         >
-          Add a folder of notes and OpenCassava will surface relevant talking points during your calls.
+          Connect an Obsidian vault and OpenCassava will surface relevant talking points during your calls.
         </p>
         <button
           style={{
@@ -153,10 +153,10 @@ function EmptyState({
             window.dispatchEvent(event);
           }}
         >
-          Choose KB Folder
+          Connect Obsidian Vault
         </button>
-        <p style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: spacing[3] }}>
-          Or use without KB for smart questions only
+        <p style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: spacing[3], maxWidth: 320 }}>
+          OpenCassava still works without Obsidian for transcription, summaries, and notes.
         </p>
       </div>
     );
@@ -367,7 +367,12 @@ function SuggestionCard({
         >
           <span style={{ fontWeight: 600, color: colors.textSecondary }}>Docs</span>
           <span>
-            {suggestion.kbHits.slice(0, 3).map((h) => h.sourceFile).join(" · ")}
+            {suggestion.kbHits
+              .slice(0, 3)
+              .map((hit) =>
+                hit.headerContext ? `${hit.sourceFile}#${hit.headerContext}` : hit.sourceFile,
+              )
+              .join(" · ")}
             {suggestion.kbHits.length > 3 && ` +${suggestion.kbHits.length - 3} more`}
           </span>
         </div>

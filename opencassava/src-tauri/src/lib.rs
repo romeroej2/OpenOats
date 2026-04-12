@@ -46,6 +46,7 @@ pub fn run() {
             engine::set_overlay_size,
             engine::set_content_protection,
             engine::choose_folder,
+            engine::choose_obsidian_include_folder,
             engine::list_templates,
             engine::save_template,
             engine::delete_template,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ApiKeys, AppSettings, SttStatus } from "../types";
+import type { ApiKeys, AppSettings, MeetingTemplate, SttStatus } from "../types";
 import { colors, typography, spacing } from "../theme";
 import { WaveformVisualizer } from "./WaveformVisualizer";
 import { PromptsView } from "./PromptsView";
@@ -176,6 +176,7 @@ export function SettingsView({
 }: SettingsViewProps) {
   const [settings, setSettings] = useState<AppSettings | null>(initialSettings);
   const [apiKeys, setApiKeys] = useState<ApiKeys | null>(null);
+  const [templates, setTemplates] = useState<MeetingTemplate[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>("general");
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -191,18 +192,32 @@ export function SettingsView({
   const [wsl2Status, setWsl2Status] = useState<{ ok: boolean; message: string } | null>(null);
   const [pythonStatus, setPythonStatus] = useState<{ ok: boolean; message: string } | null>(null);
   const isWindows = navigator.userAgent.toLowerCase().includes("windows");
+  const isObsidianActive = !!settings?.obsidianVaultPath;
+  const hasKbSource = !!(settings?.obsidianVaultPath || settings?.kbFolderPath);
 
 
   const countKBFiles = useCallback(async () => {
     try {
-      setKbFileCount(0);
+      if (!settings) {
+        setKbFileCount(0);
+        return;
+      }
+      if (settings.obsidianVaultPath) {
+        const includeCount = new Set([
+          ...settings.obsidianKbIncludePaths.filter(Boolean),
+          settings.obsidianNotesFolder,
+        ]).size;
+        setKbFileCount(includeCount);
+        return;
+      }
+      setKbFileCount(settings.kbFolderPath ? 1 : 0);
     } catch {
       setKbFileCount(0);
     }
-  }, []);
+  }, [settings]);
 
   const syncKnowledgeBase = useCallback(async () => {
-    if (!settings?.kbFolderPath) {
+    if (!settings || !(settings.obsidianVaultPath || settings.kbFolderPath)) {
       setKbStatus(null);
       setIsIndexingKb(false);
       return;
@@ -214,7 +229,7 @@ export function SettingsView({
       const addedChunks = await invoke<number>("index_kb");
       setKbStatus(
         addedChunks > 0
-          ? `Knowledge base indexed · ${addedChunks} new chunks`
+          ? `Knowledge base indexed - ${addedChunks} new or updated chunks`
           : "Knowledge base is ready"
       );
       setError(null);
@@ -224,7 +239,7 @@ export function SettingsView({
     } finally {
       setIsIndexingKb(false);
     }
-  }, [settings?.kbFolderPath]);
+  }, [settings]);
 
   useEffect(() => {
     invoke<ApiKeys>("get_api_keys")
@@ -232,6 +247,12 @@ export function SettingsView({
         setApiKeys(keys);
         setHuggingFaceTokenDraft(keys.huggingFaceToken || "");
       })
+      .catch((err) => setError(String(err)));
+  }, []);
+
+  useEffect(() => {
+    invoke<MeetingTemplate[]>("list_templates")
+      .then(setTemplates)
       .catch((err) => setError(String(err)));
   }, []);
 
@@ -262,34 +283,51 @@ export function SettingsView({
   useEffect(() => {
     if (initialSettings) {
       setSettings(initialSettings);
-      if (initialSettings.kbFolderPath) {
-        void countKBFiles();
-      } else {
-        setKbFileCount(0);
-      }
+      setKbFileCount(
+        initialSettings.obsidianVaultPath
+          ? new Set([
+              ...initialSettings.obsidianKbIncludePaths.filter(Boolean),
+              initialSettings.obsidianNotesFolder,
+            ]).size
+          : initialSettings.kbFolderPath
+            ? 1
+            : 0,
+      );
       return;
     }
 
     invoke<AppSettings>("get_settings")
       .then((loadedSettings) => {
         setSettings(loadedSettings);
-        if (loadedSettings.kbFolderPath) {
-          void countKBFiles();
-        } else {
-          setKbFileCount(0);
-        }
+        setKbFileCount(
+          loadedSettings.obsidianVaultPath
+            ? new Set([
+                ...loadedSettings.obsidianKbIncludePaths.filter(Boolean),
+                loadedSettings.obsidianNotesFolder,
+              ]).size
+            : loadedSettings.kbFolderPath
+              ? 1
+              : 0,
+        );
       })
       .catch((err) => setError(String(err)));
-  }, [initialSettings, countKBFiles]);
+  }, [initialSettings]);
 
   useEffect(() => {
-    if (settings?.kbFolderPath) {
+    if (settings?.obsidianVaultPath || settings?.kbFolderPath) {
       void syncKnowledgeBase();
     } else {
       setKbStatus(null);
       setIsIndexingKb(false);
     }
-  }, [settings?.kbFolderPath, syncKnowledgeBase]);
+  }, [
+    settings?.kbFolderPath,
+    settings?.obsidianVaultPath,
+    settings?.obsidianKbIncludePaths,
+    settings?.obsidianNotesFolder,
+    settings?.obsidianTranscriptsFolder,
+    syncKnowledgeBase,
+  ]);
 
   const flashSaved = () => {
     setSaved(true);
@@ -362,19 +400,54 @@ export function SettingsView({
     await saveApiKeys(updated);
   };
 
-  const chooseFolder = async (key: "kbFolderPath" | "notesFolderPath") => {
+  const chooseFolder = async (
+    key: "kbFolderPath" | "notesFolderPath" | "obsidianVaultPath",
+  ) => {
     try {
       const selected = await invoke<string | null>("choose_folder");
       if (selected && settings) {
         const updated = { ...settings, [key]: selected };
         await saveSettings(updated);
-        if (key === "kbFolderPath") {
+        if (key === "kbFolderPath" || key === "obsidianVaultPath") {
           void countKBFiles();
         }
       }
     } catch (err) {
       console.error("Failed to choose folder:", err);
     }
+  };
+
+  const addObsidianIncludePath = async () => {
+    if (!settings?.obsidianVaultPath) {
+      return;
+    }
+    try {
+      const relativePath = await invoke<string>("choose_obsidian_include_folder", {
+        vaultPath: settings.obsidianVaultPath,
+      });
+      if (!relativePath) {
+        return;
+      }
+      const nextIncludePaths = Array.from(
+        new Set([...settings.obsidianKbIncludePaths, relativePath]),
+      );
+      await saveSettings({ ...settings, obsidianKbIncludePaths: nextIncludePaths });
+      void countKBFiles();
+    } catch (err) {
+      if (String(err).includes("No folder selected")) {
+        return;
+      }
+      setError(String(err));
+    }
+  };
+
+  const removeObsidianIncludePath = async (relativePath: string) => {
+    if (!settings) {
+      return;
+    }
+    const nextIncludePaths = settings.obsidianKbIncludePaths.filter((value) => value !== relativePath);
+    await saveSettings({ ...settings, obsidianKbIncludePaths: nextIncludePaths });
+    void countKBFiles();
   };
 
   if (!settings || !apiKeys) {
@@ -584,42 +657,145 @@ export function SettingsView({
       {/* General Tab */}
       {activeTab === "general" && (
         <div>
-          {/* Meeting Notes Section */}
+          {/* Obsidian Section */}
           <div style={styles.section}>
-            <h4 style={styles.sectionTitle}>Meeting Notes</h4>
+            <h4 style={styles.sectionTitle}>Knowledge &amp; Notes</h4>
             <p style={styles.sectionDescription}>
-              Where transcripts and generated notes are saved.
+              Connect a local Obsidian vault to power suggestions and keep your meeting knowledge in one place. OpenCassava still works without Obsidian for transcription, summaries, and notes.
             </p>
             <div style={styles.fieldWrap}>
-              <label style={styles.labelStyle}>Save Location</label>
+              <label style={styles.labelStyle}>Vault</label>
               <div style={{ display: "flex", gap: spacing[2] }}>
                 <input
                   type="text"
-                  value={settings.notesFolderPath}
+                  value={settings.obsidianVaultPath || ""}
                   readOnly
                   style={{ ...styles.inputStyle, flex: 1 }}
-                  placeholder="Choose a folder..."
+                  placeholder="Choose a vault..."
                 />
                 <button
                   style={styles.buttonSecondary}
-                  onClick={() => chooseFolder("notesFolderPath")}
+                  onClick={() => chooseFolder("obsidianVaultPath")}
                 >
-                  Choose...
+                  {settings.obsidianVaultPath ? "Change..." : "Choose..."}
                 </button>
+                {settings.obsidianVaultPath && (
+                  <button
+                    style={{ ...styles.buttonSecondary, color: colors.error }}
+                    onClick={() => {
+                      setKbFileCount(0);
+                      setKbStatus(null);
+                      void saveSettings({
+                        ...settings,
+                        obsidianVaultPath: null,
+                        obsidianKbIncludePaths: [],
+                      });
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
               </div>
             </div>
+
+            {settings.obsidianVaultPath && (
+              <>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Knowledge Folders</label>
+                  <div style={{ display: "flex", flexDirection: "column", gap: spacing[2] }}>
+                    {settings.obsidianKbIncludePaths.length === 0 && (
+                      <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
+                        No extra folders added yet. OpenCassava will still index `{settings.obsidianNotesFolder}` for generated notes.
+                      </span>
+                    )}
+                    {settings.obsidianKbIncludePaths.map((relativePath) => (
+                      <div
+                        key={relativePath}
+                        style={{ display: "flex", alignItems: "center", gap: spacing[2] }}
+                      >
+                        <input
+                          type="text"
+                          value={relativePath}
+                          readOnly
+                          style={{ ...styles.inputStyle, flex: 1 }}
+                        />
+                        <button
+                          style={{ ...styles.buttonSecondary, color: colors.error }}
+                          onClick={() => void removeObsidianIncludePath(relativePath)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                    <div style={{ display: "flex", gap: spacing[2], alignItems: "center" }}>
+                      <button
+                        style={styles.buttonSecondary}
+                        onClick={() => void addObsidianIncludePath()}
+                      >
+                        Add Folder...
+                      </button>
+                      <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
+                        Choose the folders inside your vault that should be searched for suggestions.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Default Notes Template</label>
+                  <select
+                    value={settings.defaultNotesTemplateId || ""}
+                    onChange={(e) =>
+                      saveSettings({
+                        ...settings,
+                        defaultNotesTemplateId: e.target.value || null,
+                      })
+                    }
+                    style={styles.selectStyle}
+                  >
+                    <option value="">Summary (default)</option>
+                    {templates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={{ marginTop: spacing[2] }}>
+                  <span style={styles.statusBadge("success")}>
+                    <span>
+                      {isIndexingKb
+                        ? "Indexing vault..."
+                        : kbStatus || `Vault connected - ${kbFileCount > 0 ? `${kbFileCount} folders indexed` : "ready"}`}
+                    </span>
+                  </span>
+                </div>
+
+                <p style={{ ...styles.sectionDescription, marginTop: spacing[3], marginBottom: 0 }}>
+                  OpenCassava publishes canonical notes to `{settings.obsidianNotesFolder}` and keeps transcript companions in `{settings.obsidianTranscriptsFolder}`. Generated notes are indexed automatically; transcripts are not.
+                </p>
+              </>
+            )}
           </div>
 
-          <div style={styles.divider} />
+          {!settings.obsidianVaultPath && settings.kbFolderPath && (
+            <p style={{ ...styles.sectionDescription, marginBottom: spacing[4] }}>
+              A legacy folder-based knowledge base is still saved in your settings for compatibility, but the main workflow now centers on an Obsidian vault.
+            </p>
+          )}
+
+          <div style={{ ...styles.divider, display: "none" }} />
+
 
           {/* Knowledge Base Section */}
-          <div style={styles.section}>
+          <div style={{ ...styles.section, display: "none" }}>
             <h4 style={styles.sectionTitle}>Knowledge Base</h4>
             <p style={styles.sectionDescription}>
-              Optional folder of notes for smart suggestions. OpenCassava searches these files during calls to surface relevant talking points.
+              Legacy folder source for suggestions. When an Obsidian vault is connected above, this path is kept only for backwards compatibility and is ignored.
             </p>
             <div style={styles.fieldWrap}>
-              <label style={styles.labelStyle}>KB Folder</label>
+              <label style={styles.labelStyle}>Legacy KB Folder</label>
               <div style={{ display: "flex", gap: spacing[2], alignItems: "center" }}>
                 <input
                   type="text"
@@ -631,23 +807,25 @@ export function SettingsView({
                 <button
                   style={styles.buttonSecondary}
                   onClick={() => chooseFolder("kbFolderPath")}
+                  disabled={isObsidianActive}
                 >
                   {settings.kbFolderPath ? "Change..." : "Choose..."}
                 </button>
                 {settings.kbFolderPath && (
                   <button
                     style={{ ...styles.buttonSecondary, color: colors.error }}
+                    disabled={isObsidianActive}
                     onClick={() => {
                       setKbFileCount(0);
                       setKbStatus(null);
-                      saveSettings({ ...settings, kbFolderPath: "" });
+                      void saveSettings({ ...settings, kbFolderPath: "" });
                     }}
                   >
                     Clear
                   </button>
                 )}
               </div>
-              {settings.kbFolderPath && (
+              {hasKbSource && (
                 <div style={{ marginTop: spacing[2] }}>
                   <span style={styles.statusBadge("success")}>
                     <span>⚡</span>

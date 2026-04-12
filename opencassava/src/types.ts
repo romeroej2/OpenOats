@@ -19,6 +19,7 @@ export interface KBResult {
   id: string;
   text: string;
   sourceFile: string;
+  headerContext: string;
   score: number;
 }
 
@@ -55,6 +56,11 @@ export interface AppSettings {
   suggestionsEnabled: boolean;
   kbFolderPath: string | null;
   notesFolderPath: string;
+  obsidianVaultPath: string | null;
+  obsidianKbIncludePaths: string[];
+  obsidianNotesFolder: string;
+  obsidianTranscriptsFolder: string;
+  defaultNotesTemplateId: string | null;
   hasAcknowledgedRecordingConsent: boolean;
   hideFromScreenShare: boolean;
   hasCompletedOnboarding: boolean;

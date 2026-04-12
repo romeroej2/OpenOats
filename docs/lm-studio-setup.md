@@ -9,7 +9,7 @@ Important: the current OpenCassava backend supports OpenAI-compatible endpoints,
 Use the following three-model setup:
 
 - LLM in LM Studio: `nvidia/nemotron-3-nano-4b`
-- Embeddings in LM Studio: `jina-embeddings-v5-text-small-retrieval`
+- Embeddings in LM Studio: `text-embedding-nomic-embed-text-v1.5`
 - Transcription in OpenCassava: Whisper `base-en` for English or Whisper `base` for multilingual sessions
 
 ## Install OpenCassava
@@ -56,10 +56,12 @@ Use this model for suggestions and notes generation inside OpenCassava.
 Download:
 
 ```text
-jina-embeddings-v5-text-small-retrieval
+text-embedding-nomic-embed-text-v1.5
 ```
 
 Use this model to index the knowledge base and retrieve relevant notes during a call.
+
+Important: this is the recommended LM Studio embedding model for OpenCassava. Some LM Studio setups may list other embedding models in `/v1/models` without successfully serving them through `/v1/embeddings`. `text-embedding-nomic-embed-text-v1.5` is the known-good default.
 
 ### Model C: transcription
 
@@ -71,7 +73,7 @@ Recommended default: leave Whisper on `Auto` so English uses `base-en` and other
 
 Load the Nemotron model in LM Studio and enable the local OpenAI-compatible server.
 
-Then load the Jina embeddings model and make sure the embeddings endpoint is available.
+Then load the Nomic embeddings model and make sure the embeddings endpoint is available.
 
 In many LM Studio setups, both chat and embeddings are served from the same base URL, typically `http://localhost:1234`.
 
@@ -96,7 +98,7 @@ Set or update these values:
   "selectedModel": "nvidia/nemotron-3-nano-4b",
   "openAiLlmBaseUrl": "http://localhost:1234",
   "openAiEmbedBaseUrl": "http://localhost:1234",
-  "openAiEmbedModel": "jina-embeddings-v5-text-small-retrieval"
+  "openAiEmbedModel": "text-embedding-nomic-embed-text-v1.5"
 }
 ```
 
@@ -112,7 +114,7 @@ Notes:
 - Verify the microphone input device and, on Windows, the system audio device.
 - Choose the folder where notes and transcripts should be stored.
 - Choose a Knowledge Base folder containing `.md` or `.txt` notes.
-- Wait for the knowledge base to index using the LM Studio embeddings model.
+- Wait for the knowledge base to index using the LM Studio embeddings model `text-embedding-nomic-embed-text-v1.5`.
 - On first transcription run, allow OpenCassava to download the Whisper model it requests.
 
 ## Smoke Test Checklist
@@ -143,6 +145,7 @@ Recommended next actions for the project:
 ## Reference Values from the Current Codebase
 
 - OpenAI-compatible LLM default base URL: `http://localhost:1234`
-- OpenAI-compatible embedding default base URL: `http://localhost:8080`
+- OpenAI-compatible embedding default base URL: `http://127.0.0.1:1234`
+- OpenAI-compatible embedding default model: `text-embedding-nomic-embed-text-v1.5`
 - Default local notes folder: `Documents\OpenCassava`
 - Whisper is downloaded and stored by the app in its app-data directory

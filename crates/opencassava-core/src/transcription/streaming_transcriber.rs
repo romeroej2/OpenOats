@@ -594,7 +594,8 @@ mod tests {
             }
         });
 
-        let transcriber = StreamingTranscriber::new_passthrough(on_final).with_progress(on_progress);
+        let transcriber =
+            StreamingTranscriber::new_passthrough(on_final).with_progress(on_progress);
         let speech_chunk: Vec<f32> = (0..1600).map(|i| (i as f32 / 100.0).sin() * 0.5).collect();
         let silence_chunk = vec![0.0f32; 1600];
         let chunks = vec![
@@ -629,7 +630,8 @@ mod tests {
             }
         });
 
-        let transcriber = StreamingTranscriber::new_passthrough(on_final).with_progress(on_progress);
+        let transcriber =
+            StreamingTranscriber::new_passthrough(on_final).with_progress(on_progress);
         let speech_chunk: Vec<f32> = (0..1600).map(|i| (i as f32 / 100.0).sin() * 0.5).collect();
         let silence_chunk = vec![0.0f32; 1600];
         let mut chunks = vec![speech_chunk.clone(); 6];
