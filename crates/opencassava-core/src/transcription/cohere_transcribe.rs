@@ -1,9 +1,10 @@
+use crate::process_control::ManagedChild;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -255,7 +256,7 @@ where
 }
 
 pub struct CohereTranscribeWorker {
-    child: Child,
+    child: ManagedChild,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     stderr_tail: Arc<Mutex<String>>,
@@ -286,29 +287,27 @@ impl CohereTranscribeWorker {
                 "[cohere-transcribe] launching worker with python {}",
                 config.python_path().display()
             );
-            Command::new(config.python_path())
+            let mut command = Command::new(config.python_path());
+            command
                 .arg("-u")
                 .arg(&config.worker_script_path)
                 .env("HF_HUB_DISABLE_PROGRESS_BARS", "0")
                 .env("TQDM_FORCE", "1")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
+                .stderr(Stdio::piped());
+            ManagedChild::spawn(&mut command, "cohere-transcribe worker")
                 .map_err(|e| format!("Failed to launch cohere-transcribe worker: {e}"))?
         };
 
         let stdin = child
-            .stdin
-            .take()
+            .take_stdin()
             .ok_or_else(|| "Failed to open stdin for cohere-transcribe worker.".to_string())?;
         let stdout = child
-            .stdout
-            .take()
+            .take_stdout()
             .ok_or_else(|| "Failed to open stdout for cohere-transcribe worker.".to_string())?;
         let stderr = child
-            .stderr
-            .take()
+            .take_stderr()
             .ok_or_else(|| "Failed to open stderr for cohere-transcribe worker.".to_string())?;
         let stderr_tail = Arc::new(Mutex::new(String::new()));
         pump_stderr(stderr, Arc::clone(&stderr_tail), on_line);
@@ -358,8 +357,24 @@ impl CohereTranscribeWorker {
     }
 
     pub fn shutdown(&mut self) -> Result<(), String> {
-        let _ = self.send_request(json!({ "command": "shutdown" }));
-        let _ = self.child.wait();
+        let line =
+            serde_json::to_string(&json!({ "command": "shutdown" })).map_err(|e| e.to_string())?;
+        let _ = self
+            .stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| self.stdin.write_all(b"\n"))
+            .and_then(|_| self.stdin.flush());
+        match self
+            .child
+            .wait_with_timeout(Duration::from_secs(2))
+            .map_err(|e| format!("Failed waiting for cohere-transcribe worker shutdown: {e}"))?
+        {
+            Some(_) => Ok(()),
+            None => self
+                .child
+                .terminate_tree()
+                .map_err(|e| format!("Failed to force-stop cohere-transcribe worker: {e}")),
+        }?;
         Ok(())
     }
 
@@ -471,18 +486,18 @@ where
     log::info!("[cohere-transcribe] Starting {description}");
     on_line(&format!("[cohere-transcribe] Starting {description}"));
     let started_at = Instant::now();
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to {description}: {e}"))?;
+    let mut child = ManagedChild::spawn(
+        command.stdout(Stdio::piped()).stderr(Stdio::piped()),
+        format!("cohere-transcribe setup: {description}"),
+    )
+    .map_err(|e| format!("Failed to {description}: {e}"))?;
     on_line(&format!(
         "[cohere-transcribe] Spawned process for {description} with pid {}",
         child.id()
     ));
 
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let stdout = child.take_stdout().unwrap();
+    let stderr = child.take_stderr().unwrap();
 
     let on_line_stdout = on_line.clone();
     let stdout_thread = thread::spawn(move || {
@@ -655,10 +670,9 @@ fn ensure_python_312(python_path: &Path) -> Result<(), String> {
 
 fn validate_rocm_windows_runtime(config: &CohereTranscribeConfig) -> Result<(), String> {
     log::info!("[cohere-transcribe] validating rocm-windows runtime via torch probe");
-    let mut child = Command::new(config.python_path())
-        .arg("-c")
-        .arg(
-            r#"
+    let mut command = Command::new(config.python_path());
+    command.arg("-c").arg(
+        r#"
 import json
 import torch
 
@@ -673,13 +687,18 @@ if result["cuda_available"] and result["device_count"] > 0:
     result["device_name"] = torch.cuda.get_device_name(0)
 print(json.dumps(result), flush=True)
 "#,
-        )
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    );
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = ManagedChild::spawn(&mut command, "cohere-transcribe ROCm Windows probe")
         .map_err(|e| {
             format!("Failed to validate ROCm Windows runtime for cohere-transcribe: {e}")
         })?;
+    let mut stdout_pipe = child
+        .take_stdout()
+        .ok_or_else(|| "Failed to capture stdout for Cohere ROCm Windows probe.".to_string())?;
+    let mut stderr_pipe = child
+        .take_stderr()
+        .ok_or_else(|| "Failed to capture stderr for Cohere ROCm Windows probe.".to_string())?;
 
     let started_at = Instant::now();
     loop {
@@ -687,12 +706,17 @@ print(json.dumps(result), flush=True)
             .try_wait()
             .map_err(|e| format!("Failed while waiting for ROCm Windows probe: {e}"))?
         {
-            let output = child
-                .wait_with_output()
-                .map_err(|e| format!("Failed to collect ROCm Windows probe output: {e}"))?;
+            let mut stdout_buf = Vec::new();
+            let mut stderr_buf = Vec::new();
+            stdout_pipe
+                .read_to_end(&mut stdout_buf)
+                .map_err(|e| format!("Failed to read ROCm Windows probe stdout: {e}"))?;
+            stderr_pipe
+                .read_to_end(&mut stderr_buf)
+                .map_err(|e| format!("Failed to read ROCm Windows probe stderr: {e}"))?;
             if !status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&stderr_buf).trim().to_string();
+                let stdout = String::from_utf8_lossy(&stdout_buf).trim().to_string();
                 return Err(format!(
                     "ROCm Windows runtime validation failed before loading Cohere Transcribe. stdout: {} stderr: {}",
                     stdout,
@@ -700,7 +724,7 @@ print(json.dumps(result), flush=True)
                 ));
             }
 
-            let stdout = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+            let stdout = String::from_utf8(stdout_buf).map_err(|e| e.to_string())?;
             log::info!(
                 "[cohere-transcribe] rocm-windows probe raw output: {}",
                 stdout.trim()
@@ -734,16 +758,13 @@ print(json.dumps(result), flush=True)
         }
 
         if started_at.elapsed() > Duration::from_secs(20) {
-            let _ = child.kill();
-            let output = child.wait_with_output().ok();
-            let stdout = output
-                .as_ref()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default();
-            let stderr = output
-                .as_ref()
-                .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
-                .unwrap_or_default();
+            let _ = child.terminate_tree();
+            let mut stdout_buf = Vec::new();
+            let mut stderr_buf = Vec::new();
+            let _ = stdout_pipe.read_to_end(&mut stdout_buf);
+            let _ = stderr_pipe.read_to_end(&mut stderr_buf);
+            let stdout = String::from_utf8_lossy(&stdout_buf).trim().to_string();
+            let stderr = String::from_utf8_lossy(&stderr_buf).trim().to_string();
             return Err(format!(
                 "ROCm Windows runtime probe timed out after 20 seconds. stdout: {} stderr: {}. The native ROCm stack appears hung while initializing torch.cuda; try WSL ROCm instead.",
                 stdout,
@@ -792,9 +813,10 @@ where
     )
 }
 
-fn spawn_wsl_worker(config: &CohereTranscribeConfig) -> Result<Child, String> {
+fn spawn_wsl_worker(config: &CohereTranscribeConfig) -> Result<ManagedChild, String> {
     let script_wsl = to_wsl_path(&config.worker_script_path);
-    Command::new("wsl")
+    let mut command = Command::new("wsl");
+    command
         .arg("bash")
         .arg("-lc")
         .arg(format!(
@@ -804,8 +826,8 @@ fn spawn_wsl_worker(config: &CohereTranscribeConfig) -> Result<Child, String> {
         ))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    ManagedChild::spawn(&mut command, "cohere-transcribe WSL worker")
         .map_err(|e| format!("Failed to launch cohere-transcribe WSL worker: {e}"))
 }
 

@@ -30,6 +30,7 @@ pub struct StreamingTranscriber {
     on_volatile: Option<OnVolatile>,
     on_progress: Option<OnProgress>,
     stop_signal: Option<Arc<AtomicBool>>,
+    cancel_on_stop: bool,
     parakeet_worker: Option<crate::transcription::parakeet::ParakeetWorker>,
     omni_asr_worker: Option<crate::transcription::omni_asr::OmniAsrWorker>,
     cohere_transcribe_worker:
@@ -47,6 +48,7 @@ impl StreamingTranscriber {
             on_volatile: None,
             on_progress: None,
             stop_signal: None,
+            cancel_on_stop: false,
             parakeet_worker: None,
             omni_asr_worker: None,
             cohere_transcribe_worker: None,
@@ -64,6 +66,7 @@ impl StreamingTranscriber {
             on_volatile: None,
             on_progress: None,
             stop_signal: None,
+            cancel_on_stop: false,
             parakeet_worker: None,
             omni_asr_worker: None,
             cohere_transcribe_worker: None,
@@ -114,6 +117,11 @@ impl StreamingTranscriber {
         self
     }
 
+    pub fn with_cancel_on_stop(mut self, enabled: bool) -> Self {
+        self.cancel_on_stop = enabled;
+        self
+    }
+
     pub fn with_diarization(mut self, enabled: bool) -> Self {
         self.diarization_enabled = enabled;
         self
@@ -137,6 +145,8 @@ impl StreamingTranscriber {
         let progress_for_backend = on_progress.clone();
         let language = self.language.clone();
         let backend = self.backend.clone();
+        let stop_signal = self.stop_signal;
+        let cancel_on_stop = self.cancel_on_stop;
         let prewarmed_parakeet = self.parakeet_worker;
         let prewarmed_omni_asr = self.omni_asr_worker;
         let prewarmed_cohere = self.cohere_transcribe_worker;
@@ -432,6 +442,14 @@ impl StreamingTranscriber {
         // signal; instead we let the stream drain fully so every captured
         // chunk reaches VAD and Whisper before the pipeline shuts down.
         while let Some(samples) = stream.next().await {
+            if cancel_on_stop
+                && stop_signal
+                    .as_ref()
+                    .map(|signal| signal.load(std::sync::atomic::Ordering::Relaxed))
+                    .unwrap_or(false)
+            {
+                break;
+            }
             vad_buf.extend_from_slice(&samples);
 
             while vad_buf.len() >= Vad::CHUNK_SIZE {
@@ -529,6 +547,10 @@ impl StreamingTranscriber {
 mod tests {
     use super::*;
     use futures::stream;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     #[tokio::test]
     async fn silence_produces_no_transcription() {
@@ -580,11 +602,6 @@ mod tests {
 
     #[tokio::test]
     async fn short_noise_burst_does_not_capture_segment() {
-        use std::sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc,
-        };
-
         let captured = Arc::new(AtomicUsize::new(0));
         let captured_clone = Arc::clone(&captured);
         let on_final = Box::new(|_text: String, _speaker_id: Option<String>| {});
@@ -616,11 +633,6 @@ mod tests {
 
     #[tokio::test]
     async fn sustained_speech_still_captures_segment() {
-        use std::sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc,
-        };
-
         let captured = Arc::new(AtomicUsize::new(0));
         let captured_clone = Arc::clone(&captured);
         let on_final = Box::new(|_text: String, _speaker_id: Option<String>| {});
@@ -639,5 +651,27 @@ mod tests {
 
         transcriber.run(futures::stream::iter(chunks)).await;
         assert_eq!(captured.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn stop_signal_can_cancel_stream_when_enabled() {
+        let stop = Arc::new(AtomicBool::new(true));
+        let captured = Arc::new(AtomicUsize::new(0));
+        let captured_clone = Arc::clone(&captured);
+        let on_progress = Arc::new(move |progress: SegmentProgress| {
+            if matches!(progress, SegmentProgress::Captured) {
+                captured_clone.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        let transcriber = StreamingTranscriber::new_passthrough(Box::new(|_, _| {}))
+            .with_progress(on_progress)
+            .with_stop_signal(stop)
+            .with_cancel_on_stop(true);
+        let speech_chunk: Vec<f32> = (0..1600).map(|i| (i as f32 / 100.0).sin() * 0.5).collect();
+        let chunks: Vec<Vec<f32>> = (0..100).map(|_| speech_chunk.clone()).collect();
+
+        transcriber.run(stream::iter(chunks)).await;
+
+        assert_eq!(captured.load(Ordering::Relaxed), 0);
     }
 }

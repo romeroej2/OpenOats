@@ -1,11 +1,13 @@
+use crate::process_control::ManagedChild;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+use std::time::Duration;
 
 const WORKER_SCRIPT: &str = include_str!("omni_asr_worker.py");
 const REQUIREMENTS: &str = include_str!("omni_asr_requirements.txt");
@@ -923,7 +925,7 @@ where
 // ── Worker ───────────────────────────────────────────────────────────────────
 
 pub struct OmniAsrWorker {
-    child: Child,
+    child: ManagedChild,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     stderr_tail: Arc<Mutex<String>>,
@@ -951,16 +953,13 @@ impl OmniAsrWorker {
         };
 
         let stdin = child
-            .stdin
-            .take()
+            .take_stdin()
             .ok_or_else(|| "Failed to open stdin for omni-asr worker.".to_string())?;
         let stdout = child
-            .stdout
-            .take()
+            .take_stdout()
             .ok_or_else(|| "Failed to open stdout for omni-asr worker.".to_string())?;
         let stderr = child
-            .stderr
-            .take()
+            .take_stderr()
             .ok_or_else(|| "Failed to open stderr for omni-asr worker.".to_string())?;
 
         let stderr_tail = Arc::new(Mutex::new(String::new()));
@@ -975,7 +974,7 @@ impl OmniAsrWorker {
         })
     }
 
-    fn spawn_native(config: &OmniAsrConfig) -> Result<Child, String> {
+    fn spawn_native(config: &OmniAsrConfig) -> Result<ManagedChild, String> {
         let mut command = Command::new(config.native_python_path());
         command
             .arg("-u")
@@ -995,18 +994,19 @@ impl OmniAsrWorker {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        ManagedChild::spawn(&mut command, "omni-asr worker")
             .map_err(|e| format!("Failed to launch omni-asr worker: {e}"))
     }
 
-    fn spawn_wsl(config: &OmniAsrConfig) -> Result<Child, String> {
+    fn spawn_wsl(config: &OmniAsrConfig) -> Result<ManagedChild, String> {
         let venv_wsl = &config.wsl_venv_linux_path;
         let script_wsl = to_wsl_path(&config.worker_script_path);
         // Pass the Windows-translated models dir into WSL as an env var the worker can use.
         let models_wsl = to_wsl_path(&config.models_dir);
 
-        Command::new("wsl")
+        let mut command = Command::new("wsl");
+        command
             .arg("bash")
             .arg("-c")
             .arg(format!(
@@ -1017,8 +1017,8 @@ impl OmniAsrWorker {
             ))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        ManagedChild::spawn(&mut command, "omni-asr WSL worker")
             .map_err(|e| format!("Failed to launch omni-asr WSL worker: {e}"))
     }
 
@@ -1059,8 +1059,24 @@ impl OmniAsrWorker {
     }
 
     pub fn shutdown(&mut self) -> Result<(), String> {
-        let _ = self.send_request(json!({ "command": "shutdown" }));
-        let _ = self.child.wait();
+        let line =
+            serde_json::to_string(&json!({ "command": "shutdown" })).map_err(|e| e.to_string())?;
+        let _ = self
+            .stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| self.stdin.write_all(b"\n"))
+            .and_then(|_| self.stdin.flush());
+        match self
+            .child
+            .wait_with_timeout(Duration::from_secs(2))
+            .map_err(|e| format!("Failed waiting for omni-asr worker shutdown: {e}"))?
+        {
+            Some(_) => Ok(()),
+            None => self
+                .child
+                .terminate_tree()
+                .map_err(|e| format!("Failed to force-stop omni-asr worker: {e}")),
+        }?;
         Ok(())
     }
 
@@ -1176,14 +1192,14 @@ where
     F: Fn(&str) + Send + Clone + 'static,
 {
     log::info!("[omni-asr] Starting {description}");
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to {description}: {e}"))?;
+    let mut child = ManagedChild::spawn(
+        command.stdout(Stdio::piped()).stderr(Stdio::piped()),
+        format!("omni-asr setup: {description}"),
+    )
+    .map_err(|e| format!("Failed to {description}: {e}"))?;
 
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let stdout = child.take_stdout().unwrap();
+    let stderr = child.take_stderr().unwrap();
 
     let on_line_stdout = on_line.clone();
     let stdout_thread = thread::spawn(move || {
