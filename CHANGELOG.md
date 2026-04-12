@@ -9,6 +9,28 @@ and the next one.
 
 ## [Unreleased] — next version
 
+### App lifecycle & shutdown
+
+- **Guaranteed subprocess termination** - closing the main window now shuts
+  down every Python, WSL-backed, and setup subprocess launched by OpenCassava
+  before the app exits.
+- **Graceful close during active work** - app close now stops live
+  transcription, cancels WAV imports, stops calibration preview, finalizes
+  temporary recordings, and completes note publishing before exit.
+- **No warmup worker leaks on quit** - background STT warmup workers are now
+  cancelled or torn down during shutdown instead of being left to best-effort
+  process exit.
+- **Shutdown timeout protection** - if graceful shutdown stalls, OpenCassava
+  logs the issue and force-terminates remaining tracked child processes after
+  the shutdown timeout.
+
+### UI & workflow
+
+- **About page with gem badge** - added a diamond-inspired header action using
+  `gem-badges` that opens a dedicated About view with the app purpose, the
+  installed version, latest release status, and a direct link to the GitHub
+  repository.
+
 ## [0.4.0] — Obsidian vault workflow
 
 ### Obsidian & knowledge base

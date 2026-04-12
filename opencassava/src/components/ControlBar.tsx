@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { GemBadge } from "gem-badges";
 import { WaveformVisualizer } from "./WaveformVisualizer";
 import type { AppSettings } from "../types";
 import { colors, spacing, typography } from "../theme";
@@ -112,6 +113,73 @@ export function ControlBar({
   const micGateLevel =
     micCalibrationRms == null ? null : micCalibrationRms * micThresholdMultiplier;
   const liveBadgeColor = isStopping ? colors.warning : isRunning ? colors.success : colors.textSecondary;
+  const recordGemConfig = isStopping
+    ? {
+        material: "topaz" as const,
+        cut: "round" as const,
+        size: 20,
+        rotation: 0,
+        glow: true,
+        glowIntensity: 0.9,
+        animate: false,
+        renderMode: "auto" as const,
+      }
+    : isRunning
+      ? {
+          material: "ruby" as const,
+          cut: "round" as const,
+          size: 20,
+          rotation: 0,
+          glow: true,
+          glowIntensity: 1.1,
+          animate: true,
+          renderMode: "auto" as const,
+        }
+      : {
+          material: "emerald" as const,
+          cut: "round" as const,
+          size: 20,
+          rotation: 0,
+          glow: true,
+          glowIntensity: 0.95,
+          animate: false,
+          renderMode: "auto" as const,
+        };
+  const recordGemFrameStyle: React.CSSProperties = isStopping
+    ? {
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 28,
+        height: 28,
+        borderRadius: "50%",
+        background: "linear-gradient(145deg, rgba(248, 246, 242, 0.98) 0%, rgba(219, 214, 204, 0.98) 52%, rgba(242, 239, 233, 0.98) 100%)",
+        border: "1px solid rgba(210, 169, 87, 0.34)",
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.78), inset 0 -2px 6px rgba(109, 101, 87, 0.18), 0 6px 14px rgba(0,0,0,0.08)",
+      }
+    : isRunning
+      ? {
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 28,
+          height: 28,
+          borderRadius: "50%",
+          background: "linear-gradient(145deg, rgba(247, 244, 246, 0.98) 0%, rgba(223, 214, 220, 0.98) 52%, rgba(241, 237, 240, 0.98) 100%)",
+          border: "1px solid rgba(203, 109, 126, 0.3)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.8), inset 0 -2px 6px rgba(104, 88, 94, 0.18), 0 6px 14px rgba(0,0,0,0.08)",
+        }
+      : {
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 28,
+          height: 28,
+          borderRadius: "50%",
+          background: "linear-gradient(145deg, rgba(245, 247, 246, 0.98) 0%, rgba(216, 223, 219, 0.98) 52%, rgba(239, 243, 241, 0.98) 100%)",
+          border: "1px solid rgba(93, 178, 132, 0.28)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.82), inset 0 -2px 6px rgba(89, 103, 96, 0.16), 0 6px 14px rgba(0,0,0,0.06)",
+        };
 
   const handleDeviceChange = async (device: string) => {
     setSelectedDevice(device);
@@ -142,18 +210,23 @@ export function ControlBar({
     alignItems: "center",
     gap: spacing[2],
     padding: `${spacing[2]}px ${spacing[3]}px`,
-    background: isStopping ? `${colors.warning}20` : isRunning ? `${colors.error}20` : colors.success,
-    color: isStopping ? colors.warning : isRunning ? colors.error : "#fff",
+    background: isStopping
+      ? `${colors.warning}16`
+      : isRunning
+        ? `${colors.error}16`
+        : `linear-gradient(135deg, ${colors.surface} 0%, ${colors.accentMuted} 100%)`,
+    color: isStopping ? colors.warning : isRunning ? colors.error : colors.accent,
     border: isStopping
       ? `1px solid ${colors.warning}50`
       : isRunning
         ? `1px solid ${colors.error}50`
-        : "none",
+        : `1px solid ${colors.accent}35`,
     borderRadius: 999,
     fontSize: typography.md,
     fontWeight: 700,
     cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.5 : 1,
+    boxShadow: isRunning || isStopping ? "none" : "0 8px 18px rgba(45, 138, 135, 0.08)",
     transition: "all 0.2s",
   };
 
@@ -293,28 +366,27 @@ export function ControlBar({
               {isStopping ? (
                 <>
                   <span
+                    aria-hidden="true"
                     style={{
-                      display: "inline-block",
-                      width: 8,
-                      height: 8,
-                      borderRadius: "50%",
-                      background: colors.warning,
+                      ...recordGemFrameStyle,
+                      flexShrink: 0,
                     }}
-                  />
+                  >
+                    <GemBadge config={recordGemConfig} />
+                  </span>
                   <span>Stopping...</span>
                 </>
               ) : isRunning ? (
                 <>
                   <span
+                    aria-hidden="true"
                     style={{
-                      display: "inline-block",
-                      width: 8,
-                      height: 8,
-                      borderRadius: "50%",
-                      background: colors.error,
-                      animation: "pulse 1.5s ease-in-out infinite",
+                      ...recordGemFrameStyle,
+                      flexShrink: 0,
                     }}
-                  />
+                  >
+                    <GemBadge config={recordGemConfig} />
+                  </span>
                   <span>Stop</span>
                 </>
               ) : (
@@ -322,40 +394,11 @@ export function ControlBar({
                   <span
                     aria-hidden="true"
                     style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      width: 18,
-                      height: 18,
+                      ...recordGemFrameStyle,
+                      flexShrink: 0,
                     }}
                   >
-                    <svg
-                      width="18"
-                      height="18"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      xmlns="http://www.w3.org/2000/svg"
-                    >
-                      <rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor" />
-                      <path
-                        d="M6 11a6 6 0 0 0 12 0"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                      />
-                      <path
-                        d="M12 17v4"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                      />
-                      <path
-                        d="M8 21h8"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                      />
-                    </svg>
+                    <GemBadge config={recordGemConfig} />
                   </span>
                   <span>Record</span>
                 </>

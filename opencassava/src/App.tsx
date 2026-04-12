@@ -21,11 +21,13 @@ import { SettingsView } from "./components/SettingsView";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { TranscriptSearch } from "./components/TranscriptSearch";
 import { ExportMenu } from "./components/ExportMenu";
+import { AboutView } from "./components/AboutView";
+import { HeaderGemButton } from "./components/HeaderGemButton";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { colors, typography, spacing } from "./theme";
 
 type ModelState = "checking" | "missing" | "downloading" | "ready";
-type Tab = "transcript" | "suggestions" | "notes" | "settings";
+type Tab = "transcript" | "suggestions" | "notes" | "settings" | "about";
 type SuggestionCheckEvent = {
   checkedAt: string;
   surfaced: boolean;
@@ -123,6 +125,7 @@ function transcriptionLocaleLabel(locale?: string | null): string {
 
 const LATEST_RELEASE_URL = "https://github.com/romeroej2/OpenCassava/releases/latest";
 const LATEST_RELEASE_API_URL = "https://api.github.com/repos/romeroej2/OpenCassava/releases/latest";
+const REPOSITORY_URL = "https://github.com/romeroej2/OpenCassava";
 
 function normalizeSemver(version: string): number[] {
   const cleaned = version.trim().replace(/^v/i, "").split("-")[0];
@@ -784,6 +787,16 @@ function App() {
 
     return null;
   })();
+  const releaseLabel =
+    releaseCheck.status === "update"
+      ? `Update available: v${releaseCheck.latestVersion}`
+      : releaseCheck.status === "current"
+        ? `Up to date: v${releaseCheck.currentVersion}`
+        : releaseCheck.status === "error"
+          ? "Latest release check unavailable"
+          : releaseCheck.currentVersion
+            ? `Checking latest release for v${releaseCheck.currentVersion}`
+            : "Checking latest release";
 
   if (modelState === "checking") {
     return (
@@ -991,6 +1004,7 @@ function App() {
           ))}
         </div>
         <div style={{ display: "flex", gap: spacing[2], flexWrap: "wrap" }}>
+          <HeaderGemButton isActive={tab === "about"} onClick={() => setTab("about")} />
           <button
             onClick={() => setShowSearch(true)}
             disabled={utterances.length === 0}
@@ -1134,6 +1148,16 @@ function App() {
             sttStatus={sttStatus}
             onSetupStt={handleDownload}
             isSettingUpStt={isSettingUpStt}
+          />
+        )}
+        {tab === "about" && (
+          <AboutView
+            version={releaseCheck.currentVersion}
+            releaseLabel={releaseLabel}
+            repositoryUrl={REPOSITORY_URL}
+            onBack={() => setTab("transcript")}
+            onOpenRelease={() => window.open(LATEST_RELEASE_URL, "_blank", "noopener,noreferrer")}
+            onOpenRepository={() => window.open(REPOSITORY_URL, "_blank", "noopener,noreferrer")}
           />
         )}
         {/* NotesView stays mounted to preserve autoRegen state across tab switches */}
