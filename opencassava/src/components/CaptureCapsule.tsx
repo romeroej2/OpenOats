@@ -84,6 +84,7 @@ export function CaptureCapsule({
   }, [isRunning, isStopping]);
 
   const isBusy = isRunning || isStopping || isImporting;
+  const showTimer = isRunning || isStopping || isImporting || duration > 0;
   const liveBadgeColor = isStopping
     ? colors.warning
     : isRunning
@@ -156,7 +157,7 @@ export function CaptureCapsule({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(0, 1fr) auto auto",
+          gridTemplateColumns: !isBusy ? "minmax(0, 1fr) auto auto auto" : "minmax(0, 1fr) auto auto",
           alignItems: "center",
           gap: spacing[1],
         }}
@@ -198,18 +199,20 @@ export function CaptureCapsule({
             />
             {isStopping ? "Syncing" : isRunning ? "Live" : engineWarming ? "Loading" : "Idle"}
           </span>
-          <span
-            style={{
-              fontSize: typography.xl,
-              fontWeight: 800,
-              color: colors.text,
-              fontFamily: "'Cascadia Code', 'SF Mono', Consolas, monospace",
-              letterSpacing: "0.04em",
-              flexShrink: 0,
-            }}
-          >
-            {formatDuration(isBusy ? duration : 0)}
-          </span>
+          {showTimer && (
+            <span
+              style={{
+                fontSize: typography.xl,
+                fontWeight: 800,
+                color: colors.text,
+                fontFamily: "'Cascadia Code', 'SF Mono', Consolas, monospace",
+                letterSpacing: "0.04em",
+                flexShrink: 0,
+              }}
+            >
+              {formatDuration(duration)}
+            </span>
+          )}
         </div>
 
         <button
@@ -287,27 +290,26 @@ export function CaptureCapsule({
           />
           Save audio
         </label>
+
+        {!isBusy ? (
+          <button type="button" onClick={onImport} disabled={disabled} style={secondaryActionStyle(false)}>
+            Import
+          </button>
+        ) : null}
       </div>
 
       <div
         style={{
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
-          gap: spacing[2],
+          gap: spacing[1],
           flexWrap: "wrap",
         }}
       >
         <span style={{ fontSize: typography.sm, color: colors.textSecondary }}>{segmentsLabel}</span>
-
-        {!isBusy ? (
-          <button type="button" onClick={onImport} disabled={disabled} style={secondaryActionStyle(false)}>
-            Import audio
-          </button>
-        ) : null}
       </div>
 
-      {(isRunning || isStopping || isImporting || engineWarming) && (
+      {(isRunning || isStopping || isImporting) && (
         <div
           style={{
             display: "flex",
