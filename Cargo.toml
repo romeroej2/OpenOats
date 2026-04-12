@@ -7,3 +7,6 @@ resolver = "2"
 
 [workspace.package]
 version = "0.4.0"
+
+[patch.crates-io]
+whisper-rs = { path = ".build/whisper-rs" }
