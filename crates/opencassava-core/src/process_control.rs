@@ -214,36 +214,132 @@ fn terminate_process_tree(pid: u32) -> io::Result<()> {
 
 #[cfg(unix)]
 fn terminate_process_tree(pid: u32) -> io::Result<()> {
-    let pgid = -(pid as i32);
-    let term_status = unsafe { libc::kill(pgid, libc::SIGTERM) };
-    if term_status == -1 {
-        let err = io::Error::last_os_error();
-        if err.kind() != io::ErrorKind::NotFound {
-            return Err(err);
-        }
-        return Ok(());
-    }
+    let pid = pid as i32;
+    signal_process_group_or_fallback(pid, libc::SIGTERM)?;
 
     thread::sleep(Duration::from_millis(250));
 
-    let kill_status = unsafe { libc::kill(pgid, libc::SIGKILL) };
-    if kill_status == -1 {
-        let err = io::Error::last_os_error();
-        if err.kind() != io::ErrorKind::NotFound {
-            return Err(err);
+    signal_process_group_or_fallback(pid, libc::SIGKILL)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn signal_process_group_or_fallback(pid: i32, signal: i32) -> io::Result<()> {
+    let group_status = unsafe { libc::kill(-pid, signal) };
+    if group_status == 0 {
+        return Ok(());
+    }
+
+    let err = io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::ESRCH) => Ok(()),
+        Some(libc::EPERM) => terminate_processes_individually(pid, signal),
+        _ => Err(err),
+    }
+}
+
+#[cfg(unix)]
+fn terminate_processes_individually(root_pid: i32, signal: i32) -> io::Result<()> {
+    let mut targets = process_descendants(root_pid)?;
+    targets.push(root_pid);
+
+    let mut last_error = None;
+    let mut signaled_any = false;
+    for target in targets {
+        match signal_process(target, signal) {
+            Ok(true) => signaled_any = true,
+            Ok(false) => {}
+            Err(err) => last_error = Some(err),
         }
     }
-    Ok(())
+
+    if signaled_any || last_error.is_none() {
+        Ok(())
+    } else {
+        Err(last_error.unwrap())
+    }
+}
+
+#[cfg(unix)]
+fn signal_process(pid: i32, signal: i32) -> io::Result<bool> {
+    let status = unsafe { libc::kill(pid, signal) };
+    if status == 0 {
+        return Ok(true);
+    }
+
+    let err = io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        _ => Err(err),
+    }
+}
+
+#[cfg(unix)]
+fn process_descendants(root_pid: i32) -> io::Result<Vec<i32>> {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "pid=", "-o", "ppid="])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()?;
+
+    if !output.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("ps exited with status {}", output.status),
+        ));
+    }
+
+    let snapshot = String::from_utf8_lossy(&output.stdout);
+    Ok(collect_descendants(
+        root_pid,
+        &parse_process_snapshot(snapshot.as_ref()),
+    ))
+}
+
+#[cfg(unix)]
+fn parse_process_snapshot(snapshot: &str) -> Vec<(i32, i32)> {
+    snapshot
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse().ok()?;
+            let ppid = fields.next()?.parse().ok()?;
+            Some((pid, ppid))
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn collect_descendants(root_pid: i32, processes: &[(i32, i32)]) -> Vec<i32> {
+    fn visit(root_pid: i32, processes: &[(i32, i32)], descendants: &mut Vec<i32>) {
+        for &(pid, ppid) in processes {
+            if ppid != root_pid {
+                continue;
+            }
+            visit(pid, processes, descendants);
+            descendants.push(pid);
+        }
+    }
+
+    let mut descendants = Vec::new();
+    visit(root_pid, processes, &mut descendants);
+    descendants
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, MutexGuard};
 
     fn test_lock() -> &'static Mutex<()> {
         static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         TEST_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn test_guard() -> MutexGuard<'static, ()> {
+        test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn spawn_sleep_process() -> ManagedChild {
@@ -266,7 +362,7 @@ mod tests {
 
     #[test]
     fn terminate_tree_stops_child_process() {
-        let _guard = test_lock().lock().unwrap();
+        let _guard = test_guard();
         process_registry().clear_for_tests();
         let mut child = spawn_sleep_process();
         assert!(process_registry().tracked_count() >= 1);
@@ -280,7 +376,7 @@ mod tests {
 
     #[test]
     fn terminate_all_kills_registered_processes() {
-        let _guard = test_lock().lock().unwrap();
+        let _guard = test_guard();
         process_registry().clear_for_tests();
         let mut first = spawn_sleep_process();
         let mut second = spawn_sleep_process();
@@ -297,5 +393,19 @@ mod tests {
             .unwrap()
             .is_some());
         assert_eq!(process_registry().tracked_count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_process_snapshot_skips_invalid_rows() {
+        let snapshot = " 101 1\ninvalid\n 202 not-a-number\n303 101 extra\n";
+        assert_eq!(parse_process_snapshot(snapshot), vec![(101, 1), (303, 101)]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_descendants_returns_nested_children() {
+        let processes = vec![(10, 1), (11, 10), (12, 11), (13, 10), (20, 2)];
+        assert_eq!(collect_descendants(10, &processes), vec![12, 11, 13]);
     }
 }
