@@ -47,7 +47,8 @@ impl ObsidianVaultConfig {
 
         PublishedObsidianPaths {
             note_path: note_dir.join(format!("{session_id}.md")),
-            transcript_path: transcript_dir.join(format!("{session_id}.md")),
+            transcript_path: transcript_dir
+                .join(format!("{}.md", transcript_file_stem(session_id))),
         }
     }
 
@@ -90,6 +91,16 @@ pub fn normalize_relative_folder(input: &str) -> PathBuf {
         path.push(trimmed);
     }
     path
+}
+
+fn transcript_file_stem(session_id: &str) -> String {
+    if let Some(suffix) = session_id.strip_prefix("session_") {
+        format!("transcript_{suffix}")
+    } else if session_id.starts_with("transcript_") {
+        session_id.to_string()
+    } else {
+        format!("transcript_{session_id}")
+    }
 }
 
 fn build_session_note_markdown(
@@ -242,8 +253,24 @@ mod tests {
             "OpenCassava/Meetings/2026/04/session_2026-04-11_09-15-00.md"
         )));
         assert!(first.transcript_path.ends_with(Path::new(
-            "OpenCassava/Transcripts/2026/04/session_2026-04-11_09-15-00.md"
+            "OpenCassava/Transcripts/2026/04/transcript_2026-04-11_09-15-00.md"
         )));
+    }
+
+    #[test]
+    fn transcript_file_stem_renames_session_prefix() {
+        assert_eq!(
+            super::transcript_file_stem("session_2026-04-11_09-15-00"),
+            "transcript_2026-04-11_09-15-00"
+        );
+        assert_eq!(
+            super::transcript_file_stem("transcript_2026-04-11_09-15-00"),
+            "transcript_2026-04-11_09-15-00"
+        );
+        assert_eq!(
+            super::transcript_file_stem("ad-hoc-import"),
+            "transcript_ad-hoc-import"
+        );
     }
 
     #[test]
@@ -273,7 +300,7 @@ mod tests {
         assert!(note_text.contains("template_name: \"Summary\""));
         assert!(note_text.contains("tags: [opencassava, meeting]"));
         assert!(note_text.contains(
-            "Transcript: [[OpenCassava/Transcripts/2026/04/session_2026-04-11_09-15-00|Transcript]]"
+            "Transcript: [[OpenCassava/Transcripts/2026/04/transcript_2026-04-11_09-15-00|Transcript]]"
         ));
         assert!(note_text.contains("## Summary"));
 
