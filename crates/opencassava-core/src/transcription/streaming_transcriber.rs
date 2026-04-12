@@ -6,6 +6,8 @@ use std::sync::{atomic::AtomicBool, Arc};
 pub type OnFinal = Box<dyn Fn(String, Option<String>) + Send + 'static>;
 pub type OnVolatile = Box<dyn Fn(String) + Send + 'static>;
 pub type OnProgress = Arc<dyn Fn(SegmentProgress) + Send + Sync + 'static>;
+pub type OnParakeetWorkerIdle =
+    Box<dyn Fn(crate::transcription::parakeet::ParakeetWorker) + Send + 'static>;
 
 #[derive(Clone, Copy)]
 pub enum SegmentProgress {
@@ -32,6 +34,7 @@ pub struct StreamingTranscriber {
     stop_signal: Option<Arc<AtomicBool>>,
     cancel_on_stop: bool,
     parakeet_worker: Option<crate::transcription::parakeet::ParakeetWorker>,
+    parakeet_worker_idle: Option<OnParakeetWorkerIdle>,
     omni_asr_worker: Option<crate::transcription::omni_asr::OmniAsrWorker>,
     cohere_transcribe_worker:
         Option<crate::transcription::cohere_transcribe::CohereTranscribeWorker>,
@@ -50,6 +53,7 @@ impl StreamingTranscriber {
             stop_signal: None,
             cancel_on_stop: false,
             parakeet_worker: None,
+            parakeet_worker_idle: None,
             omni_asr_worker: None,
             cohere_transcribe_worker: None,
             diarization_enabled: false,
@@ -68,6 +72,7 @@ impl StreamingTranscriber {
             stop_signal: None,
             cancel_on_stop: false,
             parakeet_worker: None,
+            parakeet_worker_idle: None,
             omni_asr_worker: None,
             cohere_transcribe_worker: None,
             diarization_enabled: false,
@@ -81,6 +86,11 @@ impl StreamingTranscriber {
         worker: crate::transcription::parakeet::ParakeetWorker,
     ) -> Self {
         self.parakeet_worker = Some(worker);
+        self
+    }
+
+    pub fn with_parakeet_worker_idle(mut self, on_idle: OnParakeetWorkerIdle) -> Self {
+        self.parakeet_worker_idle = Some(on_idle);
         self
     }
 
@@ -148,6 +158,7 @@ impl StreamingTranscriber {
         let stop_signal = self.stop_signal;
         let cancel_on_stop = self.cancel_on_stop;
         let prewarmed_parakeet = self.parakeet_worker;
+        let on_parakeet_worker_idle = self.parakeet_worker_idle;
         let prewarmed_omni_asr = self.omni_asr_worker;
         let prewarmed_cohere = self.cohere_transcribe_worker;
 
@@ -308,6 +319,14 @@ impl StreamingTranscriber {
                                     }
                                     Err(e) => log::error!("parakeet transcribe error: {e}"),
                                 }
+                            }
+                            let worker_is_healthy = worker.health().is_ok();
+                            if worker_is_healthy {
+                                if let Some(on_idle) = on_parakeet_worker_idle {
+                                    on_idle(worker);
+                                }
+                            } else {
+                                log::warn!("[parakeet] worker unhealthy after session; dropping");
                             }
                         }
                         Err(e) => log::error!("Failed to launch parakeet worker: {e}"),

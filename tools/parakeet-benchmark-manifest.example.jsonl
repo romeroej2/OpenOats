@@ -1,0 +1,4 @@
+{"audioFilepath":"C:/path/to/ami-sample.wav","referenceText":"hello everyone thanks for joining today","corpus":"ami","language":"en"}
+{"audioFilepath":"C:/path/to/earnings22-sample.wav","referenceText":"we are pleased with the quarter and the margin expansion","corpus":"earnings22","language":"en"}
+{"audioFilepath":"C:/path/to/tedlium-sample.wav","referenceText":"technology is changing the way we learn and work","corpus":"tedlium","language":"en"}
+{"audioFilepath":"C:/path/to/fleurs-es-sample.wav","referenceText":"hola a todos gracias por venir","corpus":"fleurs-es","language":"es"}

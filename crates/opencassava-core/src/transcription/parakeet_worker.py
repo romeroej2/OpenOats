@@ -15,15 +15,22 @@ warnings.filterwarnings(
 
 
 MODELS = {}
-SPEAKER_ANCHORS = {}        # speaker_id (str) → mean embedding (np.ndarray)
-SPEAKER_COUNTER = 0         # next speaker index
-TITANET_MODEL = None
+SPEAKER_ANCHORS = {}
+SPEAKER_COUNTER = 0
+TITANET_MODELS = {}
 COSINE_THRESHOLD = 0.5
 MIN_SPEAKER_ID_SAMPLES = 16_000  # 1.0 s at 16 kHz
 
 
 def model_key(model_name: str, device: str) -> str:
     return f"{model_name}::{device}"
+
+
+def resolve_device(payload, default="cpu"):
+    device = (payload.get("resolved_device") or payload.get("device") or default or "cpu").strip()
+    if not device or device.lower() == "auto":
+        return "cpu"
+    return device.lower()
 
 
 def load_model(model_name: str, device: str):
@@ -39,6 +46,7 @@ def load_model(model_name: str, device: str):
     if device and device not in ("auto", "cpu"):
         try:
             import torch
+
             model = model.to(torch.device(device))
         except Exception:
             pass
@@ -48,21 +56,84 @@ def load_model(model_name: str, device: str):
 
 
 def cosine_similarity(a, b):
-    import numpy as np
-    denom = (np.linalg.norm(a) * np.linalg.norm(b))
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
     if denom == 0:
         return 0.0
     return float(np.dot(a, b) / denom)
 
 
-def load_titanet():
-    global TITANET_MODEL
-    if TITANET_MODEL is not None:
-        return TITANET_MODEL
+def load_titanet(device: str):
+    key = device or "cpu"
+    if key in TITANET_MODELS:
+        return TITANET_MODELS[key]
+
     import nemo.collections.asr as nemo_asr
-    TITANET_MODEL = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained("nvidia/speakerverification_en_titanet_large")
-    TITANET_MODEL.eval()
-    return TITANET_MODEL
+
+    model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
+        "nvidia/speakerverification_en_titanet_large"
+    )
+    model.eval()
+    if device and device not in ("auto", "cpu"):
+        try:
+            import torch
+
+            model = model.to(torch.device(device))
+        except Exception:
+            pass
+
+    TITANET_MODELS[key] = model
+    return model
+
+
+def build_live_transcribe_kwargs(payload):
+    return {
+        "use_lhotse": bool(payload.get("use_lhotse", False)),
+        "batch_size": int(payload.get("batch_size", 1)),
+        "verbose": bool(payload.get("verbose", False)),
+        "num_workers": 0,
+    }
+
+
+def transcribe_in_memory(model, samples, language, live_kwargs):
+    if language:
+        try:
+            from nemo.collections.asr.parts.utils.transcribe_utils import TranscriptionConfig
+
+            cfg = TranscriptionConfig(source_lang=language, target_lang=language, pnc="yes")
+            for name, value in live_kwargs.items():
+                if hasattr(cfg, name):
+                    setattr(cfg, name, value)
+            return model.transcribe(samples, override_config=cfg)
+        except Exception:
+            pass
+
+    try:
+        from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
+
+        return model.transcribe(samples, override_config=TranscribeConfig(**live_kwargs))
+    except Exception:
+        return model.transcribe(samples, **live_kwargs)
+
+
+def transcribe_with_tempfile(model, samples, language):
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            tmp_path = temp_file.name
+        sf.write(tmp_path, samples, 16000)
+
+        if language:
+            try:
+                from nemo.collections.asr.parts.utils.transcribe_utils import TranscriptionConfig
+
+                cfg = TranscriptionConfig(source_lang=language, target_lang=language, pnc="yes")
+                return model.transcribe([tmp_path], override_config=cfg)
+            except Exception:
+                return model.transcribe([tmp_path])
+        return model.transcribe([tmp_path])
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def emit(payload):
@@ -76,14 +147,12 @@ def handle_health():
 
 def handle_ensure_model(payload):
     model_name = payload["model"]
-    device = payload.get("device", "auto")
+    device = resolve_device(payload)
     load_model(model_name, device)
     if payload.get("diarization_enabled", False):
         try:
-            load_titanet()
+            load_titanet(device)
         except Exception as exc:
-            # Log but don't fail — ASR still works without TitaNet
-            import sys
             print(f"[parakeet] Warning: TitaNet pre-load failed: {exc}", file=sys.stderr)
     emit({"ok": True, "result": {"model": model_name}})
 
@@ -97,23 +166,23 @@ def handle_clear_speakers():
 
 def handle_speaker_id(payload):
     global SPEAKER_ANCHORS, SPEAKER_COUNTER
-    import numpy as np
 
     samples = np.asarray(payload.get("samples", []), dtype=np.float32)
     if len(samples) < MIN_SPEAKER_ID_SAMPLES:
         emit({"ok": True, "result": {"speaker_id": None}})
         return
 
+    device = resolve_device(payload)
     try:
-        model = load_titanet()
+        model = load_titanet(device)
     except Exception as exc:
         emit({"ok": False, "error": f"TitaNet load failed: {exc}"})
         return
 
     tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            tmp_path = f.name
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            tmp_path = temp_file.name
         sf.write(tmp_path, samples, 16000)
         embedding = model.get_embedding(tmp_path)
         if hasattr(embedding, "cpu"):
@@ -126,7 +195,6 @@ def handle_speaker_id(payload):
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
-    # Match against existing anchors
     best_id = None
     best_score = -1.0
     for sid, anchor in SPEAKER_ANCHORS.items():
@@ -136,7 +204,6 @@ def handle_speaker_id(payload):
             best_id = sid
 
     if best_id is not None and best_score >= COSINE_THRESHOLD:
-        # Update anchor with exponential moving average
         SPEAKER_ANCHORS[best_id] = 0.9 * SPEAKER_ANCHORS[best_id] + 0.1 * embedding
         emit({"ok": True, "result": {"speaker_id": best_id}})
     else:
@@ -148,35 +215,28 @@ def handle_speaker_id(payload):
 
 def handle_transcribe(payload):
     model_name = payload["model"]
-    device = payload.get("device", "auto")
+    device = resolve_device(payload)
     language = payload.get("language", "")
-    samples = np.asarray(payload.get("samples", []), dtype=np.float32)
+    samples = np.asarray(payload.get("samples", []), dtype=np.float32).flatten()
 
     model = load_model(model_name, device)
-
-    tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            tmp_path = f.name
-        sf.write(tmp_path, samples, 16000)
+        transcriptions = transcribe_in_memory(
+            model,
+            samples,
+            language,
+            build_live_transcribe_kwargs(payload),
+        )
+    except Exception as exc:
+        print(
+            f"[parakeet] Warning: in-memory transcription failed, falling back to temp file: {exc}",
+            file=sys.stderr,
+        )
+        transcriptions = transcribe_with_tempfile(model, samples, language)
 
-        if language:
-            try:
-                from nemo.collections.asr.parts.utils.transcribe_utils import TranscriptionConfig
-                cfg = TranscriptionConfig(source_lang=language, target_lang=language, pnc="yes")
-                transcriptions = model.transcribe([tmp_path], override_config=cfg)
-            except Exception:
-                # Model doesn't support language override (e.g. English-only RNNT) — fall back.
-                transcriptions = model.transcribe([tmp_path])
-        else:
-            transcriptions = model.transcribe([tmp_path])
-
-        raw = transcriptions[0] if transcriptions else ""
-        text = raw.text if hasattr(raw, "text") else str(raw)
-        emit({"ok": True, "result": {"text": text.strip()}})
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    raw = transcriptions[0] if transcriptions else ""
+    text = raw.text if hasattr(raw, "text") else str(raw)
+    emit({"ok": True, "result": {"text": text.strip()}})
 
 
 def main():

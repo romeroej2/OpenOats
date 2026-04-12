@@ -27,6 +27,37 @@ pub struct ParakeetConfig {
     pub diarization_enabled: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ParakeetExecutionBackend {
+    Cpu,
+    ExplicitDevice,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParakeetExecutionTarget {
+    pub requested_device: String,
+    pub resolved_device: String,
+    pub backend: ParakeetExecutionBackend,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParakeetTranscribeOptions {
+    pub use_lhotse: bool,
+    pub batch_size: usize,
+    pub verbose: bool,
+}
+
+impl ParakeetTranscribeOptions {
+    pub fn live() -> Self {
+        Self {
+            use_lhotse: false,
+            batch_size: 1,
+            verbose: false,
+        }
+    }
+}
+
 impl ParakeetConfig {
     pub fn python_path(&self) -> PathBuf {
         if cfg!(windows) {
@@ -55,6 +86,45 @@ impl ParakeetConfig {
         self.runtime_root.join("setup.lock")
     }
 
+    pub fn execution_target(&self) -> ParakeetExecutionTarget {
+        let requested_device = self.device.trim().to_string();
+        let resolved_device =
+            if requested_device.is_empty() || requested_device.eq_ignore_ascii_case("auto") {
+                "cpu".to_string()
+            } else {
+                requested_device.to_ascii_lowercase()
+            };
+        let backend = if resolved_device == "cpu" {
+            ParakeetExecutionBackend::Cpu
+        } else {
+            ParakeetExecutionBackend::ExplicitDevice
+        };
+        ParakeetExecutionTarget {
+            requested_device,
+            resolved_device,
+            backend,
+        }
+    }
+
+    pub fn live_transcribe_options(&self) -> ParakeetTranscribeOptions {
+        ParakeetTranscribeOptions::live()
+    }
+
+    pub fn runtime_cache_key(&self) -> String {
+        let language = self.language.trim().to_ascii_lowercase();
+        let normalized_language = if language.is_empty() {
+            "auto"
+        } else {
+            language.as_str()
+        };
+        format!(
+            "{}::{}::{}",
+            self.model,
+            self.execution_target().resolved_device,
+            normalized_language
+        )
+    }
+
     pub fn ensure_files(&self) -> Result<(), String> {
         fs::create_dir_all(&self.runtime_root).map_err(|e| e.to_string())?;
         fs::create_dir_all(&self.models_dir).map_err(|e| e.to_string())?;
@@ -70,6 +140,40 @@ impl ParakeetConfig {
                 .map(|contents| contents == REQUIREMENTS)
                 .unwrap_or(false)
     }
+}
+
+fn normalized_language(language: &str) -> Option<String> {
+    let lang = language.trim();
+    if lang.is_empty() || lang.eq_ignore_ascii_case("auto") {
+        None
+    } else {
+        Some(lang.split('-').next().unwrap_or(lang).to_ascii_lowercase())
+    }
+}
+
+fn build_transcribe_request(
+    config: &ParakeetConfig,
+    samples: &[f32],
+    language_override: Option<&str>,
+) -> serde_json::Value {
+    let execution = config.execution_target();
+    let options = config.live_transcribe_options();
+    let mut payload = json!({
+        "command": "transcribe",
+        "model": config.model.clone(),
+        "device": config.device.clone(),
+        "resolved_device": execution.resolved_device,
+        "execution_backend": execution.backend,
+        "samples": samples,
+        "use_lhotse": options.use_lhotse,
+        "batch_size": options.batch_size,
+        "verbose": options.verbose,
+    });
+    let requested_language = language_override.unwrap_or(&config.language);
+    if let Some(language) = normalized_language(requested_language) {
+        payload["language"] = serde_json::Value::String(language);
+    }
+    payload
 }
 
 pub fn install_runtime<F>(config: &ParakeetConfig, on_line: F) -> Result<(), String>
@@ -171,8 +275,8 @@ impl ParakeetWorker {
         command
             .arg("-u")
             .arg(&config.worker_script_path)
-            .env("HF_HUB_DISABLE_PROGRESS_BARS", "0")
-            .env("TQDM_FORCE", "1")
+            .env("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+            .env("TQDM_DISABLE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -205,11 +309,18 @@ impl ParakeetWorker {
         Ok(())
     }
 
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     pub fn ensure_model(&mut self, diarization_enabled: bool) -> Result<(), String> {
+        let execution = self.config.execution_target();
         self.send_request(json!({
             "command": "ensure_model",
             "model": self.config.model.clone(),
             "device": self.config.device.clone(),
+            "resolved_device": execution.resolved_device,
+            "execution_backend": execution.backend,
             "diarization_enabled": diarization_enabled,
         }))?;
         Ok(())
@@ -223,22 +334,32 @@ impl ParakeetWorker {
     /// Returns the stable speaker ID for this audio segment, or None if the segment
     /// was too short to embed reliably. Errors if the worker fails.
     pub fn speaker_id(&mut self, samples: &[f32]) -> Result<Option<String>, String> {
+        let execution = self.config.execution_target();
         let response = self.send_request(json!({
             "command": "speaker_id",
             "samples": samples,
             "model": self.config.model.clone(),
             "device": self.config.device.clone(),
+            "resolved_device": execution.resolved_device,
+            "execution_backend": execution.backend,
         }))?;
         // Python returns {"speaker_id": "speaker_N"} or {"speaker_id": null}
         Ok(response["speaker_id"].as_str().map(|s| s.to_string()))
     }
 
     pub fn transcribe(&mut self, samples: &[f32]) -> Result<String, String> {
+        let execution = self.config.execution_target();
+        let options = self.config.live_transcribe_options();
         let mut payload = json!({
             "command": "transcribe",
             "model": self.config.model.clone(),
             "device": self.config.device.clone(),
+            "resolved_device": execution.resolved_device,
+            "execution_backend": execution.backend,
             "samples": samples,
+            "use_lhotse": options.use_lhotse,
+            "batch_size": options.batch_size,
+            "verbose": options.verbose,
         });
         let lang = self.config.language.trim();
         if !lang.is_empty() && lang != "auto" {
@@ -247,6 +368,16 @@ impl ParakeetWorker {
             payload["language"] = serde_json::Value::String(lang_code.to_string());
         }
         let response = self.send_request(payload)?;
+        Ok(response["text"].as_str().unwrap_or_default().to_string())
+    }
+
+    pub fn transcribe_with_language(
+        &mut self,
+        samples: &[f32],
+        language: Option<&str>,
+    ) -> Result<String, String> {
+        let response =
+            self.send_request(build_transcribe_request(&self.config, samples, language))?;
         Ok(response["text"].as_str().unwrap_or_default().to_string())
     }
 
@@ -603,12 +734,105 @@ pub fn model_storage_exists(config: &ParakeetConfig) -> bool {
 mod tests {
     use super::*;
 
+    fn test_config(language: &str, device: &str) -> ParakeetConfig {
+        ParakeetConfig {
+            runtime_root: PathBuf::from("runtime"),
+            worker_script_path: PathBuf::from("worker.py"),
+            requirements_path: PathBuf::from("requirements.txt"),
+            venv_path: PathBuf::from("venv"),
+            models_dir: PathBuf::from("models"),
+            model: "nvidia/parakeet-tdt-0.6b-v3".into(),
+            device: device.into(),
+            language: language.into(),
+            diarization_enabled: false,
+        }
+    }
+
     #[test]
     fn speaker_id_method_exists() {
         // Compile-time guard: won't compile until speaker_id is added to ParakeetWorker
         // with the correct signature. The test itself is a no-op at runtime.
         let _: fn(&mut ParakeetWorker, &[f32]) -> Result<Option<String>, String> =
             ParakeetWorker::speaker_id;
+    }
+
+    #[test]
+    fn transcribe_with_language_method_exists() {
+        let _: fn(&mut ParakeetWorker, &[f32], Option<&str>) -> Result<String, String> =
+            ParakeetWorker::transcribe_with_language;
+    }
+
+    #[test]
+    fn auto_device_resolves_to_cpu_backend() {
+        let config = test_config("", "auto");
+        assert_eq!(
+            config.execution_target(),
+            ParakeetExecutionTarget {
+                requested_device: "auto".into(),
+                resolved_device: "cpu".into(),
+                backend: ParakeetExecutionBackend::Cpu,
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_device_keeps_future_backend_hook() {
+        let mut config = test_config("es-ES", "cuda");
+        config.diarization_enabled = true;
+        assert_eq!(
+            config.execution_target(),
+            ParakeetExecutionTarget {
+                requested_device: "cuda".into(),
+                resolved_device: "cuda".into(),
+                backend: ParakeetExecutionBackend::ExplicitDevice,
+            }
+        );
+        assert_eq!(
+            config.runtime_cache_key(),
+            "nvidia/parakeet-tdt-0.6b-v3::cuda::es-es"
+        );
+    }
+
+    #[test]
+    fn live_transcribe_options_are_cpu_friendly() {
+        assert_eq!(
+            ParakeetTranscribeOptions::live(),
+            ParakeetTranscribeOptions {
+                use_lhotse: false,
+                batch_size: 1,
+                verbose: false,
+            }
+        );
+    }
+
+    #[test]
+    fn normalized_language_drops_auto_and_region_suffix() {
+        assert_eq!(normalized_language(""), None);
+        assert_eq!(normalized_language("auto"), None);
+        assert_eq!(normalized_language(" ES-es "), Some("es".into()));
+    }
+
+    #[test]
+    fn in_memory_transcribe_payload_uses_live_cpu_defaults() {
+        let config = test_config("fr-CA", "auto");
+        let payload = build_transcribe_request(&config, &[0.1, -0.2, 0.3], None);
+
+        assert_eq!(payload["command"], "transcribe");
+        assert!(payload.get("samples").is_some());
+        assert!(payload.get("audio_path").is_none());
+        assert_eq!(payload["use_lhotse"], false);
+        assert_eq!(payload["batch_size"], 1);
+        assert_eq!(payload["verbose"], false);
+        assert_eq!(payload["resolved_device"], "cpu");
+        assert_eq!(payload["execution_backend"], serde_json::json!("cpu"));
+        assert_eq!(payload["language"], "fr");
+    }
+
+    #[test]
+    fn language_override_wins_in_transcribe_payload() {
+        let config = test_config("fr-CA", "cpu");
+        let payload = build_transcribe_request(&config, &[0.1], Some("de-DE"));
+        assert_eq!(payload["language"], "de");
     }
 
     #[test]
