@@ -30,6 +30,10 @@ and the next one.
   `gem-badges` that opens a dedicated About view with the app purpose, the
   installed version, latest release status, and a direct link to the GitHub
   repository.
+- **Push-to-talk mic mode** - added a persisted mic capture mode with `Auto`
+  and `Push to talk` options in **Settings -> General -> Audio & Capture**.
+  When push-to-talk is enabled, microphone audio is only forwarded to STT while
+  the live **Hold to talk** control or the configured in-app shortcut is held.
 
 ## [0.4.0] — Obsidian vault workflow
 

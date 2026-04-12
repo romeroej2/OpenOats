@@ -44,6 +44,7 @@ Found a bug or have an idea? [Open an issue](https://github.com/romeroej2/OpenCa
 - **Invisible to the other side** - the overlay window is hidden from screen sharing by default, so no one knows you're using it.
 - **Live transcript + instant search** - see both sides of the conversation in real time, search while people are speaking, and copy/export when needed.
 - **Smarter call capture** - built-in echo cancellation suppresses speaker bleed into your mic, and a configurable mic voice threshold reduces low-level noise.
+- **Push-to-talk mic mode** - switch mic capture between always-on and push-to-talk, then hold the live trigger button or your chosen shortcut to send mic audio to transcription only while you are speaking.
 - **Auto summaries while you talk** - generate periodic summaries (30 seconds to 10 minutes), review summary history, and regenerate on demand.
 - **Contextual talking points** - when the conversation hits a key moment, OpenCassava retrieves related knowledge and suggests useful responses.
 
@@ -92,10 +93,11 @@ OpenCassava is designed for high-pressure conversations (interviews, sales calls
 
 1. You start a call and click **Start Session**.
 2. OpenCassava captures your microphone and (on Windows & Mac) system audio - the other side's voice is captured as "them".
-3. As important moments happen, it searches your selected Obsidian knowledge folders (or legacy knowledge base folder) and surfaces relevant talking points.
-4. During or after the call, use summaries and note templates to turn raw dialogue into structured documentation.
-5. When the session ends, OpenCassava can publish a canonical note into Obsidian and reindex it for future suggestions.
-6. Review, search, and export session artifacts from Session History.
+3. If **Settings -> General -> Audio & Capture -> Mic Capture Mode** is set to **Push to talk**, the mic is only sent to speech-to-text while you hold the live **Hold to talk** button or your configured in-app shortcut.
+4. As important moments happen, it searches your selected Obsidian knowledge folders (or legacy knowledge base folder) and surfaces relevant talking points.
+5. During or after the call, use summaries and note templates to turn raw dialogue into structured documentation.
+6. When the session ends, OpenCassava can publish a canonical note into Obsidian and reindex it for future suggestions.
+7. Review, search, and export session artifacts from Session History.
 
 ---
 
@@ -172,7 +174,8 @@ The app will detect missing prerequisites automatically and show guided setup st
 1. Open the app and grant microphone permissions (and system audio recording on Windows).
 2. Open Settings (`Cmd+,` or `Ctrl+,`) and configure your chosen cloud or local providers.
 3. In **Settings -> General**, either connect a local Obsidian vault or point OpenCassava at a legacy folder of `.md` or `.txt` files.
-4. Click **Start Session** to go live. *(The first run downloads the required local Whisper speech model.)*
+4. Optional: in **Settings -> General -> Audio & Capture**, switch **Mic Capture Mode** to **Push to talk** and record a shortcut if you only want your mic forwarded while a trigger is held.
+5. Click **Start Session** to go live. If push-to-talk is enabled, use the live **Hold to talk** control in the capture panel or your configured shortcut while the app window is focused. *(The first run downloads the required local Whisper speech model.)*
 
 ---
 
