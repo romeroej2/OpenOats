@@ -157,6 +157,7 @@ function App() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [audioLevelRaw, setAudioLevelRaw] = useState(0);
   const [audioLevelThem, setAudioLevelThem] = useState(0);
+  const [micTransmitActive, setMicTransmitActive] = useState(true);
   const [isSettingUpStt, setIsSettingUpStt] = useState(false);
   const [sttSetupMessage, setSttSetupMessage] = useState("");
   const [sttSetupStage, setSttSetupStage] = useState("");
@@ -175,6 +176,12 @@ function App() {
   });
   const [saveRecording, setSaveRecording] = useState(false);
   const [recordingFiles, setRecordingFiles] = useState<{ micPath: string; sysPath: string } | null>(null);
+  const [pushToTalkButtonHeld, setPushToTalkButtonHeld] = useState(false);
+  const [pushToTalkShortcutHeld, setPushToTalkShortcutHeld] = useState(false);
+
+  const isPushToTalkMode = settings?.micCaptureMode === "push-to-talk";
+  const desiredMicTransmitActive =
+    !isPushToTalkMode || pushToTalkButtonHeld || pushToTalkShortcutHeld;
 
   const handleRenameParticipant = useCallback((key: string, newName: string) => {
     setSpeakerLabels((prev) => ({ ...prev, [key]: newName }));
@@ -298,6 +305,24 @@ function App() {
     }
   }, []);
 
+  useEffect(() => {
+    if (isRunning && isPushToTalkMode) {
+      return;
+    }
+
+    setPushToTalkButtonHeld(false);
+    setPushToTalkShortcutHeld(false);
+  }, [isPushToTalkMode, isRunning]);
+
+  useEffect(() => {
+    if (!settings) {
+      return;
+    }
+
+    setMicTransmitActive(desiredMicTransmitActive);
+    invoke("set_mic_transmit_active", { active: desiredMicTransmitActive }).catch(console.error);
+  }, [desiredMicTransmitActive, settings]);
+
   // Keyboard shortcuts
   useKeyboardShortcuts({
     onStartStop: () => {
@@ -326,6 +351,10 @@ function App() {
     },
     onToggleSidebar: () =>
       setActiveDrawer((previous) => (previous === "history" ? null : "history")),
+    pushToTalkEnabled: isRunning && isPushToTalkMode,
+    pushToTalkShortcut: settings?.pushToTalkHotkey ?? "Space",
+    onPushToTalkPress: () => setPushToTalkShortcutHeld(true),
+    onPushToTalkRelease: () => setPushToTalkShortcutHeld(false),
   });
 
   // Check STT readiness whenever settings change
@@ -436,10 +465,11 @@ function App() {
         setLastSuggestionCheckSurfaced(e.payload.surfaced);
       }),
 
-      listen<{ micInput: number; micPostGate: number; them: number }>("audio-level", (e) => {
+      listen<{ micInput: number; micPostGate: number; them: number; micTransmitActive: boolean }>("audio-level", (e) => {
         setAudioLevelRaw(e.payload.micInput);
         setAudioLevel(e.payload.micPostGate);
         setAudioLevelThem(e.payload.them);
+        setMicTransmitActive(e.payload.micTransmitActive);
       }),
 
       listen<TranscriptionProgress>("transcription-progress", (e) => {
@@ -890,6 +920,11 @@ function App() {
           audioLevelRaw={audioLevelRaw}
           audioLevel={audioLevel}
           audioLevelThem={audioLevelThem}
+          micCaptureMode={settings?.micCaptureMode ?? "auto"}
+          pushToTalkHotkey={settings?.pushToTalkHotkey ?? "Space"}
+          micTransmitActive={micTransmitActive}
+          onPushToTalkPress={() => setPushToTalkButtonHeld(true)}
+          onPushToTalkRelease={() => setPushToTalkButtonHeld(false)}
           saveRecording={saveRecording}
           onSaveRecordingChange={setSaveRecording}
           micCalibrationRms={settings?.micCalibrationRms ?? null}

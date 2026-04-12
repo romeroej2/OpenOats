@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { normalizeShortcut, shortcutFromKeyboardEvent } from "../hotkeys";
 import type { ApiKeys, AppSettings, MeetingTemplate, SttStatus } from "../types";
 import { colors, typography, spacing } from "../theme";
 import { WaveformVisualizer } from "./WaveformVisualizer";
@@ -192,6 +193,7 @@ export function SettingsView({
   const [micDevices, setMicDevices] = useState<string[]>([]);
   const [systemAudioDevices, setSystemAudioDevices] = useState<string[]>([]);
   const [huggingFaceTokenDraft, setHuggingFaceTokenDraft] = useState("");
+  const [isRecordingPushToTalkHotkey, setIsRecordingPushToTalkHotkey] = useState(false);
   // Prerequisite check state
   const [wsl2Status, setWsl2Status] = useState<{ ok: boolean; message: string } | null>(null);
   const [pythonStatus, setPythonStatus] = useState<{ ok: boolean; message: string } | null>(null);
@@ -332,6 +334,14 @@ export function SettingsView({
   }, [initialSettings]);
 
   useEffect(() => {
+    if (settings?.micCaptureMode === "push-to-talk") {
+      return;
+    }
+
+    setIsRecordingPushToTalkHotkey(false);
+  }, [settings?.micCaptureMode]);
+
+  useEffect(() => {
     if (settings?.obsidianVaultPath || settings?.kbFolderPath) {
       void syncKnowledgeBase();
     } else {
@@ -347,22 +357,61 @@ export function SettingsView({
     syncKnowledgeBase,
   ]);
 
-  const flashSaved = () => {
+  const flashSaved = useCallback(() => {
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
-  };
+  }, []);
 
-  const saveSettings = async (updated: AppSettings) => {
-    try {
-      await invoke("save_settings", { newSettings: updated });
-      setSettings(updated);
-      onSettingsChange?.(updated);
-      setError(null);
-      flashSaved();
-    } catch (err) {
-      setError(String(err));
+  const saveSettings = useCallback(
+    async (updated: AppSettings) => {
+      try {
+        await invoke("save_settings", { newSettings: updated });
+        setSettings(updated);
+        onSettingsChange?.(updated);
+        setError(null);
+        flashSaved();
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [flashSaved, onSettingsChange],
+  );
+
+  useEffect(() => {
+    if (!isRecordingPushToTalkHotkey || !settings) {
+      return;
     }
-  };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (
+        event.key === "Escape" &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        !event.metaKey
+      ) {
+        setIsRecordingPushToTalkHotkey(false);
+        return;
+      }
+
+      const captured = shortcutFromKeyboardEvent(event);
+      if (!captured) {
+        return;
+      }
+
+      setIsRecordingPushToTalkHotkey(false);
+      void saveSettings({
+        ...settings,
+        pushToTalkHotkey: normalizeShortcut(captured) || "Space",
+      });
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [isRecordingPushToTalkHotkey, saveSettings, settings]);
 
   const startCalibration = async () => {
     if (!settings) return;
@@ -913,6 +962,65 @@ export function SettingsView({
                 </select>
               </div>
             </div>
+
+            <div style={{ ...styles.fieldWrap, marginTop: spacing[3] }}>
+              <label style={styles.labelStyle}>Mic Capture Mode</label>
+              <select
+                value={settings.micCaptureMode ?? "auto"}
+                onChange={(e) =>
+                  saveSettings({
+                    ...settings,
+                    micCaptureMode: e.target.value as "auto" | "push-to-talk",
+                  })
+                }
+                style={styles.selectStyle}
+              >
+                <option value="auto">Auto</option>
+                <option value="push-to-talk">Push to talk</option>
+              </select>
+              <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                Auto keeps the current always-listening behavior. Push to talk only sends mic audio
+                to transcription while you hold the live trigger.
+              </span>
+            </div>
+
+            {settings.micCaptureMode === "push-to-talk" && (
+              <div style={{ ...styles.fieldWrap, marginTop: spacing[3] }}>
+                <label style={styles.labelStyle}>Push-to-Talk Shortcut</label>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: spacing[2] }}>
+                  <button
+                    style={styles.button}
+                    onClick={() =>
+                      setIsRecordingPushToTalkHotkey((previous) => !previous)
+                    }
+                  >
+                    {isRecordingPushToTalkHotkey
+                      ? "Press keys..."
+                      : `Record Shortcut (${normalizeShortcut(settings.pushToTalkHotkey) || "Space"})`}
+                  </button>
+                  <button
+                    style={styles.buttonSecondary}
+                    onClick={() =>
+                      saveSettings({ ...settings, pushToTalkHotkey: "Space" })
+                    }
+                  >
+                    Reset to Space
+                  </button>
+                </div>
+                <span
+                  style={{
+                    fontSize: typography.sm,
+                    color: isRecordingPushToTalkHotkey ? colors.text : colors.textMuted,
+                    marginTop: 4,
+                    display: "block",
+                  }}
+                >
+                  {isRecordingPushToTalkHotkey
+                    ? "Press a key or combination now. Escape cancels."
+                    : `Current shortcut: ${normalizeShortcut(settings.pushToTalkHotkey) || "Space"}. The shortcut works while OpenCassava is focused.`}
+                </span>
+              </div>
+            )}
 
             <div style={{ ...styles.fieldWrap, marginTop: spacing[3] }}>
               <label style={styles.labelStyle}>Mic Voice Threshold</label>

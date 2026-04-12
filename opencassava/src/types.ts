@@ -1,3 +1,5 @@
+export type MicCaptureMode = "auto" | "push-to-talk";
+
 export interface Utterance {
   id: string;
   text: string;
@@ -42,6 +44,8 @@ export interface AppSettings {
   echoCancellationEnabled: boolean;
   micCalibrationRms: number | null;
   micThresholdMultiplier: number;
+  micCaptureMode: MicCaptureMode;
+  pushToTalkHotkey: string;
   inputDeviceName: string | null;
   systemAudioDeviceName: string | null;
   llmProvider: string;

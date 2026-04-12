@@ -21,7 +21,7 @@ use opencassava_core::{
     keychain,
     models::{EnhancedNotes, MeetingTemplate, SessionRecord, Speaker, SuggestionFeedbackEntry},
     process_control::process_registry,
-    settings::AppSettings,
+    settings::{AppSettings, MicCaptureMode},
     storage::{
         obsidian::{normalize_relative_folder, ObsidianVaultConfig},
         session_store::SessionStore,
@@ -107,6 +107,7 @@ pub struct AudioLevelPayload {
     pub mic_input: f32,
     pub mic_post_gate: f32,
     pub them: f32,
+    pub mic_transmit_active: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -221,6 +222,7 @@ pub struct AppState {
     pub mic_gate_threshold: Arc<AtomicU32>,
     pub mic_input_level: Arc<AtomicU32>,
     pub mic_level: Arc<AtomicU32>,
+    pub mic_transmit_active: Arc<AtomicBool>,
     pub sys_level: Arc<AtomicU32>,
     pub captured_segments: Arc<AtomicU32>,
     pub processed_segments: Arc<AtomicU32>,
@@ -262,6 +264,7 @@ impl AppState {
     pub fn new() -> Self {
         let settings = AppSettings::load();
         let initial_mic_gate_threshold = mic_gate_threshold(&settings).to_bits();
+        let initial_mic_transmit_active = mic_transmit_enabled_by_default(&settings);
         let kb_cache = Self::persistent_data_dir().join("kb_cache.json");
         let kb_context = knowledge_base_context(&settings, kb_cache);
         Self {
@@ -285,6 +288,7 @@ impl AppState {
             mic_gate_threshold: Arc::new(AtomicU32::new(initial_mic_gate_threshold)),
             mic_input_level: Arc::new(AtomicU32::new(0)),
             mic_level: Arc::new(AtomicU32::new(0)),
+            mic_transmit_active: Arc::new(AtomicBool::new(initial_mic_transmit_active)),
             sys_level: Arc::new(AtomicU32::new(0)),
             captured_segments: Arc::new(AtomicU32::new(0)),
             processed_segments: Arc::new(AtomicU32::new(0)),
@@ -445,6 +449,18 @@ impl AppState {
 
 fn mic_gate_threshold(settings: &AppSettings) -> f32 {
     settings.mic_calibration_rms.unwrap_or(0.0) * settings.mic_threshold_multiplier
+}
+
+fn mic_transmit_enabled_by_default(settings: &AppSettings) -> bool {
+    settings.mic_capture_mode != MicCaptureMode::PushToTalk
+}
+
+fn mic_transmit_active_for_request(settings: &AppSettings, requested_active: bool) -> bool {
+    if settings.mic_capture_mode == MicCaptureMode::PushToTalk {
+        requested_active
+    } else {
+        true
+    }
 }
 
 fn resolve_whisper_model(settings: &AppSettings) -> &'static str {
@@ -843,6 +859,10 @@ async fn stop_transcription_inner(
         .map(str::to_owned);
 
     *state.is_running.lock().unwrap() = false;
+    state.mic_transmit_active.store(
+        mic_transmit_enabled_by_default(&settings),
+        Ordering::Relaxed,
+    );
 
     if let Some(handle) = suggestion_handle {
         handle.abort();
@@ -1721,6 +1741,9 @@ pub fn save_settings(
     state
         .mic_gate_threshold
         .store(mic_gate_threshold(&s).to_bits(), Ordering::Relaxed);
+    state
+        .mic_transmit_active
+        .store(mic_transmit_enabled_by_default(&s), Ordering::Relaxed);
     s.save();
     reinitialize_knowledge_base(&state, &s);
     let hide_from_screen_share = s.hide_from_screen_share;
@@ -1729,6 +1752,19 @@ pub fn save_settings(
     // (e.g. old language) into the next recording session.
     clear_warmed_workers(&state);
     set_content_protection(app, hide_from_screen_share)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_mic_transmit_active(
+    active: bool,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let settings = state.settings.lock().unwrap().clone();
+    state.mic_transmit_active.store(
+        mic_transmit_active_for_request(&settings, active),
+        Ordering::Relaxed,
+    );
     Ok(())
 }
 
@@ -1801,6 +1837,10 @@ pub fn start_transcription(
     state
         .stop_requested
         .store(false, std::sync::atomic::Ordering::Relaxed);
+    state.mic_transmit_active.store(
+        mic_transmit_enabled_by_default(&settings),
+        Ordering::Relaxed,
+    );
     state.captured_segments.store(0, Ordering::Relaxed);
     state.processed_segments.store(0, Ordering::Relaxed);
     drop(running);
@@ -1848,6 +1888,7 @@ pub fn start_transcription(
         let mil = Arc::clone(&state_clone.mic_input_level);
         let ml = Arc::clone(&state_clone.mic_level);
         let sl = Arc::clone(&state_clone.sys_level);
+        let mta = Arc::clone(&state_clone.mic_transmit_active);
         let running_flag = Arc::clone(&state_clone);
         let poll_handle = tauri::async_runtime::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
@@ -1859,6 +1900,7 @@ pub fn start_transcription(
                 let mic_input = f32::from_bits(mil.load(Ordering::Relaxed));
                 let mic_post_gate = f32::from_bits(ml.load(Ordering::Relaxed));
                 let them = f32::from_bits(sl.load(Ordering::Relaxed));
+                let mic_transmit_active = mta.load(Ordering::Relaxed);
                 app_lvl
                     .emit(
                         "audio-level",
@@ -1866,6 +1908,7 @@ pub fn start_transcription(
                             mic_input,
                             mic_post_gate,
                             them,
+                            mic_transmit_active,
                         },
                     )
                     .ok();
@@ -2221,6 +2264,7 @@ pub fn start_transcription(
         let mic_input_level_w = Arc::clone(&state_clone.mic_input_level);
         let mic_level_w = Arc::clone(&state_clone.mic_level);
         let mic_gate_threshold_w = Arc::clone(&state_clone.mic_gate_threshold);
+        let mic_transmit_active_w = Arc::clone(&state_clone.mic_transmit_active);
         let mut echo_processor = MicEchoProcessor::new(echo_reference.clone());
         echo_processor.set_enabled(settings.echo_cancellation_enabled);
         echo_processor.set_threshold(f32::from_bits(mic_gate_threshold_w.load(Ordering::Relaxed)));
@@ -2229,7 +2273,10 @@ pub fn start_transcription(
             mic_input_level_w.store(input_rms.to_bits(), Ordering::Relaxed);
             echo_processor
                 .set_threshold(f32::from_bits(mic_gate_threshold_w.load(Ordering::Relaxed)));
-            let cleaned = echo_processor.process_chunk(&chunk);
+            let mut cleaned = echo_processor.process_chunk(&chunk);
+            if !mic_transmit_active_w.load(Ordering::Relaxed) {
+                cleaned.fill(0.0);
+            }
             let rms = compute_rms(&cleaned);
             mic_level_w.store(rms.to_bits(), Ordering::Relaxed);
             if let Some(ref rec) = mic_recorder {
@@ -3546,7 +3593,7 @@ pub async fn calibrate_mic_threshold(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opencassava_core::settings::AppSettings;
+    use opencassava_core::settings::{AppSettings, MicCaptureMode};
 
     #[test]
     fn app_state_initializes_without_panic() {
@@ -3568,6 +3615,22 @@ mod tests {
         settings.mic_calibration_rms = None;
         settings.mic_threshold_multiplier = 0.6;
         assert_eq!(super::mic_gate_threshold(&settings), 0.0);
+    }
+
+    #[test]
+    fn mic_transmit_defaults_to_enabled_in_auto_mode() {
+        let settings = AppSettings::default();
+        assert!(super::mic_transmit_enabled_by_default(&settings));
+        assert!(super::mic_transmit_active_for_request(&settings, false));
+    }
+
+    #[test]
+    fn mic_transmit_follows_button_state_in_push_to_talk_mode() {
+        let mut settings = AppSettings::default();
+        settings.mic_capture_mode = MicCaptureMode::PushToTalk;
+        assert!(!super::mic_transmit_enabled_by_default(&settings));
+        assert!(!super::mic_transmit_active_for_request(&settings, false));
+        assert!(super::mic_transmit_active_for_request(&settings, true));
     }
 
     #[test]

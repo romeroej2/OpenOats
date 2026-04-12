@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { GemBadge } from "gem-badges";
+import { normalizeShortcut } from "../hotkeys";
 import { colors, radius, spacing, typography } from "../theme";
 import { WaveformVisualizer } from "./WaveformVisualizer";
 
@@ -17,6 +18,11 @@ interface Props {
   audioLevelRaw?: number;
   audioLevel?: number;
   audioLevelThem?: number;
+  micCaptureMode: "auto" | "push-to-talk";
+  pushToTalkHotkey: string;
+  micTransmitActive: boolean;
+  onPushToTalkPress: () => void;
+  onPushToTalkRelease: () => void;
   saveRecording: boolean;
   onSaveRecordingChange: (value: boolean) => void;
   micCalibrationRms?: number | null;
@@ -49,6 +55,11 @@ export function CaptureCapsule({
   audioLevelRaw = 0,
   audioLevel = 0,
   audioLevelThem = 0,
+  micCaptureMode,
+  pushToTalkHotkey,
+  micTransmitActive,
+  onPushToTalkPress,
+  onPushToTalkRelease,
   saveRecording,
   onSaveRecordingChange,
   micCalibrationRms = null,
@@ -104,6 +115,8 @@ export function CaptureCapsule({
         : isRunning
           ? "Capturing live audio"
           : "Ready beside your meeting";
+  const showPushToTalk = isRunning && micCaptureMode === "push-to-talk";
+  const pushToTalkShortcutLabel = normalizeShortcut(pushToTalkHotkey) || "Space";
   const primaryActionLabel = isStopping ? "Stopping" : isRunning ? "Stop" : "Record";
 
   const gemConfig = isStopping
@@ -308,6 +321,62 @@ export function CaptureCapsule({
       >
         <span style={{ fontSize: typography.sm, color: colors.textSecondary }}>{segmentsLabel}</span>
       </div>
+
+      {showPushToTalk && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: spacing[2],
+            padding: `${spacing[2]}px ${spacing[3]}px`,
+            borderRadius: 20,
+            background: micTransmitActive ? `${colors.success}12` : colors.surfaceElevated,
+            border: `1px solid ${micTransmitActive ? `${colors.success}33` : colors.border}`,
+          }}
+        >
+          <button
+            type="button"
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              onPushToTalkPress();
+            }}
+            onPointerUp={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+              onPushToTalkRelease();
+            }}
+            onPointerCancel={onPushToTalkRelease}
+            disabled={isStopping}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: `${spacing[1]}px ${spacing[3]}px`,
+              borderRadius: radius.full,
+              border: "none",
+              background: micTransmitActive
+                ? "linear-gradient(135deg, #1c4d33 0%, #12251a 100%)"
+                : "linear-gradient(135deg, #44483f 0%, #1f231d 100%)",
+              color: colors.textInverse,
+              cursor: isStopping ? "not-allowed" : "pointer",
+              opacity: isStopping ? 0.6 : 1,
+              fontSize: typography.sm,
+              fontWeight: 800,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {micTransmitActive ? "Talking" : "Hold to talk"}
+          </button>
+          <span style={{ fontSize: typography.sm, color: colors.text }}>
+            {micTransmitActive ? "Mic is live to transcription." : "Mic stays muted until you hold the trigger."}
+          </span>
+          <span style={{ fontSize: typography.xs, color: colors.textMuted }}>
+            Shortcut: {pushToTalkShortcutLabel}
+          </span>
+        </div>
+      )}
 
       {(isRunning || isStopping || isImporting) && (
         <div

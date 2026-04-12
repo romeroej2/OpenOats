@@ -2,6 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum MicCaptureMode {
+    #[default]
+    Auto,
+    PushToTalk,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -161,6 +169,12 @@ pub struct AppSettings {
     #[serde(default = "default_mic_threshold_multiplier")]
     pub mic_threshold_multiplier: f32,
 
+    #[serde(default, alias = "mic_capture_mode")]
+    pub mic_capture_mode: MicCaptureMode,
+
+    #[serde(default = "default_push_to_talk_hotkey", alias = "push_to_talk_hotkey")]
+    pub push_to_talk_hotkey: String,
+
     #[serde(default)]
     pub last_recording_dir: Option<String>,
 }
@@ -283,6 +297,8 @@ impl Default for AppSettings {
             echo_cancellation_enabled: default_true(),
             mic_calibration_rms: None,
             mic_threshold_multiplier: default_mic_threshold_multiplier(),
+            mic_capture_mode: MicCaptureMode::Auto,
+            push_to_talk_hotkey: default_push_to_talk_hotkey(),
             last_recording_dir: None,
         }
     }
@@ -290,6 +306,10 @@ impl Default for AppSettings {
 
 fn default_mic_threshold_multiplier() -> f32 {
     0.6
+}
+
+fn default_push_to_talk_hotkey() -> String {
+    "Space".into()
 }
 
 fn default_whisper_model() -> String {
@@ -687,6 +707,38 @@ mod tests {
         let s = AppSettings::load_from(path);
         assert!(s.mic_calibration_rms.is_none());
         assert!((s.mic_threshold_multiplier - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mic_capture_defaults() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+        let s = AppSettings::load_from(path);
+        assert_eq!(s.mic_capture_mode, MicCaptureMode::Auto);
+        assert_eq!(s.push_to_talk_hotkey, "Space");
+    }
+
+    #[test]
+    fn mic_capture_persists_and_reloads() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = AppSettings::load_from(path.clone());
+        s.mic_capture_mode = MicCaptureMode::PushToTalk;
+        s.push_to_talk_hotkey = "Ctrl+Shift+Space".into();
+        s.save_to(path.clone());
+        let s2 = AppSettings::load_from(path);
+        assert_eq!(s2.mic_capture_mode, MicCaptureMode::PushToTalk);
+        assert_eq!(s2.push_to_talk_hotkey, "Ctrl+Shift+Space");
+    }
+
+    #[test]
+    fn mic_capture_defaults_when_absent_from_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"selectedModel":"gpt-4o"}"#).unwrap();
+        let s = AppSettings::load_from(path);
+        assert_eq!(s.mic_capture_mode, MicCaptureMode::Auto);
+        assert_eq!(s.push_to_talk_hotkey, "Space");
     }
 
     #[test]

@@ -27,6 +27,7 @@ pub fn run() {
             engine::get_api_keys,
             engine::save_settings,
             engine::save_api_keys,
+            engine::set_mic_transmit_active,
             engine::list_mic_devices,
             engine::list_sys_audio_devices,
             engine::start_transcription,
