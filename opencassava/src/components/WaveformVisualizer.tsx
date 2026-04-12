@@ -14,7 +14,6 @@ interface Props {
 const BAR_COUNT = 16;
 const BAR_WIDTH = 7;
 const BAR_GAP = 5;
-const BAR_STRIDE = BAR_WIDTH + BAR_GAP;
 const CLUSTER_WIDTH = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP;
 const MAX_BAR_HEIGHT = 28;
 const MIN_ACTIVE_BAR_HEIGHT = 3;
@@ -59,13 +58,20 @@ export function WaveformVisualizer({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const startX = (width - CLUSTER_WIDTH) / 2; // 57px
+    const availableWidth = Math.max(48, width - 12);
+    const scale = Math.min(1, availableWidth / CLUSTER_WIDTH);
+    const barWidth = Math.max(3, BAR_WIDTH * scale);
+    const barGap = Math.max(2, BAR_GAP * scale);
+    const barStride = barWidth + barGap;
+    const clusterWidth = BAR_COUNT * barWidth + (BAR_COUNT - 1) * barGap;
+    const startX = Math.max(0, (width - clusterWidth) / 2);
+    const cornerRadius = Math.min(CORNER_RADIUS, barWidth / 2);
 
     const drawRoundedBar = (x: number, barHeight: number, fillColor: string) => {
       const y = height - barHeight;
       ctx.fillStyle = fillColor;
       ctx.beginPath();
-      ctx.roundRect(x, y, BAR_WIDTH, barHeight, CORNER_RADIUS);
+      ctx.roundRect(x, y, barWidth, barHeight, cornerRadius);
       ctx.fill();
     };
 
@@ -77,7 +83,7 @@ export function WaveformVisualizer({
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
       ctx.moveTo(startX - 6, thresholdY);
-      ctx.lineTo(startX + CLUSTER_WIDTH + 6, thresholdY);
+      ctx.lineTo(startX + clusterWidth + 6, thresholdY);
       ctx.stroke();
       ctx.restore();
     };
@@ -88,7 +94,7 @@ export function WaveformVisualizer({
       cancelAnimationFrame(animFrameRef.current);
       ctx.clearRect(0, 0, width, height);
       for (let i = 0; i < BAR_COUNT; i++) {
-        drawRoundedBar(startX + i * BAR_STRIDE, SILENCE_BAR_HEIGHT, colors.border);
+        drawRoundedBar(startX + i * barStride, SILENCE_BAR_HEIGHT, colors.border);
       }
       drawThreshold();
       return;
@@ -104,7 +110,7 @@ export function WaveformVisualizer({
           MIN_ACTIVE_BAR_HEIGHT,
           visualLevel * MAX_BAR_HEIGHT * wave
         );
-        drawRoundedBar(startX + i * BAR_STRIDE, barHeight, color);
+        drawRoundedBar(startX + i * barStride, barHeight, color);
       }
       drawThreshold();
       animFrameRef.current = requestAnimationFrame(loop);

@@ -357,8 +357,31 @@ function LevelPill({
   thresholdLevel?: number | null;
   thresholdColor?: string;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [graphWidth, setGraphWidth] = useState(112);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+
+    const updateWidth = () => {
+      const nextWidth = Math.max(72, Math.floor(element.clientWidth - 58));
+      setGraphWidth(nextWidth);
+    };
+
+    updateWidth();
+
+    const observer = new ResizeObserver(() => {
+      updateWidth();
+    });
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <div
+      ref={containerRef}
       style={{
         flex: "1 1 150px",
         minWidth: 0,
@@ -381,7 +404,7 @@ function LevelPill({
         {label}
       </span>
       <WaveformVisualizer
-        width={158}
+        width={graphWidth}
         level={level}
         isActive={isActive}
         color={color}
