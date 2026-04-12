@@ -3,15 +3,15 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useOverlayKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { colors } from "./theme";
+import { useOverlayKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 interface SuggestionPayload {
   id: string;
   text: string;
 }
 
-const DEFAULT_SIZE = { width: 380, height: 160 };
+const DEFAULT_SIZE = { width: 360, height: 150 };
 const MIN_SIZE = { width: 300, height: 100 };
 const MAX_AUTO_WIDTH = 760;
 const MAX_AUTO_HEIGHT = 520;
@@ -77,6 +77,7 @@ export function OverlayApp() {
         }
       })
       .catch(() => {});
+
     if (root) {
       root.style.background = "transparent";
       root.style.border = "none";
@@ -87,18 +88,20 @@ export function OverlayApp() {
       root.style.margin = "0";
     }
 
-    const unlisten1 = listen<SuggestionPayload>("overlay-suggestion", (e) => {
-      setSuggestion(e.payload);
+    const unlisten = listen<SuggestionPayload>("overlay-suggestion", (event) => {
+      setSuggestion(event.payload);
     });
 
     return () => {
-      unlisten1.then((f) => f());
+      unlisten.then((dispose) => dispose());
       if (frameRef.current !== null) {
         cancelAnimationFrame(frameRef.current);
       }
+
       html.style.background = previousHtmlBackground;
       html.style.colorScheme = previousHtmlColorScheme;
       document.body.style.background = previousBodyBackground;
+
       if (root) {
         root.style.background = previousRootBackground;
         root.style.border = previousRootBorder;
@@ -186,15 +189,15 @@ export function OverlayApp() {
     }
   };
 
-  const startDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
+  const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
 
-    const pointerId = e.pointerId;
-    const startPointerX = e.screenX;
-    const startPointerY = e.screenY;
+    const pointerId = event.pointerId;
+    const startPointerX = event.screenX;
+    const startPointerY = event.screenY;
 
-    dragHandleRef.current = e.currentTarget;
-    e.currentTarget.setPointerCapture(pointerId);
+    dragHandleRef.current = event.currentTarget;
+    event.currentTarget.setPointerCapture(pointerId);
 
     const win = getCurrentWindow();
     win.setFocus().catch(() => {});
@@ -222,26 +225,26 @@ export function OverlayApp() {
       });
   };
 
-  const dragOverlay = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if ((e.buttons & 1) === 0) {
-      stopDragging(e.pointerId);
+  const dragOverlay = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if ((event.buttons & 1) === 0) {
+      stopDragging(event.pointerId);
       return;
     }
 
     const dragState = dragStateRef.current;
-    if (!dragState || dragState.pointerId !== e.pointerId) {
+    if (!dragState || dragState.pointerId !== event.pointerId) {
       return;
     }
 
-    const nextX = Math.round(dragState.startWindowX + (e.screenX - dragState.startPointerX));
-    const nextY = Math.round(dragState.startWindowY + (e.screenY - dragState.startPointerY));
+    const nextX = Math.round(dragState.startWindowX + (event.screenX - dragState.startPointerX));
+    const nextY = Math.round(dragState.startWindowY + (event.screenY - dragState.startPointerY));
 
     queueOverlayPosition(nextX, nextY);
   };
 
-  const endDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (dragStateRef.current?.pointerId === e.pointerId) {
-      stopDragging(e.pointerId);
+  const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragStateRef.current?.pointerId === event.pointerId) {
+      stopDragging(event.pointerId);
     }
   };
 
@@ -257,7 +260,7 @@ export function OverlayApp() {
           onPointerCancel={endDrag}
         >
           <div style={grabberStyle} />
-          <span style={headerLabelStyle}>Suggestion</span>
+          <span style={headerLabelStyle}>Live suggestion</span>
         </div>
         <div style={bodyStyle}>
           <div style={contentStyle}>
@@ -269,14 +272,15 @@ export function OverlayApp() {
           </div>
           <button
             onClick={dismiss}
-            onMouseDown={(e) => e.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
             style={closeBtn}
             title="Dismiss (Esc)"
           >
-            ×
+            x
           </button>
         </div>
       </div>
+
       <div style={measurementWrapperStyle}>
         <div
           ref={measureCardRef}
@@ -289,7 +293,7 @@ export function OverlayApp() {
         >
           <div style={headerStyle}>
             <div style={grabberStyle} />
-            <span style={headerLabelStyle}>Suggestion</span>
+            <span style={headerLabelStyle}>Live suggestion</span>
           </div>
           <div style={bodyStyle}>
             <div style={{ ...contentStyle, overflow: "visible" }}>
@@ -300,7 +304,7 @@ export function OverlayApp() {
               ))}
             </div>
             <button style={closeBtn} tabIndex={-1} aria-hidden="true">
-              ×
+              x
             </button>
           </div>
         </div>
@@ -322,17 +326,17 @@ const containerStyle: React.CSSProperties = {
 };
 
 const cardStyle: React.CSSProperties = {
-  background: colors.overlay.background,
+  background: "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(250,248,245,0.94) 100%)",
   border: `1px solid ${colors.overlay.border}`,
-  borderRadius: 18,
-  padding: "18px",
+  borderRadius: 24,
+  padding: "16px",
   minWidth: 300,
   overflow: "hidden",
-  boxShadow: colors.overlay.shadow,
+  boxShadow: "0 24px 56px rgba(26, 24, 22, 0.16)",
   cursor: "grab",
   userSelect: "none",
-  backdropFilter: "blur(20px) saturate(1.1)",
-  WebkitBackdropFilter: "blur(20px) saturate(1.1)",
+  backdropFilter: "blur(24px) saturate(1.08)",
+  WebkitBackdropFilter: "blur(24px) saturate(1.08)",
   position: "relative",
   display: "flex",
   flexDirection: "column",
@@ -341,9 +345,9 @@ const cardStyle: React.CSSProperties = {
 const headerStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: 8,
-  marginBottom: 14,
-  paddingBottom: 12,
+  gap: 10,
+  marginBottom: 12,
+  paddingBottom: 10,
   borderBottom: `1px solid ${colors.overlay.border}`,
   cursor: "grab",
 };
@@ -358,8 +362,8 @@ const grabberStyle: React.CSSProperties = {
 
 const headerLabelStyle: React.CSSProperties = {
   color: colors.accent,
-  fontSize: 11,
-  fontWeight: 600,
+  fontSize: 10,
+  fontWeight: 800,
   letterSpacing: "0.12em",
   textTransform: "uppercase",
 };
@@ -370,8 +374,8 @@ const bodyStyle: React.CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "flex-start",
-  gap: 12,
-  paddingBottom: 14,
+  gap: 10,
+  paddingBottom: 4,
 };
 
 const contentStyle: React.CSSProperties = {
@@ -381,8 +385,8 @@ const contentStyle: React.CSSProperties = {
   gap: 8,
   minWidth: 0,
   minHeight: 0,
-  paddingRight: 4,
-  paddingBottom: 4,
+  paddingRight: 2,
+  paddingBottom: 2,
   overflowY: "auto",
   cursor: "text",
 };
@@ -390,22 +394,28 @@ const contentStyle: React.CSSProperties = {
 const lineStyle: React.CSSProperties = {
   margin: 0,
   color: colors.text,
-  fontSize: 15,
-  lineHeight: 1.4,
-  letterSpacing: "0.01em",
+  fontSize: 14,
+  lineHeight: 1.5,
+  letterSpacing: "0.008em",
   whiteSpace: "pre-wrap",
   textWrap: "pretty",
 };
 
 const closeBtn: React.CSSProperties = {
-  background: "transparent",
-  border: "none",
+  width: 28,
+  height: 28,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: colors.surface,
+  border: `1px solid ${colors.border}`,
+  borderRadius: 14,
   color: `${colors.text}66`,
   cursor: "pointer",
-  fontSize: 20,
-  fontWeight: 300,
+  fontSize: 12,
+  fontWeight: 800,
   lineHeight: 1,
-  padding: "0 4px",
+  padding: 0,
   flexShrink: 0,
   transition: "color 0.2s",
 };

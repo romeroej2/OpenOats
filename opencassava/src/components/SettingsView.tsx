@@ -164,6 +164,7 @@ interface SettingsViewProps {
   sttStatus?: SttStatus | null;
   onSetupStt?: () => void;
   isSettingUpStt?: boolean;
+  compact?: boolean;
 }
 
 export function SettingsView({
@@ -173,6 +174,7 @@ export function SettingsView({
   sttStatus = null,
   onSetupStt,
   isSettingUpStt = false,
+  compact = false,
 }: SettingsViewProps) {
   const [settings, setSettings] = useState<AppSettings | null>(initialSettings);
   const [apiKeys, setApiKeys] = useState<ApiKeys | null>(null);
@@ -187,6 +189,8 @@ export function SettingsView({
   const [calibrationCountdown, setCalibrationCountdown] = useState(0);
   const [calibrationLevel, setCalibrationLevel] = useState(0);
   const [calibrationError, setCalibrationError] = useState<string | null>(null);
+  const [micDevices, setMicDevices] = useState<string[]>([]);
+  const [systemAudioDevices, setSystemAudioDevices] = useState<string[]>([]);
   const [huggingFaceTokenDraft, setHuggingFaceTokenDraft] = useState("");
   // Prerequisite check state
   const [wsl2Status, setWsl2Status] = useState<{ ok: boolean; message: string } | null>(null);
@@ -254,6 +258,20 @@ export function SettingsView({
     invoke<MeetingTemplate[]>("list_templates")
       .then(setTemplates)
       .catch((err) => setError(String(err)));
+  }, []);
+
+  useEffect(() => {
+    Promise.allSettled([
+      invoke<string[]>("list_mic_devices"),
+      invoke<string[]>("list_sys_audio_devices"),
+    ]).then(([micsResult, systemResult]) => {
+      if (micsResult.status === "fulfilled") {
+        setMicDevices(micsResult.value);
+      }
+      if (systemResult.status === "fulfilled") {
+        setSystemAudioDevices(systemResult.value);
+      }
+    });
   }, []);
 
   // Check prerequisites when the Advanced tab becomes active or the provider changes
@@ -469,7 +487,7 @@ export function SettingsView({
   // Local styles for SettingsView
   const styles = {
     container: {
-      padding: spacing[4],
+      padding: compact ? spacing[3] : spacing[4],
       overflowY: "auto" as const,
       flex: 1,
       minHeight: 0,
@@ -484,18 +502,20 @@ export function SettingsView({
     tabs: {
       display: "flex" as const,
       gap: spacing[1],
+      flexWrap: "wrap" as const,
       marginBottom: spacing[4],
       borderBottom: `1px solid ${colors.border}`,
       paddingBottom: spacing[1],
     },
     tab: (isActive: boolean): React.CSSProperties => ({
-      padding: `${spacing[2]}px ${spacing[3]}px`,
-      background: "transparent",
-      border: "none",
-      borderBottom: isActive ? `2px solid ${colors.accent}` : "2px solid transparent",
+      padding: compact ? `${spacing[2]}px` : `${spacing[2]}px ${spacing[3]}px`,
+      background: isActive && compact ? `${colors.accent}10` : "transparent",
+      border: isActive && compact ? `1px solid ${colors.accent}28` : "none",
+      borderBottom: compact ? "none" : isActive ? `2px solid ${colors.accent}` : "2px solid transparent",
+      borderRadius: compact ? 12 : 0,
       color: isActive ? colors.accent : colors.textSecondary,
       fontSize: typography.base,
-      fontWeight: isActive ? 600 : 400,
+      fontWeight: isActive ? 700 : 500,
       cursor: "pointer",
       transition: "all 0.2s",
     }),
@@ -593,7 +613,7 @@ export function SettingsView({
     }),
     grid: {
       display: "grid",
-      gridTemplateColumns: "1fr 1fr",
+      gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
       gap: spacing[3],
     },
     aiModeCard: (isSelected: boolean): React.CSSProperties => ({
@@ -624,7 +644,7 @@ export function SettingsView({
 
   return (
     <div style={styles.container}>
-      <h3 style={styles.header}>Settings</h3>
+      {!compact && <h3 style={styles.header}>Settings</h3>}
 
       {/* Tabs */}
       <div style={styles.tabs}>
@@ -836,6 +856,147 @@ export function SettingsView({
                     </span>
                   </span>
                 </div>
+              )}
+            </div>
+          </div>
+
+          <div style={styles.divider} />
+
+          <div style={styles.section}>
+            <h4 style={styles.sectionTitle}>Audio &amp; Capture</h4>
+            <p style={styles.sectionDescription}>
+              Choose the microphone and system audio sources OpenCassava listens to, then
+              calibrate the mic gate if you need more aggressive filtering of room noise.
+            </p>
+
+            <div style={styles.grid}>
+              <div style={styles.fieldWrap}>
+                <label style={styles.labelStyle}>Mic Input</label>
+                <select
+                  value={settings.inputDeviceName || "default"}
+                  onChange={(e) =>
+                    saveSettings({
+                      ...settings,
+                      inputDeviceName: e.target.value === "default" ? null : e.target.value,
+                    })
+                  }
+                  style={styles.selectStyle}
+                >
+                  <option value="default">Default microphone</option>
+                  {micDevices.map((device) => (
+                    <option key={device} value={device}>
+                      {device}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={styles.fieldWrap}>
+                <label style={styles.labelStyle}>System Audio</label>
+                <select
+                  value={settings.systemAudioDeviceName || "default"}
+                  onChange={(e) =>
+                    saveSettings({
+                      ...settings,
+                      systemAudioDeviceName:
+                        e.target.value === "default" ? null : e.target.value,
+                    })
+                  }
+                  style={styles.selectStyle}
+                >
+                  <option value="default">Default system source</option>
+                  {systemAudioDevices.map((device) => (
+                    <option key={device} value={device}>
+                      {device}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div style={{ ...styles.fieldWrap, marginTop: spacing[3] }}>
+              <label style={styles.labelStyle}>Mic Voice Threshold</label>
+              {isCalibrating ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: spacing[1] }}>
+                  <WaveformVisualizer level={calibrationLevel} isActive={true} />
+                  <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
+                    {calibrationCountdown > 0 ? `Speak normally... ${calibrationCountdown}` : "Processing..."}
+                  </span>
+                </div>
+              ) : (
+                <>
+                  {settings.micCalibrationRms == null ? (
+                    <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
+                      Not calibrated - gate is disabled
+                    </span>
+                  ) : (
+                    <>
+                      <span style={{ fontSize: typography.sm, color: colors.text }}>
+                        Calibrated: {((settings.micCalibrationRms ?? 0) * 1000).toFixed(1)}
+                      </span>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: spacing[2],
+                          marginTop: spacing[1],
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <label style={{ fontSize: typography.sm, color: colors.text }}>
+                          Sensitivity
+                        </label>
+                        <input
+                          type="range"
+                          min={0.1}
+                          max={0.8}
+                          step={0.05}
+                          value={settings.micThresholdMultiplier ?? 0.6}
+                          onChange={(e) =>
+                            saveSettings({
+                              ...settings,
+                              micThresholdMultiplier: parseFloat(e.target.value),
+                            })
+                          }
+                          style={{ width: 160 }}
+                        />
+                        <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
+                          {((settings.micThresholdMultiplier ?? 0.6) * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    </>
+                  )}
+                  {calibrationError && (
+                    <span
+                      style={{
+                        fontSize: typography.sm,
+                        color: colors.error,
+                        marginTop: spacing[1],
+                        display: "block",
+                      }}
+                    >
+                      {calibrationError}
+                    </span>
+                  )}
+                  <button
+                    style={{ ...styles.button, marginTop: spacing[1] }}
+                    onClick={startCalibration}
+                    disabled={isCalibrating}
+                  >
+                    {settings.micCalibrationRms == null ? "Calibrate" : "Recalibrate"}
+                  </button>
+                  <span
+                    style={{
+                      fontSize: typography.sm,
+                      color: colors.textMuted,
+                      marginTop: 4,
+                      display: "block",
+                    }}
+                  >
+                    Audio below this level will be silenced. Recalibrate if you change microphones
+                    or your meeting setup.
+                  </span>
+                </>
               )}
             </div>
           </div>
@@ -1317,63 +1478,7 @@ export function SettingsView({
                     Reduce speaker playback leaking back into the microphone when you are using speakers
                   </span>
                 </div>
-                <div style={styles.fieldWrap}>
-                  <label style={styles.labelStyle}>Mic Voice Threshold</label>
-                  {isCalibrating ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: spacing[1] }}>
-                      <WaveformVisualizer level={calibrationLevel} isActive={true} />
-                      <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
-                        {calibrationCountdown > 0 ? `Speak normally… ${calibrationCountdown}` : "Processing…"}
-                      </span>
-                    </div>
-                  ) : (
-                    <>
-                      {settings && settings.micCalibrationRms == null ? (
-                        <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
-                          Not calibrated — gate is disabled
-                        </span>
-                      ) : settings ? (
-                        <>
-                          <span style={{ fontSize: typography.sm, color: colors.text }}>
-                            Calibrated: {((settings.micCalibrationRms ?? 0) * 1000).toFixed(1)}
-                          </span>
-                          <div style={{ display: "flex", alignItems: "center", gap: spacing[2], marginTop: spacing[1] }}>
-                            <label style={{ fontSize: typography.sm, color: colors.text }}>Sensitivity</label>
-                            <input
-                              type="range"
-                              min={0.1}
-                              max={0.8}
-                              step={0.05}
-                              value={settings.micThresholdMultiplier ?? 0.6}
-                              onChange={(e) =>
-                                saveSettings({ ...settings, micThresholdMultiplier: parseFloat(e.target.value) })
-                              }
-                              style={{ width: 120 }}
-                            />
-                            <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
-                              {(((settings.micThresholdMultiplier ?? 0.6)) * 100).toFixed(0)}%
-                            </span>
-                          </div>
-                        </>
-                      ) : null}
-                      {calibrationError && (
-                        <span style={{ fontSize: typography.sm, color: colors.error, marginTop: spacing[1], display: "block" }}>
-                          {calibrationError}
-                        </span>
-                      )}
-                      <button
-                        style={{ ...styles.button, marginTop: spacing[1] }}
-                        onClick={startCalibration}
-                        disabled={isCalibrating}
-                      >
-                        {settings && settings.micCalibrationRms == null ? "Calibrate" : "Recalibrate"}
-                      </button>
-                      <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
-                        Audio below this level will be silenced. Recalibrate if you change microphones. You can also tweak sensitivity from the main screen while recording.
-                      </span>
-                    </>
-                  )}
-                </div>
+
               </>
             ) : settings.sttProvider === "omni-asr" ? (
               <>
@@ -1619,48 +1724,6 @@ export function SettingsView({
                 )}
               </div>
             )}
-            <div style={styles.fieldWrap}>
-              <label style={styles.checkboxLabel}>
-                <input
-                  type="checkbox"
-                  checked={settings.suggestionsEnabled}
-                  onChange={(e) =>
-                    saveSettings({
-                      ...settings,
-                      suggestionsEnabled: e.target.checked,
-                    })
-                  }
-                />
-                <span>Enable live suggestions</span>
-              </label>
-              <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
-                Turn off all live suggestion checks without changing your other AI settings.
-              </span>
-            </div>
-            <div style={styles.fieldWrap}>
-              <label style={styles.labelStyle}>Suggestion Cadence</label>
-              <input
-                type="number"
-                min={30}
-                step={15}
-                value={settings.suggestionIntervalSeconds}
-                disabled={!settings.suggestionsEnabled}
-                onChange={(e) =>
-                  saveSettings({
-                    ...settings,
-                    suggestionIntervalSeconds: Math.max(30, Number(e.target.value) || 30),
-                  })
-                }
-                style={{
-                  ...styles.inputStyle,
-                  opacity: settings.suggestionsEnabled ? 1 : 0.6,
-                  cursor: settings.suggestionsEnabled ? "text" : "not-allowed",
-                }}
-              />
-              <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
-                Generate suggestions from the recent conversation every N seconds instead of waiting for trigger phrases.
-              </span>
-            </div>
           </div>
 
           <div style={styles.divider} />

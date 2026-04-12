@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "OpenCassava",
-        "width": 1100,
-        "height": 750,
+        "width": 480,
+        "height": 820,
         "resizable": true,
         "fullscreen": false,
         "contentProtected": false

@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from "react";
-import { colors, typography, spacing } from "../theme";
+import { useEffect, useRef, useState } from "react";
+import { colors, radius, spacing, typography } from "../theme";
 
 interface Props {
   onSearch: (query: string) => void;
@@ -8,6 +8,7 @@ interface Props {
   currentIndex?: number;
   onNext?: () => void;
   onPrev?: () => void;
+  compact?: boolean;
 }
 
 export function TranscriptSearch({
@@ -17,6 +18,7 @@ export function TranscriptSearch({
   currentIndex = 0,
   onNext,
   onPrev,
+  compact = false,
 }: Props) {
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -25,9 +27,9 @@ export function TranscriptSearch({
     inputRef.current?.focus();
   }, []);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setQuery(e.target.value);
-    onSearch(e.target.value);
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setQuery(event.target.value);
+    onSearch(event.target.value);
   };
 
   return (
@@ -36,20 +38,40 @@ export function TranscriptSearch({
         display: "flex",
         alignItems: "center",
         gap: spacing[2],
-        padding: `${spacing[2]}px ${spacing[3]}px`,
-        background: colors.surface,
-        borderBottom: `1px solid ${colors.border}`,
+        padding: compact ? `${spacing[2]}px` : `${spacing[2]}px ${spacing[3]}px`,
+        background: compact ? colors.background : colors.surface,
+        border: compact ? `1px solid ${colors.border}` : "none",
+        borderBottom: compact ? undefined : `1px solid ${colors.border}`,
+        borderRadius: compact ? 16 : 0,
       }}
     >
-      <span style={{ fontSize: typography.md, color: colors.textMuted }}>🔍</span>
+      <span
+        style={{
+          width: 24,
+          height: 24,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          borderRadius: radius.full,
+          background: colors.surface,
+          color: colors.textMuted,
+          fontSize: typography.xs,
+          fontWeight: 800,
+          flexShrink: 0,
+        }}
+      >
+        Q
+      </span>
+
       <input
         ref={inputRef}
         type="text"
-        placeholder="Search transcript..."
+        placeholder="Search transcript"
         value={query}
         onChange={handleChange}
         style={{
           flex: 1,
+          minWidth: 0,
           padding: `${spacing[1]}px`,
           background: "transparent",
           border: "none",
@@ -59,67 +81,65 @@ export function TranscriptSearch({
         }}
       />
 
-      {query && (
-        <div style={{ display: "flex", alignItems: "center", gap: spacing[2] }}>
-          {resultCount > 0 && (
+      {query ? (
+        <div style={{ display: "flex", alignItems: "center", gap: spacing[2], flexWrap: "wrap" }}>
+          {resultCount > 0 ? (
             <span style={{ fontSize: typography.sm, color: colors.textSecondary }}>
               {currentIndex + 1} / {resultCount}
             </span>
+          ) : (
+            <span style={{ fontSize: typography.sm, color: colors.textMuted }}>No results</span>
           )}
-          {resultCount > 1 && (
-            <div style={{ display: "flex", gap: 2 }}>
-              <button
-                onClick={onPrev}
-                disabled={currentIndex === 0}
-                style={{
-                  padding: "2px 6px",
-                  background: colors.background,
-                  border: `1px solid ${colors.border}`,
-                  borderRadius: 4,
-                  fontSize: typography.sm,
-                  color: currentIndex === 0 ? colors.textMuted : colors.text,
-                  cursor: currentIndex === 0 ? "not-allowed" : "pointer",
-                }}
-              >
-                ↑
+
+          {resultCount > 1 ? (
+            <div style={{ display: "flex", gap: spacing[1] }}>
+              <button onClick={onPrev} disabled={currentIndex === 0} style={navButtonStyle}>
+                Up
               </button>
               <button
                 onClick={onNext}
                 disabled={currentIndex >= resultCount - 1}
-                style={{
-                  padding: "2px 6px",
-                  background: colors.background,
-                  border: `1px solid ${colors.border}`,
-                  borderRadius: 4,
-                  fontSize: typography.sm,
-                  color: currentIndex >= resultCount - 1 ? colors.textMuted : colors.text,
-                  cursor: currentIndex >= resultCount - 1 ? "not-allowed" : "pointer",
-                }}
+                style={navButtonStyle}
               >
-                ↓
+                Down
               </button>
             </div>
-          )}
-          {resultCount === 0 && query && (
-            <span style={{ fontSize: typography.sm, color: colors.textMuted }}>No results</span>
-          )}
+          ) : null}
         </div>
-      )}
+      ) : null}
 
       <button
+        type="button"
         onClick={onClose}
         style={{
-          background: "transparent",
-          border: "none",
+          width: 28,
+          height: 28,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          borderRadius: radius.full,
+          border: `1px solid ${colors.border}`,
+          background: colors.surface,
           color: colors.textMuted,
           cursor: "pointer",
-          fontSize: 18,
-          padding: 4,
-          lineHeight: 1,
+          fontSize: typography.sm,
+          fontWeight: 700,
+          padding: 0,
+          flexShrink: 0,
         }}
       >
-        ×
+        x
       </button>
     </div>
   );
 }
+
+const navButtonStyle: React.CSSProperties = {
+  padding: `3px ${spacing[2]}px`,
+  background: colors.surface,
+  border: `1px solid ${colors.border}`,
+  borderRadius: 8,
+  fontSize: typography.sm,
+  color: colors.text,
+  cursor: "pointer",
+};

@@ -12,22 +12,21 @@ import type {
   SttStatus,
   TranscriptionProgress,
 } from "./types";
-import { ControlBar } from "./components/ControlBar";
+import { CaptureCapsule } from "./components/CaptureCapsule";
 import { SaveRecordingModal } from "./components/SaveRecordingModal";
 import { TranscriptView } from "./components/TranscriptView";
 import { SuggestionsView } from "./components/SuggestionsView";
 import { NotesView } from "./components/NotesView";
 import { SettingsView } from "./components/SettingsView";
-import { SessionSidebar } from "./components/SessionSidebar";
 import { TranscriptSearch } from "./components/TranscriptSearch";
 import { ExportMenu } from "./components/ExportMenu";
 import { AboutView } from "./components/AboutView";
-import { HeaderGemButton } from "./components/HeaderGemButton";
+import { CompanionShell, type DrawerKey } from "./components/CompanionShell";
+import { SessionHistoryPanel } from "./components/SessionHistoryPanel";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import { colors, typography, spacing } from "./theme";
+import { colors, radius, typography, spacing } from "./theme";
 
 type ModelState = "checking" | "missing" | "downloading" | "ready";
-type Tab = "transcript" | "suggestions" | "notes" | "settings" | "about";
 type SuggestionCheckEvent = {
   checkedAt: string;
   surfaced: boolean;
@@ -98,31 +97,6 @@ function sttProviderLabel(provider: string): string {
   return "whisper-rs";
 }
 
-function compactModelName(modelName: string): string {
-  if (!modelName) return "Unknown";
-  if (modelName.length <= 20) return modelName;
-  return modelName.split("/").pop() || modelName;
-}
-
-function transcriptionLocaleLabel(locale?: string | null): string {
-  switch ((locale || "auto").trim().toLowerCase()) {
-    case "auto":
-      return "auto-detect";
-    case "en-us":
-      return "English (US)";
-    case "en-gb":
-      return "English (UK)";
-    case "es-es":
-      return "Spanish (Spain)";
-    case "es-co":
-      return "Spanish (Colombia)";
-    case "es-mx":
-      return "Spanish (Mexico)";
-    default:
-      return locale || "auto-detect";
-  }
-}
-
 const LATEST_RELEASE_URL = "https://github.com/romeroej2/OpenCassava/releases/latest";
 const LATEST_RELEASE_API_URL = "https://api.github.com/repos/romeroej2/OpenCassava/releases/latest";
 const REPOSITORY_URL = "https://github.com/romeroej2/OpenCassava";
@@ -160,7 +134,7 @@ function App() {
   const [isStopping, setIsStopping] = useState(false);
   const [utterances, setUtterances] = useState<Utterance[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [tab, setTab] = useState<Tab>("transcript");
+  const [activeDrawer, setActiveDrawer] = useState<DrawerKey | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>();
   const [currentSessionNotes, setCurrentSessionNotes] = useState<EnhancedNotes | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -175,8 +149,6 @@ function App() {
   const [volatileYouText, setVolatileYouText] = useState("");
   const [volatileThemText, setVolatileThemText] = useState("");
   
-  // New UX state
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -282,7 +254,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const handleOpenSettings = () => setTab("settings");
+    const handleOpenSettings = () => setActiveDrawer("settings");
     window.addEventListener("open-settings", handleOpenSettings);
     return () => window.removeEventListener("open-settings", handleOpenSettings);
   }, []);
@@ -308,40 +280,6 @@ function App() {
     [settings],
   );
 
-  const handleMicThresholdMultiplierChange = useCallback(
-    async (multiplier: number) => {
-      if (!settings) {
-        return;
-      }
-      const nextSettings = { ...settings, micThresholdMultiplier: multiplier };
-      setSettings(nextSettings);
-      try {
-        await invoke("save_settings", { newSettings: nextSettings });
-      } catch (err) {
-        console.error("Failed to save mic threshold:", err);
-        setSettings(settings);
-      }
-    },
-    [settings],
-  );
-
-  const handleMicCalibrationRmsChange = useCallback(
-    async (micCalibrationRms: number) => {
-      if (!settings) {
-        return;
-      }
-      const nextSettings = { ...settings, micCalibrationRms };
-      setSettings(nextSettings);
-      try {
-        await invoke("save_settings", { newSettings: nextSettings });
-      } catch (err) {
-        console.error("Failed to save mic calibration:", err);
-        setSettings(settings);
-      }
-    },
-    [settings],
-  );
-
   const refreshSttStatus = useCallback(async () => {
     try {
       const status = await invoke<SttStatus>("get_stt_status");
@@ -350,7 +288,7 @@ function App() {
       setOmniAsrWarming(status.omniAsrWarming);
       setCohereTranscribeWarming(status.cohereTranscribeWarming);
       if (status.ready) {
-        setTab("transcript");
+        setActiveDrawer(null);
       }
       setModelError(null);
       setModelState(status.ready ? "ready" : "missing");
@@ -378,15 +316,16 @@ function App() {
       }
     },
     onFocusSearch: () => {
+      setActiveDrawer(null);
       setShowSearch(true);
-      setTab("transcript");
     },
     onExportTranscript: () => {
       if (utterances.length > 0) {
         setShowExport(true);
       }
     },
-    onToggleSidebar: () => setSidebarOpen((prev) => !prev),
+    onToggleSidebar: () =>
+      setActiveDrawer((previous) => (previous === "history" ? null : "history")),
   });
 
   // Check STT readiness whenever settings change
@@ -590,7 +529,7 @@ function App() {
       setStopStatusTone("success");
       setStopStatusMessage(null);
       setIsRunning(true);
-      setTab("transcript");
+      setActiveDrawer(null);
     } catch (e) {
       alert(`Failed to start: ${e}`);
     }
@@ -658,7 +597,7 @@ function App() {
       setTranscriptionProgress({ capturedSegments: 0, processedSegments: 0 });
       setIsImporting(true);
       setIsRunning(true);
-      setTab("transcript");
+      setActiveDrawer(null);
     } catch (e) {
       const msg = String(e);
       // "No file selected" is a normal cancellation — don't alert the user.
@@ -698,95 +637,13 @@ function App() {
       setUtterances(sessionData.transcript);
       setCurrentSessionNotes(sessionData.notes ?? null);
       setCurrentSessionId(sessionId);
-      setTab("transcript");
+      setActiveDrawer(null);
     } catch (err) {
       console.error("Failed to load session:", err);
     }
   };
 
   const activeWhisperModel = resolveWhisperModel(settings);
-  const activeSttProvider = sttStatus?.effectiveProvider || settings?.sttProvider || "whisper-rs";
-  const activeSttModel = sttStatus?.effectiveModel || activeWhisperModel;
-  const releaseIndicator = (() => {
-    if (releaseCheck.status === "checking") {
-      return (
-        <span
-          style={{
-            padding: `${spacing[1]}px ${spacing[2]}px`,
-            background: `${colors.info}12`,
-            color: colors.info,
-            borderRadius: 12,
-            fontWeight: 500,
-          }}
-          title="Checking GitHub for the latest release"
-        >
-          Checking updates...
-        </span>
-      );
-    }
-
-    if (releaseCheck.status === "update") {
-      return (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: spacing[2],
-            flexWrap: "wrap",
-          }}
-        >
-          <span
-            style={{
-              padding: `${spacing[1]}px ${spacing[2]}px`,
-              background: `${colors.warning}15`,
-              color: colors.warning,
-              borderRadius: 12,
-              fontWeight: 600,
-            }}
-            title={`Installed ${releaseCheck.currentVersion} · Latest ${releaseCheck.latestVersion}`}
-          >
-            Update available: v{releaseCheck.latestVersion}
-          </span>
-          <button
-            type="button"
-            onClick={() => window.open(releaseCheck.releaseUrl, "_blank", "noopener,noreferrer")}
-            style={{
-              padding: `${spacing[1]}px ${spacing[2]}px`,
-              background: colors.accent,
-              color: colors.textInverse,
-              border: "none",
-              borderRadius: 12,
-              fontSize: typography.xs,
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-            title="Open the latest GitHub release to download an updated installer"
-          >
-            Download update
-          </button>
-        </div>
-      );
-    }
-
-    if (releaseCheck.status === "current") {
-      return (
-        <span
-          style={{
-            padding: `${spacing[1]}px ${spacing[2]}px`,
-            background: `${colors.success}12`,
-            color: colors.success,
-            borderRadius: 12,
-            fontWeight: 500,
-          }}
-          title={`Installed version ${releaseCheck.currentVersion}`}
-        >
-          Up to date: v{releaseCheck.currentVersion}
-        </span>
-      );
-    }
-
-    return null;
-  })();
   const releaseLabel =
     releaseCheck.status === "update"
       ? `Update available: v${releaseCheck.latestVersion}`
@@ -851,7 +708,9 @@ function App() {
                 : `Download ${activeWhisperModel} (~150 MB)`}
             </button>
           <button
-            onClick={() => setTab("settings")}
+            onClick={() => {
+              window.location.reload();
+            }}
             style={{
               ...primaryBtn,
               marginTop: 12,
@@ -860,7 +719,7 @@ function App() {
               border: `1px solid ${colors.border}`,
             }}
           >
-            Open Settings
+            Refresh app
           </button>
         </div>
       </div>
@@ -914,7 +773,6 @@ function App() {
     (settings?.llmProvider === "ollama" && settings?.embeddingProvider === "ollama") ||
     (settings?.llmProvider === "openai" && settings?.embeddingProvider === "openai" &&
       isLocalUrl(settings?.openAiLlmBaseUrl) && isLocalUrl(settings?.openAiEmbedBaseUrl));
-  const modelName = settings?.llmProvider === "ollama" ? settings.ollamaLlmModel || "Unknown" : settings?.selectedModel || "Unknown";
   const kbConnected = !!(settings?.obsidianVaultPath || settings?.kbFolderPath);
   const kbFileCount = settings?.obsidianVaultPath
     ? new Set([...(settings.obsidianKbIncludePaths || []), settings.obsidianNotesFolder]).size
@@ -922,379 +780,358 @@ function App() {
       ? 1
       : 0;
 
-  const tabs: { key: Tab; label: string; badge?: number }[] = [
-    { key: "transcript", label: "Transcript", badge: utterances.length > 0 ? utterances.length : undefined },
-    { key: "suggestions", label: "Suggestions", badge: suggestions.length > 0 ? suggestions.length : undefined },
-    { key: "notes", label: "Notes", badge: currentSessionNotes ? 1 : undefined },
-    { key: "settings", label: "Settings" },
+  const railItems = [
+    { key: "transcript" as const, label: "Transcript", shortLabel: "Tx" },
+    {
+      key: "suggestions" as const,
+      label: "Suggest",
+      shortLabel: "Sg",
+      badge: suggestions.length > 0 ? suggestions.length : undefined,
+    },
+    {
+      key: "notes" as const,
+      label: "Notes",
+      shortLabel: "Nt",
+      badge: currentSessionNotes ? 1 : undefined,
+    },
+    { key: "history" as const, label: "History", shortLabel: "Hs" },
+    { key: "settings" as const, label: "Settings", shortLabel: "St" },
+    { key: "about" as const, label: "About", shortLabel: "Ab", icon: "diamond" as const },
   ];
+  const railStatuses: Array<{
+    label: string;
+    tone: "neutral" | "accent" | "success" | "warning";
+    title: string;
+  }> = [
+    {
+      label: isStopping ? "Sync" : isRunning ? "Live" : isImporting ? "Load" : "Idle",
+      tone: isStopping
+        ? "warning"
+        : isRunning
+          ? "success"
+          : isImporting
+            ? "accent"
+            : "neutral",
+      title: "Capture state",
+    },
+    {
+      label: kbConnected ? "KB" : "No KB",
+      tone: kbConnected ? "accent" : "neutral",
+      title: kbConnected ? "Knowledge base connected" : "Knowledge base not connected",
+    },
+    {
+      label: isLocalMode ? "Local" : "Cloud",
+      tone: isLocalMode ? "success" : "warning",
+      title: isLocalMode ? "Local AI mode" : "Cloud AI mode",
+    },
+  ];
+  const drawerMeta: Record<DrawerKey, { title: string; subtitle: string }> = {
+    suggestions: {
+      title: "Suggestions",
+      subtitle: "Live talking points and smart questions without losing the transcript.",
+    },
+    notes: {
+      title: "Notes",
+      subtitle: "Generate and refine summaries while the meeting is still happening.",
+    },
+    history: {
+      title: "Session History",
+      subtitle: "Jump back into past transcripts, notes, and conversation context.",
+    },
+    settings: {
+      title: "Settings",
+      subtitle: "Tune providers, knowledge sources, and capture behavior for the rail.",
+    },
+    about: {
+      title: "About",
+      subtitle: "Version, release status, and project links.",
+    },
+  };
+
+  const paneStyle = (visible: boolean): React.CSSProperties => ({
+    display: visible ? "flex" : "none",
+    flex: 1,
+    minHeight: 0,
+    flexDirection: "column",
+  });
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: colors.background, color: colors.text, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
-      {/* Session Sidebar */}
-      <SessionSidebar
-        currentSessionId={currentSessionId}
-        onSelectSession={handleLoadSession}
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-      />
-
-      {/* Search Bar */}
-      {showSearch && tab === "transcript" && (
-        <TranscriptSearch
-          onSearch={handleSearch}
-          onClose={() => setShowSearch(false)}
-          resultCount={searchResults.length}
-          currentIndex={currentSearchIndex}
-          onNext={() => setCurrentSearchIndex((i) => Math.min(i + 1, searchResults.length - 1))}
-          onPrev={() => setCurrentSearchIndex((i) => Math.max(i - 1, 0))}
-        />
-      )}
-
-      {/* Export Modal */}
-      {showExport && <ExportMenu utterances={utterances} onClose={() => setShowExport(false)} />}
-
-      {/* Unified Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: spacing[2], flexWrap: "wrap", padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.surface, borderBottom: `1px solid ${colors.border}` }}>
-        <button
-          onClick={() => setSidebarOpen(true)}
-          style={{ padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 10, fontSize: typography.md, cursor: "pointer", color: colors.text, fontWeight: 600 }}
-          title="Session History (Cmd/Ctrl+B)"
-        >
-          History
-        </button>
-        <div style={{ display: "flex", alignItems: "center", gap: spacing[1], padding: spacing[1], background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 14, flex: "1 1 auto", minWidth: 240, flexWrap: "wrap" }}>
-          {tabs.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              style={{
-                padding: "8px 12px",
-                background: tab === t.key ? colors.surface : "transparent",
-                color: tab === t.key ? colors.accent : colors.textSecondary,
-                border: tab === t.key ? `1px solid ${colors.border}` : "1px solid transparent",
-                borderRadius: 10,
-                cursor: "pointer",
-                fontSize: typography.md,
-                fontWeight: tab === t.key ? 700 : 500,
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                boxShadow: tab === t.key ? "0 1px 3px rgba(0, 0, 0, 0.04)" : "none",
-              }}
-            >
-              {t.label}
-              {t.badge !== undefined && t.badge > 0 && (
-                <span
-                  style={{
-                    background: tab === t.key ? `${colors.accent}14` : colors.surface,
-                    color: tab === t.key ? colors.accent : colors.textMuted,
-                    fontSize: 10,
-                    fontWeight: 700,
-                    padding: "2px 6px",
-                    borderRadius: 999,
-                    minWidth: 18,
-                    textAlign: "center",
-                  }}
-                >
-                  {t.badge > 99 ? "99+" : t.badge}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-        <div style={{ display: "flex", gap: spacing[2], flexWrap: "wrap" }}>
-          <HeaderGemButton isActive={tab === "about"} onClick={() => setTab("about")} />
-          <button
-            onClick={() => setShowSearch(true)}
-            disabled={utterances.length === 0}
-            style={{ padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 10, fontSize: typography.md, cursor: utterances.length === 0 ? "not-allowed" : "pointer", opacity: utterances.length === 0 ? 0.5 : 1, color: colors.text, fontWeight: 500 }}
-            title="Search (Cmd/Ctrl+F)"
-          >
-            Search
-          </button>
-          <button
-            onClick={() => setShowExport(true)}
-            disabled={utterances.length === 0}
-            style={{ padding: `${spacing[2]}px ${spacing[3]}px`, background: colors.background, border: `1px solid ${colors.border}`, borderRadius: 10, fontSize: typography.md, cursor: utterances.length === 0 ? "not-allowed" : "pointer", opacity: utterances.length === 0 ? 0.5 : 1, color: colors.text, fontWeight: 500 }}
-            title="Export (Cmd/Ctrl+E)"
-          >
-            Export
-          </button>
-        </div>
-      </div>
-
-      {/* Control Bar */}
-      <ControlBar
-        isRunning={isRunning}
-        isImporting={isImporting}
-        isStopping={isStopping}
-        capturedSegments={transcriptionProgress.capturedSegments}
-        processedSegments={transcriptionProgress.processedSegments}
-        onStart={handleStart}
-        onStop={handleStop}
-        onImport={handleImport}
-        disabled={
-          isStopping ||
-          isImporting ||
-          ((parakeetWarming || omniAsrWarming || cohereTranscribeWarming) && !isRunning)
+    <CompanionShell
+      activeDrawer={activeDrawer}
+      drawerTitle={activeDrawer ? drawerMeta[activeDrawer].title : ""}
+      drawerSubtitle={activeDrawer ? drawerMeta[activeDrawer].subtitle : ""}
+      railItems={railItems}
+      railStatuses={railStatuses}
+      onSelectRailItem={(key) => {
+        if (key === "transcript") {
+          setActiveDrawer(null);
+          return;
         }
-        engineWarming={(parakeetWarming || omniAsrWarming || cohereTranscribeWarming) && !isRunning}
-        audioLevelRaw={audioLevelRaw}
-        audioLevel={audioLevel}
-        audioLevelThem={audioLevelThem}
-        saveRecording={saveRecording}
-        onSaveRecordingChange={setSaveRecording}
-        micCalibrationRms={settings?.micCalibrationRms ?? null}
-        micThresholdMultiplier={settings?.micThresholdMultiplier ?? 0.6}
-        onMicCalibrationRmsChange={handleMicCalibrationRmsChange}
-        onMicThresholdMultiplierChange={handleMicThresholdMultiplierChange}
-        onOpenSettings={() => setTab("settings")}
-      />
 
-      {recordingFiles && currentSessionId && (
-        <SaveRecordingModal
-          files={recordingFiles}
-          sessionId={currentSessionId}
-          onDone={() => setRecordingFiles(null)}
+        setActiveDrawer((previous) => (previous === key ? null : key));
+      }}
+      onCloseDrawer={() => setActiveDrawer(null)}
+      captureCapsule={
+        <CaptureCapsule
+          isRunning={isRunning}
+          isImporting={isImporting}
+          isStopping={isStopping}
+          capturedSegments={transcriptionProgress.capturedSegments}
+          processedSegments={transcriptionProgress.processedSegments}
+          onStart={handleStart}
+          onStop={handleStop}
+          onImport={handleImport}
+          disabled={
+            isStopping ||
+            isImporting ||
+            ((parakeetWarming || omniAsrWarming || cohereTranscribeWarming) && !isRunning)
+          }
+          engineWarming={(parakeetWarming || omniAsrWarming || cohereTranscribeWarming) && !isRunning}
+          audioLevelRaw={audioLevelRaw}
+          audioLevel={audioLevel}
+          audioLevelThem={audioLevelThem}
+          saveRecording={saveRecording}
+          onSaveRecordingChange={setSaveRecording}
+          micCalibrationRms={settings?.micCalibrationRms ?? null}
+          micThresholdMultiplier={settings?.micThresholdMultiplier ?? 0.6}
         />
-      )}
-
-      {stopStatusMessage && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: spacing[2],
-            padding: `${spacing[2]}px ${spacing[4]}px`,
-            background:
-              stopStatusTone === "warning"
-                ? `${colors.warning}10`
-                : stopStatusTone === "error"
-                  ? `${colors.error}10`
-                  : stopStatusTone === "info"
-                    ? `${colors.accent}10`
-                    : `${colors.success}10`,
-            borderBottom:
-              stopStatusTone === "warning"
-                ? `1px solid ${colors.warning}25`
-                : stopStatusTone === "error"
-                  ? `1px solid ${colors.error}25`
-                  : stopStatusTone === "info"
-                    ? `1px solid ${colors.accent}25`
-                    : `1px solid ${colors.success}25`,
-            color:
-              stopStatusTone === "warning"
-                ? colors.warning
-                : stopStatusTone === "error"
-                  ? colors.error
-                  : stopStatusTone === "info"
-                    ? colors.accent
-                    : colors.success,
-            fontSize: typography.md,
-            fontWeight: 500,
-          }}
-        >
-          <span style={{ fontSize: 8 }}>{stopStatusTone === "warning" ? "O" : "o"}</span>
-          <span>{stopStatusMessage}</span>
-        </div>
-      )}
-
-      {/* Tab Content */}
-      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-        {tab === "transcript" && (
-          <TranscriptView
-            utterances={utterances}
-            volatileYouText={volatileYouText}
-            volatileThemText={volatileThemText}
-            searchQuery={searchQuery}
-            searchResults={searchResults}
-            currentSearchIndex={currentSearchIndex}
-            speakerLabels={speakerLabels}
-            onRenameParticipant={handleRenameParticipant}
-          />
-        )}
-        {tab === "suggestions" && (
-          <SuggestionsView
-            suggestions={suggestions}
-            isGenerating={isGeneratingSuggestion}
-            kbConnected={kbConnected}
-            kbFileCount={kbFileCount}
-            lastCheckedAt={lastSuggestionCheckAt}
-            lastCheckSurfaced={lastSuggestionCheckSurfaced}
-            suggestionsEnabled={settings?.suggestionsEnabled ?? true}
-            suggestionIntervalSeconds={settings?.suggestionIntervalSeconds ?? 30}
-            onSuggestionsEnabledChange={(enabled) => handleSuggestionSettingsChange({ suggestionsEnabled: enabled })}
-            onSuggestionIntervalChange={(seconds) => handleSuggestionSettingsChange({ suggestionIntervalSeconds: seconds })}
-            onDismiss={handleDismissSuggestion}
-            onInjectTest={(s) =>
-              setSuggestions((prev) => [
-                ...prev,
-                {
-                  ...s,
-                  timestamp: new Date().toISOString(),
-                },
-              ])
-            }
-          />
-        )}
-        {tab === "settings" && (
-          <SettingsView
-            settings={settings}
-            onSettingsChange={handleSettingsChange}
-            onApiKeysSaved={() => {
-              refreshSttStatus().catch(console.error);
-            }}
-            sttStatus={sttStatus}
-            onSetupStt={handleDownload}
-            isSettingUpStt={isSettingUpStt}
-          />
-        )}
-        {tab === "about" && (
-          <AboutView
-            version={releaseCheck.currentVersion}
-            releaseLabel={releaseLabel}
-            repositoryUrl={REPOSITORY_URL}
-            onBack={() => setTab("transcript")}
-            onOpenRelease={() => window.open(LATEST_RELEASE_URL, "_blank", "noopener,noreferrer")}
-            onOpenRepository={() => window.open(REPOSITORY_URL, "_blank", "noopener,noreferrer")}
-          />
-        )}
-        {/* NotesView stays mounted to preserve autoRegen state across tab switches */}
-        <div style={{ display: tab === "notes" ? "flex" : "none", flex: 1, overflow: "hidden", flexDirection: "column" }}>
-          <NotesView
-            sessionId={currentSessionId}
-            initialNotes={currentSessionNotes}
-            onNotesChange={setCurrentSessionNotes}
-            isRunning={isRunning}
-          />
-        </div>
-      </div>
-
-      {/* Bottom Status Bar */}
-      <div
-        style={{
-          padding: `${spacing[1]}px ${spacing[3]}px`,
-          background: colors.surfaceElevated,
-          borderTop: `1px solid ${colors.border}`,
-          fontSize: typography.xs,
-          color: colors.textMuted,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: spacing[3],
-          flexWrap: "wrap",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: spacing[2], flexWrap: "wrap" }}>
-          {releaseIndicator}
-          <span
+      }
+      statusBanner={
+        stopStatusMessage ? (
+          <div
             style={{
-              padding: `${spacing[1]}px ${spacing[2]}px`,
-              background: kbConnected ? `${colors.accent}12` : colors.background,
-              color: kbConnected ? colors.accent : colors.textSecondary,
-              borderRadius: 12,
-              fontWeight: 600,
-            }}
-            title={kbConnected ? "Knowledge base connected" : "No knowledge base connected"}
-          >
-            {kbConnected ? "KB Connected" : "No KB"}
-          </span>
-          <span
-            style={{
-              padding: `${spacing[1]}px ${spacing[2]}px`,
+              display: "flex",
+              alignItems: "center",
+              gap: spacing[2],
+              padding: `${spacing[2]}px ${spacing[3]}px`,
+              borderRadius: 20,
+              border: `1px solid ${
+                stopStatusTone === "warning"
+                  ? `${colors.warning}25`
+                  : stopStatusTone === "error"
+                    ? `${colors.error}25`
+                    : stopStatusTone === "info"
+                      ? `${colors.accent}25`
+                      : `${colors.success}25`
+              }`,
               background:
-                !(settings?.suggestionsEnabled ?? true)
-                  ? colors.background
-                  : isGeneratingSuggestion
-                    ? `${colors.them}14`
-                    : lastSuggestionCheckSurfaced
-                      ? `${colors.success}12`
-                      : colors.background,
+                stopStatusTone === "warning"
+                  ? `${colors.warning}10`
+                  : stopStatusTone === "error"
+                    ? `${colors.error}10`
+                    : stopStatusTone === "info"
+                      ? `${colors.accent}10`
+                      : `${colors.success}10`,
               color:
-                !(settings?.suggestionsEnabled ?? true)
-                  ? colors.textSecondary
-                  : isGeneratingSuggestion
-                    ? colors.them
-                    : lastSuggestionCheckSurfaced
-                      ? colors.success
-                      : colors.textSecondary,
-              borderRadius: 12,
-              fontWeight: 600,
+                stopStatusTone === "warning"
+                  ? colors.warning
+                  : stopStatusTone === "error"
+                    ? colors.error
+                    : stopStatusTone === "info"
+                      ? colors.accent
+                      : colors.success,
+              fontSize: typography.sm,
+              fontWeight: 700,
             }}
-            title="Suggestion engine status"
           >
-            {!(settings?.suggestionsEnabled ?? true)
-              ? "Suggestions Off"
-              : isGeneratingSuggestion
-                ? "Suggestions Analyzing"
-                : lastSuggestionCheckAt
-                  ? `Suggestions ${lastSuggestionCheckSurfaced ? "Ready" : "Checked"}`
-                  : "Suggestions Waiting"}
-          </span>
-          <span
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                background:
+                  stopStatusTone === "warning"
+                    ? colors.warning
+                    : stopStatusTone === "error"
+                      ? colors.error
+                      : stopStatusTone === "info"
+                        ? colors.accent
+                        : colors.success,
+                display: "inline-block",
+              }}
+            />
+            <span>{stopStatusMessage}</span>
+          </div>
+        ) : undefined
+      }
+      transcriptUtilities={
+        <div style={{ display: "flex", flexDirection: "column", gap: spacing[2] }}>
+          <div
             style={{
-              padding: `${spacing[1]}px ${spacing[2]}px`,
-              background: `${(isLocalMode ? colors.success : colors.you)}15`,
-              color: isLocalMode ? colors.success : colors.you,
-              borderRadius: 12,
-              fontWeight: 600,
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: spacing[3],
+              flexWrap: "wrap",
             }}
-            title={isLocalMode ? "Local mode - no data leaves your device" : "Cloud mode - using external APIs"}
           >
-            {isLocalMode ? "LLM Local" : "LLM Cloud"}
-          </span>
-          <span
-            style={{
-              padding: `${spacing[1]}px ${spacing[2]}px`,
-              background: colors.background,
-              color: colors.textSecondary,
-              borderRadius: 12,
-              fontWeight: 500,
-              fontFamily: "SF Mono, Monaco, monospace",
-            }}
-            title="Active AI model"
-          >
-            {compactModelName(modelName)}
-          </span>
-          {(() => {
-            const isWarming =
-              (parakeetWarming && activeSttProvider === "parakeet") ||
-              (omniAsrWarming && activeSttProvider === "omni-asr") ||
-              (cohereTranscribeWarming && activeSttProvider === "cohere-transcribe");
-            return (
+            <div style={{ display: "flex", flexDirection: "column", gap: spacing[1] }}>
               <span
                 style={{
-                  padding: `${spacing[1]}px ${spacing[2]}px`,
-                  background: isWarming ? `${colors.warning}18` : colors.surface,
-                  color: isWarming ? colors.warning : colors.them,
-                  borderRadius: 12,
-                  fontWeight: 500,
-                  fontFamily: "SF Mono, Monaco, monospace",
+                  fontSize: typography.xs,
+                  color: colors.textMuted,
+                  fontWeight: 700,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
                 }}
-                title={
-                  isWarming
-                    ? `${sttProviderLabel(activeSttProvider)} engine is loading — record will be available shortly`
-                    : "Active speech-to-text backend"
-                }
               >
-                {sttProviderLabel(activeSttProvider)} | {activeSttModel} | {transcriptionLocaleLabel(settings?.transcriptionLocale)}
-                {sttStatus?.usingFallback ? " | fallback" : ""}
-                {isWarming ? " · loading..." : ""}
+                Conversation
               </span>
-            );
-          })()}
-        </div>
+              <div style={{ fontSize: typography["2xl"], color: colors.text, fontWeight: 700 }}>
+                Transcript
+              </div>
+              <span style={{ fontSize: typography.sm, color: colors.textSecondary }}>
+                {utterances.length > 0
+                  ? `${utterances.length} saved lines${currentSessionId ? ` in session ${currentSessionId.slice(0, 8)}` : ""}`
+                  : "Waiting for the first transcript line"}
+              </span>
+            </div>
 
-        <div style={{ display: "flex", gap: spacing[3], flexWrap: "wrap", justifyContent: "center" }}>
-          <span>Start/Stop: Cmd/Ctrl+Shift+S</span>
-          <span>Search: Cmd/Ctrl+F</span>
-          <span>Export: Cmd/Ctrl+E</span>
-          <span>History: Cmd/Ctrl+B</span>
-          <span>Close: Esc</span>
+            <div style={{ display: "flex", gap: spacing[2], flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveDrawer(null);
+                  setShowSearch((current) => !current);
+                }}
+                style={headerActionButtonStyle(showSearch)}
+              >
+                {showSearch ? "Hide search" : "Search"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowExport(true)}
+                disabled={utterances.length === 0}
+                style={headerActionButtonStyle(false)}
+              >
+                Export
+              </button>
+            </div>
+          </div>
+
+          {showSearch && (
+            <TranscriptSearch
+              compact
+              onSearch={handleSearch}
+              onClose={() => {
+                setShowSearch(false);
+                handleSearch("");
+              }}
+              resultCount={searchResults.length}
+              currentIndex={currentSearchIndex}
+              onNext={() =>
+                setCurrentSearchIndex((index) => Math.min(index + 1, searchResults.length - 1))
+              }
+              onPrev={() => setCurrentSearchIndex((index) => Math.max(index - 1, 0))}
+            />
+          )}
         </div>
-      </div>
-    </div>
+      }
+      transcriptContent={
+        <TranscriptView
+          utterances={utterances}
+          volatileYouText={volatileYouText}
+          volatileThemText={volatileThemText}
+          searchQuery={searchQuery}
+          searchResults={searchResults}
+          currentSearchIndex={currentSearchIndex}
+          speakerLabels={speakerLabels}
+          onRenameParticipant={handleRenameParticipant}
+          layout="companion"
+        />
+      }
+      drawerContent={
+        <>
+          <div style={paneStyle(activeDrawer === "history")}>
+            <SessionHistoryPanel
+              currentSessionId={currentSessionId}
+              onSelectSession={(sessionId) => {
+                void handleLoadSession(sessionId);
+                setActiveDrawer(null);
+              }}
+              isActive={activeDrawer === "history"}
+            />
+          </div>
+
+          <div style={paneStyle(activeDrawer === "suggestions")}>
+            <SuggestionsView
+              compact
+              suggestions={suggestions}
+              isGenerating={isGeneratingSuggestion}
+              kbConnected={kbConnected}
+              kbFileCount={kbFileCount}
+              lastCheckedAt={lastSuggestionCheckAt}
+              lastCheckSurfaced={lastSuggestionCheckSurfaced}
+              suggestionsEnabled={settings?.suggestionsEnabled ?? true}
+              suggestionIntervalSeconds={settings?.suggestionIntervalSeconds ?? 30}
+              onSuggestionsEnabledChange={(enabled) =>
+                handleSuggestionSettingsChange({ suggestionsEnabled: enabled })
+              }
+              onSuggestionIntervalChange={(seconds) =>
+                handleSuggestionSettingsChange({ suggestionIntervalSeconds: seconds })
+              }
+              onDismiss={handleDismissSuggestion}
+              onInjectTest={(suggestion) =>
+                setSuggestions((previous) => [
+                  ...previous,
+                  {
+                    ...suggestion,
+                    timestamp: new Date().toISOString(),
+                  },
+                ])
+              }
+            />
+          </div>
+
+          <div style={paneStyle(activeDrawer === "settings")}>
+            <SettingsView
+              compact
+              settings={settings}
+              onSettingsChange={handleSettingsChange}
+              onApiKeysSaved={() => {
+                refreshSttStatus().catch(console.error);
+              }}
+              sttStatus={sttStatus}
+              onSetupStt={handleDownload}
+              isSettingUpStt={isSettingUpStt}
+            />
+          </div>
+
+          <div style={paneStyle(activeDrawer === "about")}>
+            <AboutView
+              compact
+              version={releaseCheck.currentVersion}
+              releaseLabel={releaseLabel}
+              repositoryUrl={REPOSITORY_URL}
+              onBack={() => setActiveDrawer(null)}
+              onOpenRelease={() => window.open(LATEST_RELEASE_URL, "_blank", "noopener,noreferrer")}
+              onOpenRepository={() => window.open(REPOSITORY_URL, "_blank", "noopener,noreferrer")}
+            />
+          </div>
+
+          <div style={paneStyle(activeDrawer === "notes")}>
+            <NotesView
+              sessionId={currentSessionId}
+              initialNotes={currentSessionNotes}
+              onNotesChange={setCurrentSessionNotes}
+              isRunning={isRunning}
+            />
+          </div>
+        </>
+      }
+      modal={
+        <>
+          {showExport && <ExportMenu utterances={utterances} onClose={() => setShowExport(false)} />}
+          {recordingFiles && currentSessionId && (
+            <SaveRecordingModal
+              files={recordingFiles}
+              sessionId={currentSessionId}
+              onDone={() => setRecordingFiles(null)}
+            />
+          )}
+        </>
+      }
+    />
   );
 }
 
@@ -1305,6 +1142,18 @@ function LoadingSpinner() {
     </div>
   );
 }
+
+const headerActionButtonStyle = (active: boolean): React.CSSProperties => ({
+  padding: `${spacing[2]}px ${spacing[3]}px`,
+  background: active ? `${colors.accent}10` : colors.surface,
+  color: active ? colors.accent : colors.text,
+  border: `1px solid ${active ? `${colors.accent}24` : colors.border}`,
+  borderRadius: radius.full,
+  fontSize: typography.sm,
+  fontWeight: 700,
+  cursor: "pointer",
+  opacity: 1,
+});
 
 const centerStyle: React.CSSProperties = {
   height: "100vh",

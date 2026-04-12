@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Utterance } from "../types";
-import { colors, typography, spacing } from "../theme";
+import { colors, radius, spacing, typography } from "../theme";
 
 interface Props {
   utterances: Utterance[];
@@ -11,15 +11,14 @@ interface Props {
   currentSearchIndex?: number;
   speakerLabels: Record<string, string>;
   onRenameParticipant: (key: string, newName: string) => void;
+  layout?: "default" | "companion";
 }
 
-// Format timestamp to relative time or clock time
 function formatTimestamp(timestamp: string): string {
   const date = new Date(timestamp);
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-// Group utterances by time buckets for long sessions
 function groupByTimeBucket(utterances: Utterance[]): { time: string; items: Utterance[] }[] {
   const buckets: { time: string; items: Utterance[] }[] = [];
   let currentBucket: { time: string; items: Utterance[] } | null = null;
@@ -32,13 +31,17 @@ function groupByTimeBucket(utterances: Utterance[]): { time: string; items: Utte
       currentBucket = { time, items: [] };
       buckets.push(currentBucket);
     }
+
     currentBucket.items.push(utterance);
   }
 
   return buckets;
 }
 
-// Highlight search matches in text
+function escapeRegExp(string: string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function HighlightText({ text, query, isCurrent }: { text: string; query?: string; isCurrent?: boolean }) {
   if (!query || !query.trim()) {
     return <>{text}</>;
@@ -48,18 +51,19 @@ function HighlightText({ text, query, isCurrent }: { text: string; query?: strin
 
   return (
     <>
-      {parts.map((part, i) => {
+      {parts.map((part, index) => {
         const isMatch = part.toLowerCase() === query.toLowerCase();
         if (!isMatch) return part;
+
         return (
           <mark
-            key={i}
+            key={index}
             style={{
               background: isCurrent ? `${colors.accent}40` : "#fef3c7",
               color: colors.text,
-              padding: "0 2px",
-              borderRadius: 2,
-              fontWeight: isCurrent ? 600 : 400,
+              padding: "0 3px",
+              borderRadius: 4,
+              fontWeight: isCurrent ? 700 : 500,
             }}
           >
             {part}
@@ -70,40 +74,104 @@ function HighlightText({ text, query, isCurrent }: { text: string; query?: strin
   );
 }
 
-function escapeRegExp(string: string): string {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function SpeakerPill({
+  editing,
+  draft,
+  inputRef,
+  label,
+  color,
+  onDraftChange,
+  onCommit,
+  onCancel,
+  onStartEdit,
+}: {
+  editing: boolean;
+  draft: string;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  label: string;
+  color: string;
+  onDraftChange: (value: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+  onStartEdit: () => void;
+}) {
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(event) => onDraftChange(event.target.value)}
+        onBlur={onCommit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") onCommit();
+          if (event.key === "Escape") onCancel();
+        }}
+        style={{
+          minWidth: 96,
+          padding: `${spacing[1]}px ${spacing[2]}px`,
+          borderRadius: radius.full,
+          border: `1px solid ${color}`,
+          background: colors.surface,
+          color,
+          fontSize: typography.xs,
+          fontWeight: 800,
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+        }}
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onStartEdit}
+      title="Rename speaker"
+      style={{
+        padding: `${spacing[1]}px ${spacing[2]}px`,
+        borderRadius: radius.full,
+        border: `1px solid ${color}28`,
+        background: `${color}12`,
+        color,
+        fontSize: typography.xs,
+        fontWeight: 800,
+        textTransform: "uppercase",
+        letterSpacing: "0.08em",
+        cursor: "text",
+      }}
+    >
+      {label}
+    </button>
+  );
 }
 
-// Utterance bubble component
 function UtteranceBubble({
   utterance,
   isHighlighted,
   searchQuery,
   speakerLabels,
   onRenameParticipant,
+  layout = "default",
 }: {
   utterance: Utterance;
   isHighlighted?: boolean;
   searchQuery?: string;
   speakerLabels: Record<string, string>;
   onRenameParticipant: (key: string, newName: string) => void;
+  layout?: "default" | "companion";
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-
   const isYou = utterance.speaker === "you";
   const labelKey = utterance.participantId || utterance.speaker || "them";
-  const speakerLabel = speakerLabels[labelKey] || utterance.participantLabel || (isYou ? "You" : "Them");
+  const speakerLabel =
+    speakerLabels[labelKey] || utterance.participantLabel || (isYou ? "You" : "Them");
+  const accent = isYou ? colors.you : colors.them;
 
   useEffect(() => {
     if (editing) inputRef.current?.select();
   }, [editing]);
-
-  const startEdit = () => {
-    setDraft(speakerLabel);
-    setEditing(true);
-  };
 
   const commitEdit = () => {
     const trimmed = draft.trim();
@@ -117,116 +185,131 @@ function UtteranceBubble({
     <div
       style={{
         display: "flex",
-        gap: spacing[2],
+        justifyContent: isYou ? "flex-end" : "flex-start",
         marginBottom: spacing[3],
-        alignItems: "flex-start",
-        padding: isHighlighted ? `${spacing[2]}px` : 0,
-        background: isHighlighted ? `${colors.accent}10` : "transparent",
-        borderRadius: isHighlighted ? 6 : 0,
-        border: isHighlighted ? `1px solid ${colors.accent}30` : "none",
+        contentVisibility: "auto",
       }}
     >
-      {/* Speaker label — click to rename */}
-      <div style={{ minWidth: 72, textAlign: "right", paddingTop: 2 }}>
-        {editing ? (
-          <input
-            ref={inputRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commitEdit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitEdit();
-              if (e.key === "Escape") setEditing(false);
-            }}
-            style={{
-              width: 72,
-              fontSize: typography.sm,
-              fontWeight: 600,
-              color: isYou ? colors.you : colors.them,
-              textTransform: "uppercase",
-              letterSpacing: "0.5px",
-              background: "transparent",
-              border: "none",
-              borderBottom: `1px solid ${isYou ? colors.you : colors.them}`,
-              outline: "none",
-              textAlign: "right",
-              padding: 0,
+      <div
+        style={{
+          width: layout === "companion" ? "92%" : "88%",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: isYou ? "flex-end" : "flex-start",
+          gap: spacing[1],
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: spacing[2],
+            flexWrap: "wrap",
+            justifyContent: isYou ? "flex-end" : "flex-start",
+          }}
+        >
+          <SpeakerPill
+            editing={editing}
+            draft={draft}
+            inputRef={inputRef}
+            label={speakerLabel}
+            color={accent}
+            onDraftChange={setDraft}
+            onCommit={commitEdit}
+            onCancel={() => setEditing(false)}
+            onStartEdit={() => {
+              setDraft(speakerLabel);
+              setEditing(true);
             }}
           />
-        ) : (
           <span
-            onClick={startEdit}
-            title="Click to rename"
             style={{
-              fontSize: typography.sm,
-              fontWeight: 600,
-              color: isYou ? colors.you : colors.them,
-              textTransform: "uppercase",
-              letterSpacing: "0.5px",
-              cursor: "text",
-              borderBottom: "1px solid transparent",
+              fontSize: typography.xs,
+              color: colors.textMuted,
+              fontFamily: "'Cascadia Code', 'SF Mono', Consolas, monospace",
             }}
           >
-            {speakerLabel}
+            {formatTimestamp(utterance.timestamp)}
           </span>
-        )}
-      </div>
+        </div>
 
-      {/* Content */}
-      <div style={{ flex: 1 }}>
-        <span style={{ fontSize: typography.md, color: colors.text, lineHeight: 1.5 }}>
-          <HighlightText text={utterance.text} query={searchQuery} />
-        </span>
-        <span style={{ fontSize: typography.xs, color: colors.textMuted, marginLeft: spacing[2] }}>
-          {formatTimestamp(utterance.timestamp)}
-        </span>
+        <div
+          style={{
+            width: "100%",
+            padding: `${spacing[3]}px`,
+            borderRadius: 20,
+            border: `1px solid ${isYou ? `${colors.you}26` : colors.border}`,
+            background: isYou ? `${colors.you}12` : colors.surface,
+            boxShadow: isHighlighted ? "0 12px 28px rgba(45, 138, 135, 0.12)" : "none",
+            outline: isHighlighted ? `2px solid ${colors.accent}22` : "none",
+          }}
+        >
+          <span style={{ fontSize: typography.md, color: colors.text, lineHeight: 1.65 }}>
+            <HighlightText text={utterance.text} query={searchQuery} isCurrent={isHighlighted} />
+          </span>
+        </div>
       </div>
     </div>
   );
 }
 
-// Volatile text indicator (live transcription)
-function VolatileIndicator({ text, speaker }: { text: string; speaker: "you" | "them" }) {
+function VolatileIndicator({
+  text,
+  speaker,
+  layout = "default",
+}: {
+  text: string;
+  speaker: "you" | "them";
+  layout?: "default" | "companion";
+}) {
   const isYou = speaker === "you";
+  const accent = isYou ? colors.you : colors.them;
 
   return (
     <div
       style={{
         display: "flex",
-        gap: spacing[2],
+        justifyContent: isYou ? "flex-end" : "flex-start",
         marginBottom: spacing[3],
-        alignItems: "flex-start",
-        opacity: 0.6,
       }}
     >
       <div
         style={{
-          minWidth: 72,
-          textAlign: "right",
-          fontSize: typography.sm,
-          fontWeight: 600,
-          color: isYou ? colors.you : colors.them,
-          textTransform: "uppercase",
-          letterSpacing: "0.5px",
-          paddingTop: 2,
+          width: layout === "companion" ? "92%" : "88%",
+          padding: `${spacing[2]}px ${spacing[3]}px`,
+          borderRadius: 18,
+          border: `1px dashed ${accent}44`,
+          background: `${accent}08`,
+          display: "flex",
+          alignItems: "center",
+          gap: spacing[2],
+          opacity: 0.86,
         }}
       >
-        {isYou ? "You" : "Them"}
-      </div>
-      <div style={{ flex: 1, display: "flex", alignItems: "center", gap: spacing[2] }}>
-        <span style={{ fontSize: typography.md, color: colors.textSecondary, lineHeight: 1.5 }}>
-          {text}
-        </span>
-        {/* Pulsing indicator */}
         <span
           style={{
-            width: 4,
-            height: 4,
+            width: 7,
+            height: 7,
             borderRadius: "50%",
-            background: isYou ? colors.you : colors.them,
+            background: accent,
             animation: "pulse 1s ease-in-out infinite",
+            display: "inline-block",
           }}
         />
+        <span
+          style={{
+            fontSize: typography.xs,
+            color: accent,
+            fontWeight: 800,
+            textTransform: "uppercase",
+            letterSpacing: "0.08em",
+          }}
+        >
+          {isYou ? "You live" : "Them live"}
+        </span>
+        <span style={{ fontSize: typography.md, color: colors.textSecondary, lineHeight: 1.6 }}>
+          {text}
+        </span>
       </div>
     </div>
   );
@@ -241,26 +324,23 @@ export function TranscriptView({
   currentSearchIndex = 0,
   speakerLabels,
   onRenameParticipant,
+  layout = "default",
 }: Props) {
-  const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const highlightedRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom only when not searching
   useEffect(() => {
     if (!searchQuery) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [utterances.length, searchQuery]);
 
-  // Scroll to current search result
   useEffect(() => {
     if (searchResults.length > 0 && highlightedRef.current) {
       highlightedRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [currentSearchIndex, searchResults]);
 
-  // Empty state
   if (utterances.length === 0 && !volatileYouText && !volatileThemText) {
     return (
       <div
@@ -270,53 +350,75 @@ export function TranscriptView({
           flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          color: colors.textMuted,
-          padding: spacing[4],
+          gap: spacing[3],
+          padding: spacing[5],
           textAlign: "center",
         }}
       >
         <div
           style={{
-            width: 64,
-            height: 64,
-            borderRadius: 16,
-            background: `${colors.accent}15`,
+            width: 72,
+            height: 72,
+            borderRadius: 22,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            fontSize: 32,
-            marginBottom: spacing[3],
+            background: `linear-gradient(145deg, ${colors.accentMuted} 0%, rgba(45, 138, 135, 0.18) 100%)`,
+            color: colors.accent,
+            fontSize: typography.lg,
+            fontWeight: 800,
+            letterSpacing: "0.08em",
           }}
         >
-          🎙️
+          LIVE
         </div>
         <h4
           style={{
-            fontSize: typography.lg,
-            fontWeight: 600,
+            margin: 0,
             color: colors.text,
-            margin: `0 0 ${spacing[2]}px`,
+            fontSize: typography["2xl"],
+            fontWeight: 700,
+            maxWidth: 360,
+            lineHeight: 1.2,
           }}
         >
-          Ready to capture
+          Transcript stays here while everything else slides around it.
         </h4>
-        <p style={{ fontSize: typography.md, color: colors.textSecondary, margin: 0, maxWidth: 280, lineHeight: 1.5 }}>
-          Press <kbd style={{ padding: "2px 6px", background: colors.surfaceElevated, borderRadius: 4, fontFamily: "monospace" }}>Cmd+Shift+S</kbd> or click Record to start.
+        <p
+          style={{
+            margin: 0,
+            maxWidth: 340,
+            color: colors.textSecondary,
+            fontSize: typography.md,
+            lineHeight: 1.6,
+          }}
+        >
+          Start capture and OpenCassava will keep the conversation readable in a compact rail next
+          to your meeting app.
         </p>
       </div>
     );
   }
 
   const grouped = groupByTimeBucket(utterances);
-  let utteranceCounter = 0;
+  const bucketOffsets = grouped.reduce<number[]>((offsets, bucket, index) => {
+    if (index === 0) {
+      offsets.push(0);
+      return offsets;
+    }
+
+    const previousOffset = offsets[index - 1] ?? 0;
+    const previousSize = grouped[index - 1]?.items.length ?? 0;
+    offsets.push(previousOffset + previousSize);
+    return offsets;
+  }, []);
 
   return (
     <div
-      ref={scrollRef}
       style={{
         flex: 1,
         overflowY: "auto",
-        padding: spacing[4],
+        padding: `${spacing[4]}px`,
         background: colors.background,
       }}
     >
@@ -328,7 +430,7 @@ export function TranscriptView({
                 display: "flex",
                 alignItems: "center",
                 gap: spacing[2],
-                margin: `${spacing[4]}px 0`,
+                margin: `${spacing[4]}px 0 ${spacing[3]}px`,
               }}
             >
               <div style={{ flex: 1, height: 1, background: colors.border }} />
@@ -337,7 +439,8 @@ export function TranscriptView({
                   fontSize: typography.xs,
                   color: colors.textMuted,
                   textTransform: "uppercase",
-                  letterSpacing: "1px",
+                  letterSpacing: "0.1em",
+                  fontWeight: 700,
                 }}
               >
                 {bucket.time}
@@ -346,10 +449,10 @@ export function TranscriptView({
             </div>
           )}
 
-          {bucket.items.map((utterance) => {
-            const isHighlighted = searchResults[currentSearchIndex] === utteranceCounter;
+          {bucket.items.map((utterance, itemIndex) => {
+            const utteranceIndex = (bucketOffsets[bucketIndex] ?? 0) + itemIndex;
+            const isHighlighted = searchResults[currentSearchIndex] === utteranceIndex;
             const ref = isHighlighted ? highlightedRef : undefined;
-            utteranceCounter++;
 
             return (
               <div key={utterance.id} ref={ref}>
@@ -359,6 +462,7 @@ export function TranscriptView({
                   searchQuery={searchQuery}
                   speakerLabels={speakerLabels}
                   onRenameParticipant={onRenameParticipant}
+                  layout={layout}
                 />
               </div>
             );
@@ -366,15 +470,15 @@ export function TranscriptView({
         </div>
       ))}
 
-      {volatileYouText && <VolatileIndicator text={volatileYouText} speaker="you" />}
-      {volatileThemText && <VolatileIndicator text={volatileThemText} speaker="them" />}
+      {volatileYouText ? <VolatileIndicator text={volatileYouText} speaker="you" layout={layout} /> : null}
+      {volatileThemText ? <VolatileIndicator text={volatileThemText} speaker="them" layout={layout} /> : null}
 
       <div ref={bottomRef} />
 
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.5; transform: scale(0.8); }
+          50% { opacity: 0.45; transform: scale(0.82); }
         }
       `}</style>
     </div>

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { KBResult, Suggestion } from "../types";
+import { colors, radius, spacing, typography } from "../theme";
 import { SuggestionControls } from "./SuggestionControls";
-import { colors, typography, spacing } from "../theme";
 
 interface Props {
   suggestions: Suggestion[];
@@ -16,7 +16,13 @@ interface Props {
   onSuggestionsEnabledChange?: (enabled: boolean) => void;
   onSuggestionIntervalChange?: (seconds: number) => void;
   onDismiss?: (id: string) => void;
-  onInjectTest?: (suggestion: { id: string; kind: Suggestion["kind"]; text: string; kbHits: KBResult[] }) => void;
+  onInjectTest?: (suggestion: {
+    id: string;
+    kind: Suggestion["kind"];
+    text: string;
+    kbHits: KBResult[];
+  }) => void;
+  compact?: boolean;
 }
 
 interface ParsedBullet {
@@ -27,11 +33,14 @@ interface ParsedBullet {
 
 function formatRelativeTime(iso: string | null | undefined): string {
   if (!iso) return "Waiting for first analysis";
+
   const deltaSeconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
   if (deltaSeconds < 5) return "Just now";
   if (deltaSeconds < 60) return `${deltaSeconds}s ago`;
+
   const minutes = Math.floor(deltaSeconds / 60);
   if (minutes < 60) return `${minutes}m ago`;
+
   const hours = Math.floor(minutes / 60);
   return `${hours}h ago`;
 }
@@ -60,7 +69,7 @@ function parseBullets(text: string): ParsedBullet[] {
       if (detail) {
         currentDetail = currentDetail ? `${currentDetail} ${detail}` : detail;
       }
-    } else if (trimmed && trimmed !== "\u2014" && currentHeadline) {
+    } else if (trimmed && trimmed !== "-" && currentHeadline) {
       currentDetail = currentDetail ? `${currentDetail} ${trimmed}` : trimmed;
     }
   }
@@ -87,197 +96,120 @@ function EmptyState({
   lastCheckedAt?: string | null;
   lastCheckSurfaced?: boolean | null;
 }) {
-  if (!kbConnected) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: `${spacing[6]}px`,
-          textAlign: "center",
-        }}
-      >
-        <div
-          style={{
-            width: 80,
-            height: 80,
-            borderRadius: 20,
-            background: `linear-gradient(135deg, ${colors.accentMuted}, ${colors.accent}20)`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 36,
-            marginBottom: spacing[4],
-            boxShadow: `0 4px 16px ${colors.accent}20`,
-          }}
-        >
-          📚
-        </div>
-        <h4
-          style={{
-            fontSize: typography.xl,
-            fontWeight: 600,
-            color: colors.text,
-            margin: `0 0 ${spacing[2]}px`,
-          }}
-        >
-          Connect your vault
-        </h4>
-        <p
-          style={{
-            fontSize: typography.md,
-            color: colors.textSecondary,
-            margin: `0 0 ${spacing[4]}px`,
-            maxWidth: 320,
-            lineHeight: 1.6,
-          }}
-        >
-          Connect an Obsidian vault and OpenCassava will surface relevant talking points during your calls.
-        </p>
-        <button
-          style={{
-            padding: `${spacing[3]}px ${spacing[4]}px`,
-            background: colors.accent,
-            color: colors.textInverse,
-            border: "none",
-            borderRadius: 8,
-            fontSize: typography.md,
-            cursor: "pointer",
-            fontWeight: 600,
-            boxShadow: `0 2px 8px ${colors.accent}40`,
-          }}
-          onClick={() => {
-            const event = new CustomEvent("open-settings", { detail: { tab: "general" } });
-            window.dispatchEvent(event);
-          }}
-        >
-          Connect Obsidian Vault
-        </button>
-        <p style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: spacing[3], maxWidth: 320 }}>
-          OpenCassava still works without Obsidian for transcription, summaries, and notes.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div
       style={{
         display: "flex",
         flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: `${spacing[6]}px`,
-        textAlign: "center",
+        gap: spacing[3],
+        padding: `${spacing[4]}px`,
       }}
     >
       <div
         style={{
-          width: 80,
-          height: 80,
-          borderRadius: 20,
-          background: `linear-gradient(135deg, ${colors.success}15, ${colors.accent}10)`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 36,
-          marginBottom: spacing[4],
-          boxShadow: `0 4px 16px ${colors.success}15`,
+          padding: `${spacing[3]}px`,
+          borderRadius: 22,
+          border: `1px solid ${kbConnected ? `${colors.success}22` : colors.border}`,
+          background: kbConnected ? `${colors.success}10` : colors.surface,
         }}
       >
-        ✨
+        <div
+          style={{
+            fontSize: typography.xs,
+            color: kbConnected ? colors.success : colors.textMuted,
+            textTransform: "uppercase",
+            letterSpacing: "0.1em",
+            fontWeight: 700,
+          }}
+        >
+          {kbConnected ? "Ready for context" : "Needs a knowledge source"}
+        </div>
+        <div
+          style={{
+            marginTop: spacing[2],
+            fontSize: typography.lg,
+            color: colors.text,
+            fontWeight: 700,
+            lineHeight: 1.25,
+          }}
+        >
+          {kbConnected
+            ? "Suggestions will appear when the conversation lines up with your knowledge base."
+            : "Connect an Obsidian vault or knowledge folder to enable live talking points."}
+        </div>
+        <div
+          style={{
+            marginTop: spacing[2],
+            fontSize: typography.sm,
+            color: colors.textSecondary,
+            lineHeight: 1.6,
+          }}
+        >
+          {kbConnected
+            ? `${kbFileCount > 0 ? `${kbFileCount} indexed sources available.` : "Knowledge source connected."} Last analysis ${formatRelativeTime(lastCheckedAt)}${lastCheckSurfaced ? " and it surfaced a suggestion." : "."}`
+            : "Transcription and notes still work without it."}
+        </div>
       </div>
-      <h4
-        style={{
-          fontSize: typography.xl,
-          fontWeight: 600,
-          color: colors.text,
-          margin: `0 0 ${spacing[2]}px`,
-        }}
-      >
-        Listening for insights...
-      </h4>
-      <p
-        style={{
-          fontSize: typography.md,
-          color: colors.textSecondary,
-          margin: `0 0 ${spacing[2]}px`,
-          maxWidth: 320,
-          lineHeight: 1.6,
-        }}
-      >
-        Suggestions appear when the conversation matches topics in your knowledge base or when important questions go unanswered.
-      </p>
-      <span
-        style={{
-          fontSize: typography.sm,
-          color: lastCheckSurfaced ? colors.success : colors.textMuted,
-          background: lastCheckSurfaced ? `${colors.success}10` : "transparent",
-          padding: `${spacing[1]}px ${spacing[2]}px`,
-          borderRadius: 6,
-        }}
-      >
-        {lastCheckSurfaced ? "✓ Found a suggestion recently" : `Last checked: ${formatRelativeTime(lastCheckedAt)}`}
-        {kbFileCount > 0 && ` · ${kbFileCount} docs indexed`}
-      </span>
     </div>
   );
 }
 
 function BulletRow({ bullet }: { bullet: ParsedBullet }) {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const hasDetail = !!bullet.detail;
 
   return (
-    <div style={{ marginBottom: spacing[2] }}>
-      <div
+    <div style={{ display: "flex", flexDirection: "column", gap: spacing[1] }}>
+      <button
+        type="button"
+        onClick={() => hasDetail && setExpanded((current) => !current)}
         style={{
           display: "flex",
           alignItems: "flex-start",
-          gap: spacing[1],
+          gap: spacing[2],
+          padding: 0,
+          background: "transparent",
+          border: "none",
+          color: colors.text,
           cursor: hasDetail ? "pointer" : "default",
+          textAlign: "left",
         }}
-        onClick={() => hasDetail && setIsExpanded(!isExpanded)}
       >
-        {hasDetail && (
-          <span
-            style={{
-              fontSize: typography.xs,
-              color: colors.textMuted,
-              marginTop: 2,
-              width: 12,
-              flexShrink: 0,
-            }}
-          >
-            {isExpanded ? "▼" : "▶"}
-          </span>
-        )}
         <span
           style={{
-            fontSize: typography.md,
-            fontWeight: 500,
-            color: colors.text,
-            lineHeight: 1.4,
+            width: 20,
+            height: 20,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: radius.full,
+            background: colors.surfaceElevated,
+            color: colors.textMuted,
+            fontSize: typography.xs,
+            fontWeight: 800,
+            flexShrink: 0,
+            marginTop: 1,
           }}
         >
+          {hasDetail ? (expanded ? "-" : "+") : "."}
+        </span>
+        <span style={{ fontSize: typography.md, lineHeight: 1.5, fontWeight: 600 }}>
           {bullet.headline}
         </span>
-      </div>
-      {isExpanded && bullet.detail && (
+      </button>
+
+      {expanded && bullet.detail ? (
         <div
           style={{
-            marginTop: spacing[1],
-            marginLeft: hasDetail ? 16 : 0,
+            marginLeft: 28,
             fontSize: typography.sm,
             color: colors.textSecondary,
-            lineHeight: 1.5,
+            lineHeight: 1.6,
           }}
         >
           {bullet.detail}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -292,109 +224,104 @@ function SuggestionCard({
   onDismiss: () => void;
 }) {
   const bullets = parseBullets(suggestion.text);
-  const hasSources = suggestion.kbHits && suggestion.kbHits.length > 0;
   const isSmartQuestion = suggestion.kind === "smart_question";
 
   return (
-    <div
+    <article
       style={{
+        padding: `${spacing[3]}px`,
+        borderRadius: 22,
+        border: `1px solid ${
+          isSmartQuestion
+            ? `${colors.them}28`
+            : isPrimary
+              ? `${colors.accent}28`
+              : colors.border
+        }`,
         background: isSmartQuestion
           ? `${colors.them}10`
           : isPrimary
             ? `${colors.accent}10`
             : colors.surface,
-        border: `1px solid ${
-          isSmartQuestion
-            ? `${colors.them}30`
-            : isPrimary
-              ? `${colors.accent}30`
-              : colors.border
-        }`,
-        borderRadius: 8,
-        padding: spacing[3],
-        marginBottom: spacing[2],
-        animation: "slideIn 0.3s ease-out",
+        display: "flex",
+        flexDirection: "column",
+        gap: spacing[3],
       }}
     >
-      <div
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: spacing[1],
-          padding: `${spacing[1]}px ${spacing[2]}px`,
-          borderRadius: 999,
-          background: isSmartQuestion ? `${colors.them}15` : `${colors.accent}12`,
-          color: isSmartQuestion ? colors.them : colors.accent,
-          fontSize: typography.xs,
-          fontWeight: 600,
-          textTransform: "uppercase",
-          letterSpacing: "0.8px",
-          marginBottom: spacing[2],
-        }}
-      >
-        {isSmartQuestion ? "Smart Question" : "Talking Point"}
-      </div>
-
-      {bullets.length > 0 ? (
-        bullets.map((bullet) => <BulletRow key={bullet.id} bullet={bullet} />)
-      ) : (
-        <p
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: spacing[2] }}>
+        <div
           style={{
-            fontSize: typography.md,
-            color: colors.text,
-            margin: 0,
-            lineHeight: 1.5,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
+            display: "inline-flex",
+            alignItems: "center",
+            padding: `${spacing[1]}px ${spacing[2]}px`,
+            borderRadius: radius.full,
+            background: isSmartQuestion ? `${colors.them}15` : `${colors.accent}12`,
+            color: isSmartQuestion ? colors.them : colors.accent,
+            fontSize: typography.xs,
+            fontWeight: 800,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
           }}
         >
-          {suggestion.text}
-        </p>
-      )}
+          {isSmartQuestion ? "Smart question" : "Talking point"}
+        </div>
 
-      {hasSources && (
+        <button type="button" onClick={onDismiss} style={dismissButtonStyle}>
+          Dismiss
+        </button>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: spacing[2] }}>
+        {bullets.length > 0 ? (
+          bullets.map((bullet) => <BulletRow key={bullet.id} bullet={bullet} />)
+        ) : (
+          <div
+            style={{
+              fontSize: typography.md,
+              color: colors.text,
+              lineHeight: 1.6,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {suggestion.text}
+          </div>
+        )}
+      </div>
+
+      {suggestion.kbHits && suggestion.kbHits.length > 0 ? (
         <div
           style={{
             display: "flex",
-            alignItems: "center",
+            flexDirection: "column",
             gap: spacing[1],
-            marginTop: spacing[2],
             paddingTop: spacing[2],
             borderTop: `1px solid ${colors.border}`,
-            fontSize: typography.xs,
-            color: colors.textMuted,
           }}
         >
-          <span style={{ fontWeight: 600, color: colors.textSecondary }}>Docs</span>
-          <span>
+          <span
+            style={{
+              fontSize: typography.xs,
+              color: colors.textMuted,
+              fontWeight: 700,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}
+          >
+            Sources
+          </span>
+          <span style={{ fontSize: typography.sm, color: colors.textSecondary, lineHeight: 1.5 }}>
             {suggestion.kbHits
               .slice(0, 3)
               .map((hit) =>
                 hit.headerContext ? `${hit.sourceFile}#${hit.headerContext}` : hit.sourceFile,
               )
-              .join(" · ")}
-            {suggestion.kbHits.length > 3 && ` +${suggestion.kbHits.length - 3} more`}
+              .join(" . ")}
+            {suggestion.kbHits.length > 3 ? ` +${suggestion.kbHits.length - 3} more` : ""}
           </span>
         </div>
-      )}
-
-      <div style={{ display: "flex", gap: spacing[2], marginTop: spacing[3] }}>
-        <button
-          onClick={onDismiss}
-          style={{
-            padding: `${spacing[1]}px ${spacing[2]}px`,
-            background: "transparent",
-            color: colors.textMuted,
-            border: `1px solid ${colors.border}`,
-            borderRadius: 4,
-            fontSize: typography.sm,
-            cursor: "pointer",
-          }}
-        >
-          Dismiss
-        </button>
-      </div>
-    </div>
+      ) : null}
+    </article>
   );
 }
 
@@ -411,193 +338,112 @@ export function SuggestionsView({
   onSuggestionIntervalChange,
   onDismiss,
   onInjectTest,
+  compact = false,
 }: Props) {
-
   const handleInjectTest = async () => {
     const fake: { id: string; kind: Suggestion["kind"]; text: string; kbHits: KBResult[] } = {
       id: crypto.randomUUID(),
       kind: "smart_question",
-      text: "• Have you considered what their timeline looks like?\n> Understanding urgency helps prioritize the conversation.",
+      text:
+        "- Have you covered the decision timeline?\n> Knowing urgency helps you steer the next question.",
       kbHits: [],
     };
     onInjectTest?.(fake);
     await invoke("show_overlay_preview", { id: fake.id, text: fake.text }).catch(() => {});
   };
 
-  if (suggestions.length === 0 && !isGenerating) {
-    return (
-      <div
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          background: colors.background,
-        }}
-      >
-        <div style={{ padding: spacing[3] }}>
-          {onSuggestionsEnabledChange && onSuggestionIntervalChange && (
-            <div style={{ marginBottom: spacing[3] }}>
-              <SuggestionControls
-                suggestionsEnabled={suggestionsEnabled}
-                suggestionIntervalSeconds={suggestionIntervalSeconds}
-                onSuggestionsEnabledChange={onSuggestionsEnabledChange}
-                onSuggestionIntervalChange={onSuggestionIntervalChange}
-              />
-            </div>
-          )}
-          <button
-            onClick={handleInjectTest}
-            style={{
-              padding: `${spacing[1]}px ${spacing[2]}px`,
-              background: "transparent",
-              color: colors.textMuted,
-              border: `1px dashed ${colors.border}`,
-              borderRadius: 4,
-              fontSize: typography.xs,
-              cursor: "pointer",
-            }}
-          >
-            ⚡ Test overlay
-          </button>
-        </div>
-        <EmptyState
-          kbConnected={kbConnected}
-          kbFileCount={kbFileCount}
-          lastCheckedAt={lastCheckedAt}
-          lastCheckSurfaced={lastCheckSurfaced}
-        />
-      </div>
-    );
-  }
-
   return (
     <div
       style={{
         flex: 1,
+        minHeight: 0,
         overflowY: "auto",
-        padding: spacing[3],
         background: colors.background,
       }}
     >
-      {onSuggestionsEnabledChange && onSuggestionIntervalChange && (
-        <div style={{ marginBottom: spacing[3] }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: spacing[3], padding: spacing[3] }}>
+        {onSuggestionsEnabledChange && onSuggestionIntervalChange ? (
           <SuggestionControls
             suggestionsEnabled={suggestionsEnabled}
             suggestionIntervalSeconds={suggestionIntervalSeconds}
             onSuggestionsEnabledChange={onSuggestionsEnabledChange}
             onSuggestionIntervalChange={onSuggestionIntervalChange}
+            compact={compact}
           />
-        </div>
-      )}
+        ) : null}
 
-      <button
-        onClick={handleInjectTest}
-        style={{
-          marginBottom: spacing[3],
-          padding: `${spacing[1]}px ${spacing[2]}px`,
-          background: "transparent",
-          color: colors.textMuted,
-          border: `1px dashed ${colors.border}`,
-          borderRadius: 4,
-          fontSize: typography.xs,
-          cursor: "pointer",
-        }}
-      >
-        ⚡ Test overlay
-      </button>
-
-      {isGenerating && (
         <div
           style={{
             display: "flex",
             alignItems: "center",
+            justifyContent: "space-between",
             gap: spacing[2],
-            padding: spacing[3],
-            background: `${colors.accent}10`,
-            borderRadius: 8,
-            marginBottom: spacing[3],
-          }}
-        >
-          <div
-            style={{
-              width: 16,
-              height: 16,
-              border: `2px solid ${colors.border}`,
-              borderTopColor: colors.accent,
-              borderRadius: "50%",
-              animation: "spin 1s linear infinite",
-            }}
-          />
-          <span style={{ fontSize: typography.md, color: colors.textSecondary }}>
-            Evaluating conversation...
-          </span>
-        </div>
-      )}
-
-      {!isGenerating && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: spacing[2],
+            flexWrap: "wrap",
             padding: `${spacing[2]}px ${spacing[3]}px`,
-            background: colors.surface,
+            borderRadius: 18,
             border: `1px solid ${colors.border}`,
-            borderRadius: 8,
-            marginBottom: spacing[3],
+            background: colors.surface,
             fontSize: typography.sm,
             color: colors.textSecondary,
           }}
         >
-          <span style={{ color: lastCheckSurfaced ? colors.success : colors.textMuted }}>
-            {lastCheckSurfaced ? "●" : "○"}
-          </span>
           <span>
-            Last analysis: {formatRelativeTime(lastCheckedAt)}
-            {lastCheckSurfaced ? " · surfaced a suggestion" : " · no suggestion surfaced"}
+            {isGenerating
+              ? "Evaluating live conversation..."
+              : `Last analysis ${formatRelativeTime(lastCheckedAt)}${lastCheckSurfaced ? " and it surfaced a suggestion." : "."}`}
           </span>
+          <button type="button" onClick={() => void handleInjectTest()} style={dismissButtonStyle}>
+            Test overlay
+          </button>
         </div>
-      )}
 
-      {suggestions.length > 0 && (
-        <div style={{ marginBottom: spacing[2] }}>
+        {isGenerating ? (
           <div
             style={{
-              fontSize: typography.xs,
-              color: colors.textMuted,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-              marginBottom: spacing[3],
-              fontWeight: 600,
+              padding: `${spacing[3]}px`,
+              borderRadius: 20,
+              border: `1px solid ${colors.accent}22`,
+              background: `${colors.accent}10`,
+              color: colors.accent,
+              fontSize: typography.md,
+              fontWeight: 700,
             }}
           >
-            Suggestions · {suggestions.length}
+            Evaluating conversation...
           </div>
-          {suggestions.map((suggestion, index) => (
-            <SuggestionCard
-              key={suggestion.id}
-              suggestion={suggestion}
-              isPrimary={index === 0}
-              onDismiss={() => onDismiss?.(suggestion.id)}
-            />
-          ))}
-        </div>
-      )}
+        ) : null}
 
-      <style>{`
-        @keyframes slideIn {
-          from {
-            opacity: 0;
-            transform: translateY(-10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
+        {suggestions.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: spacing[3] }}>
+            {suggestions.map((suggestion, index) => (
+              <SuggestionCard
+                key={suggestion.id}
+                suggestion={suggestion}
+                isPrimary={index === 0}
+                onDismiss={() => onDismiss?.(suggestion.id)}
+              />
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            kbConnected={kbConnected}
+            kbFileCount={kbFileCount}
+            lastCheckedAt={lastCheckedAt}
+            lastCheckSurfaced={lastCheckSurfaced}
+          />
+        )}
+      </div>
     </div>
   );
 }
+
+const dismissButtonStyle: React.CSSProperties = {
+  padding: `${spacing[1]}px ${spacing[2]}px`,
+  borderRadius: radius.full,
+  border: `1px solid ${colors.border}`,
+  background: colors.surface,
+  color: colors.textMuted,
+  cursor: "pointer",
+  fontSize: typography.xs,
+  fontWeight: 700,
+};

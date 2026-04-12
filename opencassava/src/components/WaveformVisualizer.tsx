@@ -8,6 +8,7 @@ interface Props {
   thresholdLevel?: number | null;
   thresholdColor?: string;
   gain?: number;
+  width?: number;
 }
 
 const BAR_COUNT = 16;
@@ -38,10 +39,10 @@ export function WaveformVisualizer({
   thresholdLevel = null,
   thresholdColor = colors.warning,
   gain = 1,
+  width = 240,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number>(0);
-  const width = 240;
   const height = 32;
   const normalizedLevel = normalizeLevel(level * gain);
   const visualLevel = toVisualLevel(normalizedLevel);
@@ -112,7 +113,7 @@ export function WaveformVisualizer({
     animFrameRef.current = requestAnimationFrame(loop);
 
     return () => cancelAnimationFrame(animFrameRef.current);
-  }, [level, isActive, color, normalizedLevel, visualLevel, thresholdColor, thresholdY]);
+  }, [level, isActive, color, normalizedLevel, visualLevel, width, thresholdColor, thresholdY]);
 
   return (
     <canvas
