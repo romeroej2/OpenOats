@@ -16,7 +16,7 @@ pub fn run() {
     // where |app| is available.
     let _warmup_state = Arc::clone(&state);
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
@@ -67,9 +67,13 @@ pub fn run() {
             engine::check_python,
         ])
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
-                    window.app_handle().exit(0);
+                    if engine::exit_is_allowed(&window.app_handle()) {
+                        return;
+                    }
+                    api.prevent_close();
+                    engine::request_app_shutdown(window.app_handle().clone());
                 }
             }
         })
@@ -96,6 +100,16 @@ pub fn run() {
             );
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            if engine::exit_is_allowed(app_handle) {
+                return;
+            }
+            api.prevent_exit();
+            engine::request_app_shutdown(app_handle.clone());
+        }
+    });
 }

@@ -20,6 +20,7 @@ use opencassava_core::{
     },
     keychain,
     models::{EnhancedNotes, MeetingTemplate, SessionRecord, Speaker, SuggestionFeedbackEntry},
+    process_control::process_registry,
     settings::AppSettings,
     storage::{
         obsidian::{normalize_relative_folder, ObsidianVaultConfig},
@@ -38,7 +39,7 @@ use opencassava_core::{
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
@@ -47,6 +48,7 @@ use uuid::Uuid;
 
 const OVERLAY_LABEL: &str = "overlay";
 const OVERLAY_SUGGESTION_EVENT: &str = "overlay-suggestion";
+const APP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn ensure_overlay_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
@@ -242,6 +244,8 @@ pub struct AppState {
     pub cohere_transcribe_warming: Arc<std::sync::atomic::AtomicBool>,
     pub preview_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub preview_stop: Arc<std::sync::atomic::AtomicBool>,
+    pub shutdown_in_progress: Arc<AtomicBool>,
+    pub exit_allowed: Arc<AtomicBool>,
     /// Holds the active audio recorder when the user opted in before the session.
     /// Populated by start_transcription, cleared by discard_recording_files.
     pub audio_recorder: Mutex<Option<std::sync::Arc<AudioRecorder>>>,
@@ -295,8 +299,22 @@ impl AppState {
             cohere_transcribe_warming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             preview_task: Mutex::new(None),
             preview_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shutdown_in_progress: Arc::new(AtomicBool::new(false)),
+            exit_allowed: Arc::new(AtomicBool::new(false)),
             audio_recorder: Mutex::new(None),
         }
+    }
+
+    pub fn begin_shutdown(&self) -> bool {
+        !self.shutdown_in_progress.swap(true, Ordering::Relaxed)
+    }
+
+    pub fn exit_is_allowed(&self) -> bool {
+        self.exit_allowed.load(Ordering::Relaxed)
+    }
+
+    pub fn allow_exit(&self) {
+        self.exit_allowed.store(true, Ordering::Relaxed);
     }
 
     pub fn whisper_models_dir() -> PathBuf {
@@ -484,6 +502,9 @@ struct ParakeetWarmupStatus {
 /// a loading indicator. Safe to call at any time — does nothing if parakeet is not configured
 /// or not ready (not installed / model not downloaded).
 pub fn warm_parakeet_workers(state: Arc<AppState>, app: AppHandle) {
+    if state.shutdown_in_progress.load(Ordering::Relaxed) {
+        return;
+    }
     let settings = state.settings.lock().unwrap().clone();
     if selected_stt_provider(&settings) != "parakeet" {
         return;
@@ -519,6 +540,12 @@ pub fn warm_parakeet_workers(state: Arc<AppState>, app: AppHandle) {
             match ParakeetWorker::spawn(&config_clone) {
                 Ok(mut worker) => match worker.ensure_model(config_clone.diarization_enabled) {
                     Ok(_) => {
+                        if state_clone.shutdown_in_progress.load(Ordering::Relaxed) {
+                            log::info!(
+                                "[parakeet] dropping {name} worker because shutdown is in progress"
+                            );
+                            return;
+                        }
                         let mut slot = if name == "mic" {
                             state_clone.warmed_parakeet_mic.lock().unwrap()
                         } else {
@@ -534,6 +561,9 @@ pub fn warm_parakeet_workers(state: Arc<AppState>, app: AppHandle) {
             // When the last thread finishes, clear the warming flag and notify the UI.
             if remaining_clone.fetch_sub(1, Ordering::Relaxed) == 1 {
                 state_clone.parakeet_warming.store(false, Ordering::Relaxed);
+                if state_clone.shutdown_in_progress.load(Ordering::Relaxed) {
+                    return;
+                }
                 app_clone
                     .emit(
                         "parakeet-warmup-status",
@@ -568,6 +598,9 @@ struct CohereTranscribeWarmupStatus {
 /// a loading indicator. Safe to call at any time — does nothing if omni-asr is not configured
 /// or not ready (not installed / model not downloaded).
 pub fn warm_omni_asr_workers(state: Arc<AppState>, app: AppHandle) {
+    if state.shutdown_in_progress.load(Ordering::Relaxed) {
+        return;
+    }
     let settings = state.settings.lock().unwrap().clone();
     if selected_stt_provider(&settings) != "omni-asr" {
         return;
@@ -603,6 +636,12 @@ pub fn warm_omni_asr_workers(state: Arc<AppState>, app: AppHandle) {
             match omni_asr::OmniAsrWorker::spawn(&config_clone) {
                 Ok(mut worker) => match worker.ensure_model() {
                     Ok(_) => {
+                        if state_clone.shutdown_in_progress.load(Ordering::Relaxed) {
+                            log::info!(
+                                "[omni-asr] dropping {name} worker because shutdown is in progress"
+                            );
+                            return;
+                        }
                         let mut slot = if name == "mic" {
                             state_clone.warmed_omni_asr_mic.lock().unwrap()
                         } else {
@@ -618,6 +657,9 @@ pub fn warm_omni_asr_workers(state: Arc<AppState>, app: AppHandle) {
             // When the last thread finishes, clear the warming flag and notify the UI.
             if remaining_clone.fetch_sub(1, Ordering::Relaxed) == 1 {
                 state_clone.omni_asr_warming.store(false, Ordering::Relaxed);
+                if state_clone.shutdown_in_progress.load(Ordering::Relaxed) {
+                    return;
+                }
                 app_clone
                     .emit(
                         "omni-asr-warmup-status",
@@ -634,6 +676,9 @@ pub fn warm_omni_asr_workers(state: Arc<AppState>, app: AppHandle) {
 }
 
 pub fn warm_cohere_transcribe_workers(state: Arc<AppState>, app: AppHandle) {
+    if state.shutdown_in_progress.load(Ordering::Relaxed) {
+        return;
+    }
     let settings = state.settings.lock().unwrap().clone();
     if selected_stt_provider(&settings) != "cohere-transcribe" {
         return;
@@ -679,6 +724,12 @@ pub fn warm_cohere_transcribe_workers(state: Arc<AppState>, app: AppHandle) {
             match cohere_transcribe::CohereTranscribeWorker::spawn(&config_clone) {
                 Ok(mut worker) => match worker.ensure_model() {
                     Ok(_) => {
+                        if state_clone.shutdown_in_progress.load(Ordering::Relaxed) {
+                            log::info!(
+                                "[cohere-transcribe] dropping {name} worker because shutdown is in progress"
+                            );
+                            return;
+                        }
                         let mut slot = if name == "mic" {
                             state_clone.warmed_cohere_transcribe_mic.lock().unwrap()
                         } else {
@@ -697,6 +748,9 @@ pub fn warm_cohere_transcribe_workers(state: Arc<AppState>, app: AppHandle) {
                 state_clone
                     .cohere_transcribe_warming
                     .store(false, Ordering::Relaxed);
+                if state_clone.shutdown_in_progress.load(Ordering::Relaxed) {
+                    return;
+                }
                 app_clone
                     .emit(
                         "cohere-transcribe-warmup-status",
@@ -710,6 +764,184 @@ pub fn warm_cohere_transcribe_workers(state: Arc<AppState>, app: AppHandle) {
             }
         });
     }
+}
+
+#[derive(Clone, Copy)]
+struct StopBehavior {
+    await_notes: bool,
+    restart_warmups: bool,
+}
+
+impl StopBehavior {
+    fn user_stop() -> Self {
+        Self {
+            await_notes: false,
+            restart_warmups: true,
+        }
+    }
+
+    fn app_exit() -> Self {
+        Self {
+            await_notes: true,
+            restart_warmups: false,
+        }
+    }
+}
+
+fn clear_warmed_workers(state: &Arc<AppState>) {
+    *state.warmed_parakeet_mic.lock().unwrap() = None;
+    *state.warmed_parakeet_sys.lock().unwrap() = None;
+    *state.warmed_omni_asr_mic.lock().unwrap() = None;
+    *state.warmed_omni_asr_sys.lock().unwrap() = None;
+    *state.warmed_cohere_transcribe_mic.lock().unwrap() = None;
+    *state.warmed_cohere_transcribe_sys.lock().unwrap() = None;
+}
+
+fn stop_preview_task(state: &Arc<AppState>) {
+    state.preview_stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = state.preview_task.lock().unwrap().take() {
+        handle.abort();
+    }
+}
+
+async fn finalize_active_recorder(state: &Arc<AppState>) {
+    let recorder = state.audio_recorder.lock().unwrap().take();
+    if let Some(recorder) = recorder {
+        match tokio::task::spawn_blocking(move || recorder.finish()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => log::warn!("Failed to finalize recorder during shutdown: {err}"),
+            Err(err) => log::warn!("Recorder finalization task failed during shutdown: {err}"),
+        }
+    }
+}
+
+async fn stop_transcription_inner(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    behavior: StopBehavior,
+) -> Result<(), String> {
+    let settings = state.settings.lock().unwrap().clone();
+    state.stop_requested.store(true, Ordering::Relaxed);
+
+    let audio_handle = state.audio_task.lock().unwrap().take();
+    let system_audio_handle = state.system_audio_task.lock().unwrap().take();
+    let suggestion_handle = state.suggestion_task.lock().unwrap().take();
+    let poll_handle = state.poll_task.lock().unwrap().take();
+
+    if let Some(handle) = audio_handle {
+        let _ = handle.await;
+    }
+    if let Some(handle) = system_audio_handle {
+        let _ = handle.await;
+    }
+
+    let session_id = state
+        .session_store
+        .lock()
+        .unwrap()
+        .current_session_id()
+        .map(str::to_owned);
+
+    *state.is_running.lock().unwrap() = false;
+
+    if let Some(handle) = suggestion_handle {
+        handle.abort();
+    }
+    if let Some(handle) = poll_handle {
+        handle.abort();
+    }
+    state.session_store.lock().unwrap().end_session();
+    state.transcript_logger.lock().unwrap().end_session();
+    *state.overlay_suggestion.lock().unwrap() = None;
+    if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
+        let _ = overlay.hide();
+    }
+    state.mic_input_level.store(0u32, Ordering::Relaxed);
+    state.mic_level.store(0u32, Ordering::Relaxed);
+    state.sys_level.store(0u32, Ordering::Relaxed);
+    emit_transcription_progress(app, state);
+
+    if let (Some(session_id), Some(_)) = (session_id, configured_obsidian(&settings)) {
+        if behavior.await_notes {
+            if let Err(err) = generate_notes_for_session(app, state, session_id, None, false).await
+            {
+                log::error!("Failed to auto-publish notes to Obsidian: {err}");
+            }
+        } else {
+            let app_clone = app.clone();
+            let state_clone = Arc::clone(state);
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) =
+                    generate_notes_for_session(&app_clone, &state_clone, session_id, None, false)
+                        .await
+                {
+                    log::error!("Failed to auto-publish notes to Obsidian: {err}");
+                }
+            });
+        }
+    }
+
+    if behavior.restart_warmups {
+        warm_parakeet_workers(Arc::clone(state), app.clone());
+        warm_omni_asr_workers(Arc::clone(state), app.clone());
+        warm_cohere_transcribe_workers(Arc::clone(state), app.clone());
+    }
+
+    Ok(())
+}
+
+async fn shutdown_application(app: AppHandle, state: Arc<AppState>) {
+    let shutdown_result = tokio::time::timeout(APP_SHUTDOWN_TIMEOUT, async {
+        stop_preview_task(&state);
+        clear_warmed_workers(&state);
+        stop_transcription_inner(&app, &state, StopBehavior::app_exit()).await?;
+        finalize_active_recorder(&state).await;
+        process_registry()
+            .terminate_all()
+            .map_err(|err| format!("Failed terminating tracked child processes: {err}"))?;
+        Ok::<(), String>(())
+    })
+    .await;
+
+    match shutdown_result {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            log::error!("Application shutdown failed: {err}");
+            if let Err(kill_err) = process_registry().terminate_all() {
+                log::error!(
+                    "Failed terminating tracked child processes after shutdown error: {kill_err}"
+                );
+            }
+        }
+        Err(_) => {
+            log::error!(
+                "Application shutdown exceeded {:?}; force-terminating tracked child processes",
+                APP_SHUTDOWN_TIMEOUT
+            );
+            if let Err(kill_err) = process_registry().terminate_all() {
+                log::error!(
+                    "Failed terminating tracked child processes after shutdown timeout: {kill_err}"
+                );
+            }
+        }
+    }
+
+    state.allow_exit();
+    app.exit(0);
+}
+
+pub fn request_app_shutdown(app: AppHandle) {
+    let state = app.state::<Arc<AppState>>().inner().clone();
+    if !state.begin_shutdown() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        shutdown_application(app, state).await;
+    });
+}
+
+pub fn exit_is_allowed(app: &AppHandle) -> bool {
+    app.state::<Arc<AppState>>().exit_is_allowed()
 }
 
 fn selected_stt_provider(settings: &AppSettings) -> &str {
@@ -1495,12 +1727,7 @@ pub fn save_settings(
     drop(s);
     // Drop any pre-warmed workers so they don't carry stale config
     // (e.g. old language) into the next recording session.
-    *state.warmed_parakeet_mic.lock().unwrap() = None;
-    *state.warmed_parakeet_sys.lock().unwrap() = None;
-    *state.warmed_omni_asr_mic.lock().unwrap() = None;
-    *state.warmed_omni_asr_sys.lock().unwrap() = None;
-    *state.warmed_cohere_transcribe_mic.lock().unwrap() = None;
-    *state.warmed_cohere_transcribe_sys.lock().unwrap() = None;
+    clear_warmed_workers(&state);
     set_content_protection(app, hide_from_screen_share)?;
     Ok(())
 }
@@ -2130,66 +2357,7 @@ pub async fn stop_transcription(
     app: AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let settings = state.settings.lock().unwrap().clone();
-    state
-        .stop_requested
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-
-    let audio_handle = state.audio_task.lock().unwrap().take();
-    let system_audio_handle = state.system_audio_task.lock().unwrap().take();
-    let suggestion_handle = state.suggestion_task.lock().unwrap().take();
-    let poll_handle = state.poll_task.lock().unwrap().take();
-
-    if let Some(handle) = audio_handle {
-        let _ = handle.await;
-    }
-    if let Some(handle) = system_audio_handle {
-        let _ = handle.await;
-    }
-
-    let session_id = state
-        .session_store
-        .lock()
-        .unwrap()
-        .current_session_id()
-        .map(str::to_owned);
-
-    *state.is_running.lock().unwrap() = false;
-
-    if let Some(handle) = suggestion_handle {
-        handle.abort();
-    }
-    if let Some(handle) = poll_handle {
-        handle.abort();
-    }
-    state.session_store.lock().unwrap().end_session();
-    state.transcript_logger.lock().unwrap().end_session();
-    *state.overlay_suggestion.lock().unwrap() = None;
-    if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
-        let _ = overlay.hide();
-    }
-    state.mic_input_level.store(0u32, Ordering::Relaxed);
-    state.mic_level.store(0u32, Ordering::Relaxed);
-    state.sys_level.store(0u32, Ordering::Relaxed);
-    emit_transcription_progress(&app, &state);
-
-    if let (Some(session_id), Some(_)) = (session_id, configured_obsidian(&settings)) {
-        let app_clone = app.clone();
-        let state_clone = Arc::clone(&state);
-        tauri::async_runtime::spawn(async move {
-            if let Err(err) =
-                generate_notes_for_session(&app_clone, &state_clone, session_id, None, false).await
-            {
-                log::error!("Failed to auto-publish notes to Obsidian: {err}");
-            }
-        });
-    }
-
-    // Kick off background pre-warming so the next record press is instant.
-    warm_parakeet_workers(Arc::clone(&*state), app.clone());
-    warm_omni_asr_workers(Arc::clone(&*state), app.clone());
-    warm_cohere_transcribe_workers(Arc::clone(&*state), app);
-    Ok(())
+    stop_transcription_inner(&app, &state, StopBehavior::user_stop()).await
 }
 
 #[tauri::command]
@@ -2326,6 +2494,8 @@ pub async fn start_import_transcription(
 
         StreamingTranscriber::new(backend, language, on_final)
             .with_progress(on_progress)
+            .with_stop_signal(Arc::clone(&state_clone.stop_requested))
+            .with_cancel_on_stop(true)
             .run(stream)
             .await;
 
@@ -3478,6 +3648,20 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.stt_provider = "cohere-transcribe".into();
         assert_eq!(selected_stt_provider(&settings), "cohere-transcribe");
+    }
+
+    #[test]
+    fn shutdown_gate_allows_only_one_request() {
+        let state = AppState::new();
+        assert!(state.begin_shutdown());
+        assert!(!state.begin_shutdown());
+    }
+
+    #[test]
+    fn app_exit_stop_behavior_disables_warmups_and_awaits_notes() {
+        let behavior = StopBehavior::app_exit();
+        assert!(behavior.await_notes);
+        assert!(!behavior.restart_warmups);
     }
 }
 
