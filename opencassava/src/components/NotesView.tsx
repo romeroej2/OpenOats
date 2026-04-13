@@ -91,18 +91,11 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
     setLastRegenAt(new Date());
     setSecondsSinceRegen(0);
     try {
-      await invoke("generate_notes", {
+      const generatedMarkdown = await invoke<string>("generate_preview_notes", {
         sessionId: sessionIdRef.current,
         templateId: selectedTemplateRef.current,
       });
-      const persistedNotes = await invoke<EnhancedNotes | null>("load_session_notes", {
-        id: sessionIdRef.current,
-      });
-      if (persistedNotes) {
-        setMarkdown(persistedNotes.markdown);
-        setSelectedTemplate(persistedNotes.template.id);
-        onNotesChange?.(persistedNotes);
-      }
+      setMarkdown(generatedMarkdown);
     } catch (e) {
       setError(String(e));
     } finally {

@@ -36,6 +36,7 @@ pub fn run() {
             engine::download_model,
             engine::download_stt_model,
             engine::generate_notes,
+            engine::generate_preview_notes,
             engine::index_kb,
             engine::update_kb_folder,
             engine::suggestion_feedback,

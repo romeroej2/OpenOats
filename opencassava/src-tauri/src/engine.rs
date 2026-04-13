@@ -233,6 +233,13 @@ pub struct NotesPublishStatusPayload {
     pub message: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesReadyPayload {
+    pub session_id: String,
+    pub notes: EnhancedNotes,
+}
+
 fn emit_notes_publish_status(
     app: &AppHandle,
     session_id: &str,
@@ -247,6 +254,44 @@ fn emit_notes_publish_status(
             message: message.into(),
         },
     );
+}
+
+fn emit_notes_ready(app: &AppHandle, session_id: &str, notes: &EnhancedNotes) {
+    let _ = app.emit(
+        "notes-ready",
+        &NotesReadyPayload {
+            session_id: session_id.to_string(),
+            notes: notes.clone(),
+        },
+    );
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NotesGenerationBehavior {
+    emit_chunks: bool,
+    persist_notes: bool,
+    publish_to_obsidian: bool,
+    emit_status: bool,
+}
+
+impl NotesGenerationBehavior {
+    fn persisted(emit_chunks: bool) -> Self {
+        Self {
+            emit_chunks,
+            persist_notes: true,
+            publish_to_obsidian: true,
+            emit_status: true,
+        }
+    }
+
+    fn preview() -> Self {
+        Self {
+            emit_chunks: true,
+            persist_notes: false,
+            publish_to_obsidian: false,
+            emit_status: false,
+        }
+    }
 }
 
 // ── AppState ────────────────────────────────────────────────────────────────
@@ -1245,7 +1290,14 @@ async fn stop_transcription_inner(
 
     if let (Some(session_id), Some(_)) = (session_id, configured_obsidian(&settings)) {
         if behavior.await_notes {
-            if let Err(err) = generate_notes_for_session(app, state, session_id, None, false).await
+            if let Err(err) = generate_notes_for_session(
+                app,
+                state,
+                session_id,
+                None,
+                NotesGenerationBehavior::persisted(false),
+            )
+            .await
             {
                 log::error!("Failed to auto-publish notes to Obsidian: {err}");
             }
@@ -1253,9 +1305,14 @@ async fn stop_transcription_inner(
             let app_clone = app.clone();
             let state_clone = Arc::clone(state);
             tauri::async_runtime::spawn(async move {
-                if let Err(err) =
-                    generate_notes_for_session(&app_clone, &state_clone, session_id, None, false)
-                        .await
+                if let Err(err) = generate_notes_for_session(
+                    &app_clone,
+                    &state_clone,
+                    session_id,
+                    None,
+                    NotesGenerationBehavior::persisted(false),
+                )
+                .await
                 {
                     log::error!("Failed to auto-publish notes to Obsidian: {err}");
                 }
@@ -3349,10 +3406,11 @@ async fn generate_notes_for_session(
     state: &Arc<AppState>,
     session_id: String,
     template_id: Option<String>,
-    emit_chunks: bool,
+    behavior: NotesGenerationBehavior,
 ) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
-    let will_publish_to_obsidian = configured_obsidian(&settings).is_some();
+    let will_publish_to_obsidian =
+        behavior.publish_to_obsidian && configured_obsidian(&settings).is_some();
     let records = state
         .session_store
         .lock()
@@ -3374,16 +3432,18 @@ async fn generate_notes_for_session(
         return Err(format!("No transcript found for session `{session_id}`."));
     }
 
-    emit_notes_publish_status(
-        app,
-        &session_id,
-        "generating",
-        if will_publish_to_obsidian {
-            "Generating summary for Obsidian..."
-        } else {
-            "Generating notes..."
-        },
-    );
+    if behavior.emit_status {
+        emit_notes_publish_status(
+            app,
+            &session_id,
+            "generating",
+            if will_publish_to_obsidian {
+                "Generating summary for Obsidian..."
+            } else {
+                "Generating notes..."
+            },
+        );
+    }
 
     let template = resolve_template_for_generation(state, &settings, template_id.as_deref());
     let (base_url, api_key) = llm_base_url_and_key(&settings);
@@ -3393,7 +3453,7 @@ async fn generate_notes_for_session(
         settings.selected_model.clone()
     };
 
-    let result = if emit_chunks {
+    let result = if behavior.emit_chunks {
         let app_c = app.clone();
         let on_chunk = move |chunk: String| {
             app_c.emit("notes-chunk", chunk).ok();
@@ -3425,16 +3485,18 @@ async fn generate_notes_for_session(
     let result = match result {
         Ok(result) => result,
         Err(err) => {
-            emit_notes_publish_status(
-                app,
-                &session_id,
-                "error",
-                if will_publish_to_obsidian {
-                    format!("Failed to generate summary for Obsidian: {err}")
-                } else {
-                    format!("Failed to generate notes: {err}")
-                },
-            );
+            if behavior.emit_status {
+                emit_notes_publish_status(
+                    app,
+                    &session_id,
+                    "error",
+                    if will_publish_to_obsidian {
+                        format!("Failed to generate summary for Obsidian: {err}")
+                    } else {
+                        format!("Failed to generate notes: {err}")
+                    },
+                );
+            }
             return Err(err);
         }
     };
@@ -3445,25 +3507,29 @@ async fn generate_notes_for_session(
         markdown: result.clone(),
     };
 
-    state
-        .session_store
-        .lock()
-        .unwrap()
-        .save_notes(&session_id, enhanced_notes.clone());
+    if behavior.persist_notes {
+        state
+            .session_store
+            .lock()
+            .unwrap()
+            .save_notes(&session_id, enhanced_notes.clone());
+        emit_notes_ready(app, &session_id, &enhanced_notes);
+    }
 
-    app.emit("notes-ready", ()).ok();
-    if let Err(err) = maybe_publish_to_obsidian(
-        app,
-        state,
-        &settings,
-        &session_id,
-        &enhanced_notes,
-        &records,
-    )
-    .await
-    {
-        log::warn!("Notes generated but publishing to Obsidian failed: {err}");
-    } else if !will_publish_to_obsidian {
+    if will_publish_to_obsidian {
+        if let Err(err) = maybe_publish_to_obsidian(
+            app,
+            state,
+            &settings,
+            &session_id,
+            &enhanced_notes,
+            &records,
+        )
+        .await
+        {
+            log::warn!("Notes generated but publishing to Obsidian failed: {err}");
+        }
+    } else if behavior.emit_status {
         emit_notes_publish_status(app, &session_id, "ready", "Notes generated.");
     }
     Ok(result)
@@ -3476,7 +3542,31 @@ pub async fn generate_notes(
     session_id: String,
     template_id: Option<String>,
 ) -> Result<String, String> {
-    generate_notes_for_session(&app, &state, session_id, template_id, true).await
+    generate_notes_for_session(
+        &app,
+        &state,
+        session_id,
+        template_id,
+        NotesGenerationBehavior::persisted(true),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn generate_preview_notes(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    session_id: String,
+    template_id: Option<String>,
+) -> Result<String, String> {
+    generate_notes_for_session(
+        &app,
+        &state,
+        session_id,
+        template_id,
+        NotesGenerationBehavior::preview(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -4192,6 +4282,24 @@ mod tests {
         let behavior = StopBehavior::app_exit();
         assert!(behavior.await_notes);
         assert!(!behavior.restart_warmups);
+    }
+
+    #[test]
+    fn preview_notes_behavior_stays_local() {
+        let behavior = NotesGenerationBehavior::preview();
+        assert!(behavior.emit_chunks);
+        assert!(!behavior.persist_notes);
+        assert!(!behavior.publish_to_obsidian);
+        assert!(!behavior.emit_status);
+    }
+
+    #[test]
+    fn persisted_notes_behavior_persists_and_publishes() {
+        let behavior = NotesGenerationBehavior::persisted(false);
+        assert!(!behavior.emit_chunks);
+        assert!(behavior.persist_notes);
+        assert!(behavior.publish_to_obsidian);
+        assert!(behavior.emit_status);
     }
 }
 

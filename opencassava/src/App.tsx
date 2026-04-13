@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -39,6 +39,10 @@ type NotesPublishStatusEvent = {
   sessionId: string;
   stage: "generating" | "publishing" | "ready" | "error";
   message: string;
+};
+type NotesReadyEvent = {
+  sessionId: string;
+  notes: EnhancedNotes;
 };
 type StatusTone = "warning" | "info" | "success" | "error";
 type ReleaseCheckState =
@@ -177,6 +181,8 @@ function App() {
   const [saveRecording, setSaveRecording] = useState(false);
   const [recordingFiles, setRecordingFiles] = useState<{ micPath: string; sysPath: string } | null>(null);
   const [pushToTalkButtonHeld, setPushToTalkButtonHeld] = useState(false);
+  const currentSessionIdRef = useRef<string | undefined>(currentSessionId);
+  currentSessionIdRef.current = currentSessionId;
 
   const isPushToTalkMode = settings?.micCaptureMode === "push-to-talk";
   const desiredMicTransmitActive = !isPushToTalkMode || pushToTalkButtonHeld;
@@ -484,6 +490,12 @@ function App() {
           window.setTimeout(() => {
             setStopStatusMessage((current) => (current === message ? null : current));
           }, 5000);
+        }
+      }),
+
+      listen<NotesReadyEvent>("notes-ready", (e) => {
+        if (e.payload.sessionId === currentSessionIdRef.current) {
+          setCurrentSessionNotes(e.payload.notes);
         }
       }),
 
