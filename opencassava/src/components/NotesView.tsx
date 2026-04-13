@@ -215,6 +215,7 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
     autoRegen && isRunning && lastRegenAt !== null
       ? new Date(lastRegenAt.getTime() + regenIntervalSec * 1000)
       : null;
+  const canAutoSummarize = Boolean(sessionId && isRunning);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: spacing[4] }}>
@@ -260,43 +261,46 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
       </div>
 
       {/* Auto-regenerate toolbar */}
-      {sessionId && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: spacing[2],
-            marginBottom: spacing[3],
-            padding: `${spacing[2]}px ${spacing[3]}px`,
-            background: autoRegen && isRunning ? `${colors.accent}10` : colors.surfaceElevated,
-            border: `1px solid ${autoRegen && isRunning ? `${colors.accent}40` : colors.border}`,
-            borderRadius: 6,
-            flexWrap: "wrap",
-          }}
-        >
-          {/* Toggle */}
-          <label
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: spacing[2],
+          marginBottom: spacing[3],
+          padding: `${spacing[2]}px ${spacing[3]}px`,
+          background: autoRegen && isRunning ? `${colors.accent}10` : colors.surfaceElevated,
+          border: `1px solid ${autoRegen && isRunning ? `${colors.accent}40` : colors.border}`,
+          borderRadius: 6,
+          flexWrap: "wrap",
+        }}
+      >
+          <button
+            type="button"
+            onClick={() => {
+              if (!canAutoSummarize) return;
+              const enabling = !autoRegen;
+              setAutoRegen(enabling);
+              if (enabling) triggerAutoRegenRef.current();
+            }}
             style={{
               display: "flex",
               alignItems: "center",
               gap: spacing[2],
-              cursor: isRunning ? "pointer" : "not-allowed",
-              opacity: isRunning ? 1 : 0.5,
+              padding: `${spacing[1]}px ${spacing[2]}px`,
+              background: "transparent",
+              border: `1px solid ${autoRegen && canAutoSummarize ? `${colors.accent}40` : colors.border}`,
+              borderRadius: 999,
+              cursor: canAutoSummarize ? "pointer" : "not-allowed",
+              opacity: canAutoSummarize ? 1 : 0.5,
               userSelect: "none",
             }}
           >
             <div
-              onClick={() => {
-                if (!isRunning) return;
-                const enabling = !autoRegen;
-                setAutoRegen(enabling);
-                if (enabling) triggerAutoRegenRef.current();
-              }}
               style={{
                 width: 36,
                 height: 20,
                 borderRadius: 10,
-                background: autoRegen && isRunning ? colors.accent : colors.border,
+                background: autoRegen && canAutoSummarize ? colors.accent : colors.border,
                 position: "relative",
                 transition: "background 0.2s",
                 flexShrink: 0,
@@ -306,7 +310,7 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
                 style={{
                   position: "absolute",
                   top: 2,
-                  left: autoRegen && isRunning ? 18 : 2,
+                  left: autoRegen && canAutoSummarize ? 18 : 2,
                   width: 16,
                   height: 16,
                   borderRadius: "50%",
@@ -319,33 +323,34 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
             <span style={{ fontSize: typography.md, color: colors.text, fontWeight: 500 }}>
               Auto-summarize
             </span>
-          </label>
+          </button>
 
           {/* Interval selector */}
-          {autoRegen && isRunning && (
-            <select
-              value={regenIntervalSec}
-              onChange={(e) => setRegenIntervalSec(Number(e.target.value))}
-              style={{
-                padding: `${spacing[1]}px ${spacing[2]}px`,
-                background: colors.surface,
-                color: colors.text,
-                border: `1px solid ${colors.border}`,
-                borderRadius: 4,
-                fontSize: typography.sm,
-              }}
-            >
-              {REGEN_INTERVALS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  every {o.label}
-                </option>
-              ))}
-            </select>
-          )}
+          <select
+            value={regenIntervalSec}
+            onChange={(e) => setRegenIntervalSec(Number(e.target.value))}
+            disabled={!canAutoSummarize}
+            style={{
+              padding: `${spacing[1]}px ${spacing[2]}px`,
+              background: colors.surface,
+              color: colors.text,
+              border: `1px solid ${colors.border}`,
+              borderRadius: 4,
+              fontSize: typography.sm,
+              opacity: canAutoSummarize ? 1 : 0.5,
+              cursor: canAutoSummarize ? "pointer" : "not-allowed",
+            }}
+          >
+            {REGEN_INTERVALS.map((o) => (
+              <option key={o.value} value={o.value}>
+                every {o.label}
+              </option>
+            ))}
+          </select>
 
           {/* Status / countdown + force button */}
           <div style={{ flex: 1 }} />
-          {autoRegen && isRunning && (
+          {autoRegen && canAutoSummarize && (
             <>
               <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
                 {isGenerating
@@ -402,13 +407,12 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
           )}
 
           {/* Not running hint */}
-          {!isRunning && (
+          {!canAutoSummarize && (
             <span style={{ fontSize: typography.sm, color: colors.textMuted, fontStyle: "italic" }}>
               Available during active sessions
             </span>
           )}
-        </div>
-      )}
+      </div>
 
       {error && (
         <div style={{ color: colors.error, fontSize: typography.md, marginBottom: spacing[2] }}>{error}</div>

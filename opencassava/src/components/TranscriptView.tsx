@@ -393,15 +393,15 @@ export function TranscriptView({
             lineHeight: 1.6,
           }}
         >
-          Start capture and OpenCassava will keep the conversation readable in a compact rail next
-          to your meeting app.
+          Start capture and OpenCassava will keep the conversation readable without crowding your
+          meeting app.
         </p>
       </div>
     );
   }
 
   const grouped = groupByTimeBucket(utterances);
-  const bucketOffsets = grouped.reduce<number[]>((offsets, bucket, index) => {
+  const bucketOffsets = grouped.reduce<number[]>((offsets, _bucket, index) => {
     if (index === 0) {
       offsets.push(0);
       return offsets;

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { GemBadge } from "gem-badges";
-import { normalizeShortcut } from "../hotkeys";
 import { colors, radius, spacing, typography } from "../theme";
 import { WaveformVisualizer } from "./WaveformVisualizer";
 
@@ -19,7 +18,6 @@ interface Props {
   audioLevel?: number;
   audioLevelThem?: number;
   micCaptureMode: "auto" | "push-to-talk";
-  pushToTalkHotkey: string;
   micTransmitActive: boolean;
   onPushToTalkPress: () => void;
   onPushToTalkRelease: () => void;
@@ -56,7 +54,6 @@ export function CaptureCapsule({
   audioLevel = 0,
   audioLevelThem = 0,
   micCaptureMode,
-  pushToTalkHotkey,
   micTransmitActive,
   onPushToTalkPress,
   onPushToTalkRelease,
@@ -112,11 +109,10 @@ export function CaptureCapsule({
         ? "Importing audio"
         : engineWarming && !isRunning
           ? "Speech engine loading"
-        : isRunning
-          ? "Capturing live audio"
-          : "Ready beside your meeting";
+          : isRunning
+            ? null
+            : "Ready beside your meeting";
   const showPushToTalk = isRunning && micCaptureMode === "push-to-talk";
-  const pushToTalkShortcutLabel = normalizeShortcut(pushToTalkHotkey) || "Space";
   const primaryActionLabel = isStopping ? "Stopping" : isRunning ? "Stop" : "Record";
 
   const gemConfig = isStopping
@@ -170,9 +166,9 @@ export function CaptureCapsule({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: !isBusy ? "minmax(0, 1fr) auto auto auto" : "minmax(0, 1fr) auto auto",
+          gridTemplateColumns: "minmax(0, 1fr) auto",
           alignItems: "center",
-          gap: spacing[1],
+          gap: spacing[2],
         }}
       >
         <div
@@ -180,9 +176,9 @@ export function CaptureCapsule({
             display: "flex",
             alignItems: "center",
             gap: spacing[1],
+            flexWrap: "wrap",
             minWidth: 0,
             overflow: "hidden",
-            whiteSpace: "nowrap",
           }}
         >
           <span
@@ -226,163 +222,172 @@ export function CaptureCapsule({
               {formatDuration(duration)}
             </span>
           )}
-        </div>
-
-        <button
-          type="button"
-          onClick={isRunning ? onStop : onStart}
-          disabled={disabled || isStopping}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: spacing[1],
-            padding: `${spacing[1]}px ${spacing[2]}px`,
-            border: "none",
-            borderRadius: radius.full,
-            background: isStopping
-              ? "linear-gradient(135deg, #2e1c3f 0%, #17121f 100%)"
-              : isRunning
-                ? "linear-gradient(135deg, #411a22 0%, #1b1216 100%)"
-                : "linear-gradient(135deg, #173a37 0%, #10191b 100%)",
-            color: colors.textInverse,
-            cursor: disabled || isStopping ? "not-allowed" : "pointer",
-            opacity: disabled || isStopping ? 0.5 : 1,
-            fontSize: typography.sm,
-            fontWeight: 800,
-            boxShadow: isStopping
-              ? "0 12px 28px rgba(79, 56, 122, 0.24)"
-              : isRunning
-                ? "0 12px 28px rgba(120, 46, 60, 0.26)"
-                : "0 12px 28px rgba(28, 88, 82, 0.24)",
-            whiteSpace: "nowrap",
-          }}
-        >
-          <span
+          <button
+            type="button"
+            onClick={() => onSaveRecordingChange(!saveRecording)}
+            disabled={isBusy}
+            aria-pressed={saveRecording}
+            title={saveRecording ? "Audio will be saved with the next recording" : "Audio will not be saved"}
             style={{
-              width: 28,
-              height: 28,
-              borderRadius: radius.full,
               display: "inline-flex",
               alignItems: "center",
-              justifyContent: "center",
-              background: "rgba(11, 14, 16, 0.34)",
-              border: "1px solid rgba(255,255,255,0.16)",
-              boxShadow:
-                "inset 0 1px 0 rgba(255,255,255,0.10), 0 4px 10px rgba(0, 0, 0, 0.18)",
-              flexShrink: 0,
+              gap: spacing[1],
+              padding: `${spacing[1]}px ${spacing[2]}px`,
+              borderRadius: radius.full,
+              border: `1px solid ${saveRecording ? `${colors.accent}26` : colors.border}`,
+              background: saveRecording ? `${colors.accent}10` : colors.surface,
+              color: isBusy
+                ? colors.textMuted
+                : saveRecording
+                  ? colors.accent
+                  : colors.textSecondary,
+              cursor: isBusy ? "not-allowed" : "pointer",
+              opacity: isBusy ? 0.55 : 0.92,
+              fontSize: typography.xs,
+              fontWeight: 700,
+              whiteSpace: "nowrap",
             }}
           >
-            <GemBadge config={gemConfig} />
-          </span>
-          <span>{primaryActionLabel}</span>
-        </button>
-
-        <label
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: spacing[1],
-            padding: `${spacing[1]}px ${spacing[2]}px`,
-            borderRadius: radius.full,
-            border: `1px solid ${colors.border}`,
-            background: colors.surface,
-            color: isBusy ? colors.textMuted : colors.text,
-            fontSize: typography.xs,
-            fontWeight: 600,
-            cursor: isBusy ? "not-allowed" : "pointer",
-            opacity: isBusy ? 0.65 : 1,
-            whiteSpace: "nowrap",
-          }}
-        >
-          <input
-            type="checkbox"
-            checked={saveRecording}
-            onChange={(event) => onSaveRecordingChange(event.target.checked)}
-            disabled={isBusy}
-            style={{ cursor: isBusy ? "not-allowed" : "pointer" }}
-          />
-          Save audio
-        </label>
-
-        {!isBusy ? (
-          <button type="button" onClick={onImport} disabled={disabled} style={secondaryActionStyle(false)}>
-            Import
+            <span
+              aria-hidden="true"
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: radius.full,
+                display: "inline-block",
+                background: saveRecording ? colors.accent : "transparent",
+                border: `1px solid ${saveRecording ? colors.accent : colors.border}`,
+                flexShrink: 0,
+              }}
+            />
+            Save
           </button>
-        ) : null}
-      </div>
+        </div>
 
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: spacing[1],
-          flexWrap: "wrap",
-        }}
-      >
-        <span style={{ fontSize: typography.sm, color: colors.textSecondary }}>{segmentsLabel}</span>
-      </div>
-
-      {showPushToTalk && (
         <div
           style={{
             display: "flex",
-            flexWrap: "wrap",
             alignItems: "center",
-            gap: spacing[2],
-            padding: `${spacing[2]}px ${spacing[3]}px`,
-            borderRadius: 20,
-            background: micTransmitActive ? `${colors.success}12` : colors.surfaceElevated,
-            border: `1px solid ${micTransmitActive ? `${colors.success}33` : colors.border}`,
+            justifyContent: "flex-end",
+            flexWrap: "wrap",
+            gap: spacing[1],
           }}
         >
           <button
             type="button"
-            onPointerDown={(event) => {
-              event.currentTarget.setPointerCapture(event.pointerId);
-              onPushToTalkPress();
-            }}
-            onPointerUp={(event) => {
-              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                event.currentTarget.releasePointerCapture(event.pointerId);
-              }
-              onPushToTalkRelease();
-            }}
-            onPointerCancel={onPushToTalkRelease}
-            disabled={isStopping}
+            onClick={isRunning ? onStop : onStart}
+            disabled={disabled || isStopping}
             style={{
               display: "inline-flex",
               alignItems: "center",
-              justifyContent: "center",
-              padding: `${spacing[1]}px ${spacing[3]}px`,
-              borderRadius: radius.full,
+              gap: spacing[1],
+              padding: `${spacing[1]}px ${spacing[2]}px`,
               border: "none",
-              background: micTransmitActive
-                ? "linear-gradient(135deg, #1c4d33 0%, #12251a 100%)"
-                : "linear-gradient(135deg, #44483f 0%, #1f231d 100%)",
+              borderRadius: radius.full,
+              background: isStopping
+                ? "linear-gradient(135deg, #2e1c3f 0%, #17121f 100%)"
+                : isRunning
+                  ? "linear-gradient(135deg, #411a22 0%, #1b1216 100%)"
+                  : "linear-gradient(135deg, #173a37 0%, #10191b 100%)",
               color: colors.textInverse,
-              cursor: isStopping ? "not-allowed" : "pointer",
-              opacity: isStopping ? 0.6 : 1,
+              cursor: disabled || isStopping ? "not-allowed" : "pointer",
+              opacity: disabled || isStopping ? 0.5 : 1,
               fontSize: typography.sm,
               fontWeight: 800,
+              boxShadow: isStopping
+                ? "0 12px 28px rgba(79, 56, 122, 0.24)"
+                : isRunning
+                  ? "0 12px 28px rgba(120, 46, 60, 0.26)"
+                  : "0 12px 28px rgba(28, 88, 82, 0.24)",
               whiteSpace: "nowrap",
             }}
           >
-            {micTransmitActive ? "Talking" : "Hold to talk"}
+            <span
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: radius.full,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "rgba(11, 14, 16, 0.34)",
+                border: "1px solid rgba(255,255,255,0.16)",
+                boxShadow:
+                  "inset 0 1px 0 rgba(255,255,255,0.10), 0 4px 10px rgba(0, 0, 0, 0.18)",
+                flexShrink: 0,
+              }}
+            >
+              <GemBadge config={gemConfig} />
+            </span>
+            <span>{primaryActionLabel}</span>
           </button>
-          <span style={{ fontSize: typography.sm, color: colors.text }}>
-            {micTransmitActive ? "Mic is live to transcription." : "Mic stays muted until you hold the trigger."}
-          </span>
-          <span style={{ fontSize: typography.xs, color: colors.textMuted }}>
-            Shortcut: {pushToTalkShortcutLabel}
-          </span>
+
+          {showPushToTalk && (
+            <>
+              <button
+                type="button"
+                onPointerDown={(event) => {
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  onPushToTalkPress();
+                }}
+                onPointerUp={(event) => {
+                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
+                  onPushToTalkRelease();
+                }}
+                onPointerCancel={onPushToTalkRelease}
+                disabled={isStopping}
+                aria-pressed={micTransmitActive}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: `${spacing[1]}px ${spacing[3]}px`,
+                  borderRadius: radius.full,
+                  border: "none",
+                  background: micTransmitActive
+                    ? "linear-gradient(135deg, #1c4d33 0%, #12251a 100%)"
+                    : "linear-gradient(135deg, #44483f 0%, #1f231d 100%)",
+                  color: colors.textInverse,
+                  cursor: isStopping ? "not-allowed" : "pointer",
+                  opacity: isStopping ? 0.6 : 1,
+                  fontSize: typography.sm,
+                  fontWeight: 800,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {micTransmitActive ? "Talking" : "Hold to talk"}
+              </button>
+            </>
+          )}
+
+          {!isBusy ? (
+            <button type="button" onClick={onImport} disabled={disabled} style={secondaryActionStyle(false)}>
+              Import
+            </button>
+          ) : null}
         </div>
-      )}
+      </div>
+
+      {segmentsLabel ? (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: spacing[2],
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: typography.sm, color: colors.textSecondary }}>{segmentsLabel}</span>
+        </div>
+      ) : null}
 
       {(isRunning || isStopping || isImporting) && (
         <div
           style={{
-            display: "flex",
-            flexWrap: "wrap",
+            display: "grid",
+            gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
             gap: spacing[2],
             padding: `${spacing[2]}px ${spacing[3]}px`,
             borderRadius: 20,
@@ -434,7 +439,7 @@ function LevelPill({
     if (!element) return;
 
     const updateWidth = () => {
-      const nextWidth = Math.max(72, Math.floor(element.clientWidth - 58));
+      const nextWidth = Math.max(56, Math.floor(element.clientWidth - 58));
       setGraphWidth(nextWidth);
     };
 
@@ -452,7 +457,6 @@ function LevelPill({
     <div
       ref={containerRef}
       style={{
-        flex: "1 1 150px",
         minWidth: 0,
         display: "flex",
         alignItems: "center",

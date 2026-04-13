@@ -181,8 +181,11 @@ function App() {
   const [saveRecording, setSaveRecording] = useState(false);
   const [recordingFiles, setRecordingFiles] = useState<{ micPath: string; sysPath: string } | null>(null);
   const [pushToTalkButtonHeld, setPushToTalkButtonHeld] = useState(false);
+  const [hasUnreadAutoSummary, setHasUnreadAutoSummary] = useState(false);
   const currentSessionIdRef = useRef<string | undefined>(currentSessionId);
   currentSessionIdRef.current = currentSessionId;
+  const activeDrawerRef = useRef<DrawerKey | null>(activeDrawer);
+  activeDrawerRef.current = activeDrawer;
 
   const isPushToTalkMode = settings?.micCaptureMode === "push-to-talk";
   const desiredMicTransmitActive = !isPushToTalkMode || pushToTalkButtonHeld;
@@ -325,6 +328,12 @@ function App() {
     setMicTransmitActive(desiredMicTransmitActive);
     invoke("set_mic_transmit_active", { active: desiredMicTransmitActive }).catch(console.error);
   }, [desiredMicTransmitActive, settings]);
+
+  useEffect(() => {
+    if (activeDrawer === "notes") {
+      setHasUnreadAutoSummary(false);
+    }
+  }, [activeDrawer]);
 
   // Keyboard shortcuts
   useKeyboardShortcuts({
@@ -496,6 +505,9 @@ function App() {
       listen<NotesReadyEvent>("notes-ready", (e) => {
         if (e.payload.sessionId === currentSessionIdRef.current) {
           setCurrentSessionNotes(e.payload.notes);
+          if (activeDrawerRef.current !== "notes") {
+            setHasUnreadAutoSummary(true);
+          }
         }
       }),
 
@@ -556,6 +568,7 @@ function App() {
       setUtterances([]);
       setSuggestions([]);
       setCurrentSessionNotes(null);
+      setHasUnreadAutoSummary(false);
       setVolatileYouText("");
       setVolatileThemText("");
       setSpeakerLabels({});
@@ -627,6 +640,7 @@ function App() {
       setUtterances([]);
       setSuggestions([]);
       setCurrentSessionNotes(null);
+      setHasUnreadAutoSummary(false);
       setVolatileYouText("");
       setVolatileThemText("");
       setTranscriptionProgress({ capturedSegments: 0, processedSegments: 0 });
@@ -671,6 +685,7 @@ function App() {
       const sessionData = await invoke<SessionDetails>("load_session", { id: sessionId });
       setUtterances(sessionData.transcript);
       setCurrentSessionNotes(sessionData.notes ?? null);
+      setHasUnreadAutoSummary(false);
       setCurrentSessionId(sessionId);
       setActiveDrawer(null);
     } catch (err) {
@@ -803,11 +818,6 @@ function App() {
     );
   }
 
-  const isLocalUrl = (url?: string) => !url || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(url);
-  const isLocalMode =
-    (settings?.llmProvider === "ollama" && settings?.embeddingProvider === "ollama") ||
-    (settings?.llmProvider === "openai" && settings?.embeddingProvider === "openai" &&
-      isLocalUrl(settings?.openAiLlmBaseUrl) && isLocalUrl(settings?.openAiEmbedBaseUrl));
   const kbConnected = !!(settings?.obsidianVaultPath || settings?.kbFolderPath);
   const kbFileCount = settings?.obsidianVaultPath
     ? new Set([...(settings.obsidianKbIncludePaths || []), settings.obsidianNotesFolder]).size
@@ -815,50 +825,25 @@ function App() {
       ? 1
       : 0;
 
-  const railItems = [
-    { key: "transcript" as const, label: "Transcript", shortLabel: "Tx" },
+  const navItems = [
+    { key: "transcript" as const, label: "Transcript", shortLabel: "Tx", icon: "transcript" as const },
     {
       key: "suggestions" as const,
-      label: "Suggest",
+      label: "Ideas",
       shortLabel: "Sg",
+      icon: "ideas" as const,
       badge: suggestions.length > 0 ? suggestions.length : undefined,
     },
     {
       key: "notes" as const,
       label: "Notes",
       shortLabel: "Nt",
-      badge: currentSessionNotes ? 1 : undefined,
+      icon: "notes" as const,
+      badge: hasUnreadAutoSummary ? 1 : undefined,
     },
-    { key: "history" as const, label: "History", shortLabel: "Hs" },
-    { key: "settings" as const, label: "Settings", shortLabel: "St" },
+    { key: "history" as const, label: "History", shortLabel: "Hs", icon: "history" as const },
+    { key: "settings" as const, label: "Settings", shortLabel: "St", icon: "settings" as const },
     { key: "about" as const, label: "About", shortLabel: "Ab", icon: "diamond" as const },
-  ];
-  const railStatuses: Array<{
-    label: string;
-    tone: "neutral" | "accent" | "success" | "warning";
-    title: string;
-  }> = [
-    {
-      label: isStopping ? "Sync" : isRunning ? "Live" : isImporting ? "Load" : "Idle",
-      tone: isStopping
-        ? "warning"
-        : isRunning
-          ? "success"
-          : isImporting
-            ? "accent"
-            : "neutral",
-      title: "Capture state",
-    },
-    {
-      label: kbConnected ? "KB" : "No KB",
-      tone: kbConnected ? "accent" : "neutral",
-      title: kbConnected ? "Knowledge base connected" : "Knowledge base not connected",
-    },
-    {
-      label: isLocalMode ? "Local" : "Cloud",
-      tone: isLocalMode ? "success" : "warning",
-      title: isLocalMode ? "Local AI mode" : "Cloud AI mode",
-    },
   ];
   const drawerMeta: Record<DrawerKey, { title: string; subtitle: string }> = {
     suggestions: {
@@ -875,7 +860,7 @@ function App() {
     },
     settings: {
       title: "Settings",
-      subtitle: "Tune providers, knowledge sources, and capture behavior for the rail.",
+      subtitle: "Tune providers, knowledge sources, and capture behavior for your workspace.",
     },
     about: {
       title: "About",
@@ -895,9 +880,8 @@ function App() {
       activeDrawer={activeDrawer}
       drawerTitle={activeDrawer ? drawerMeta[activeDrawer].title : ""}
       drawerSubtitle={activeDrawer ? drawerMeta[activeDrawer].subtitle : ""}
-      railItems={railItems}
-      railStatuses={railStatuses}
-      onSelectRailItem={(key) => {
+      navItems={navItems}
+      onSelectNavItem={(key) => {
         if (key === "transcript") {
           setActiveDrawer(null);
           return;
@@ -926,7 +910,6 @@ function App() {
           audioLevel={audioLevel}
           audioLevelThem={audioLevelThem}
           micCaptureMode={settings?.micCaptureMode ?? "auto"}
-          pushToTalkHotkey={settings?.pushToTalkHotkey ?? "Space"}
           micTransmitActive={micTransmitActive}
           onPushToTalkPress={() => setPushToTalkButtonHeld(true)}
           onPushToTalkRelease={() => setPushToTalkButtonHeld(false)}
