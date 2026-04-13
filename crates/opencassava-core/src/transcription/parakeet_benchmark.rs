@@ -4,7 +4,7 @@ use super::parakeet::{
 use crate::audio::recorder::read_wav_as_f32_16k;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -416,13 +416,54 @@ fn measure_process_rss(pid: u32, wait: Duration) -> Result<u64, String> {
     thread::sleep(wait);
     let pid = Pid::from_u32(pid);
     let mut system = System::new();
-    system.refresh_process_specifics(pid, ProcessRefreshKind::new().with_memory());
-    system
-        .process(pid)
-        .map(|process| process.memory())
-        .ok_or_else(|| {
-            format!("Benchmark worker process {pid} exited before RSS could be sampled.")
-        })
+    system.refresh_processes_specifics(ProcessRefreshKind::new().with_memory());
+    snapshot_process_tree_metrics(&system, pid)
+        .map(|summary| summary.peak_rss_bytes)
+        .ok_or_else(|| format!("Benchmark worker process {pid} exited before RSS could be sampled."))
+}
+
+fn collect_process_tree_pids(root: Pid, parents: &HashMap<Pid, Option<Pid>>) -> Vec<Pid> {
+    let mut queue = VecDeque::from([root]);
+    let mut visited = HashSet::from([root]);
+    let mut ordered = Vec::new();
+
+    while let Some(pid) = queue.pop_front() {
+        ordered.push(pid);
+        for (&candidate, &parent) in parents.iter() {
+            if parent == Some(pid) && visited.insert(candidate) {
+                queue.push_back(candidate);
+            }
+        }
+    }
+
+    ordered
+}
+
+fn snapshot_process_tree_metrics(system: &System, root: Pid) -> Option<ProcessMetricSummary> {
+    let parents = system
+        .processes()
+        .iter()
+        .map(|(&pid, process)| (pid, process.parent()))
+        .collect::<HashMap<_, _>>();
+    let process_tree = collect_process_tree_pids(root, &parents);
+
+    let mut saw_any = false;
+    let mut total_cpu = 0.0_f64;
+    let mut total_rss_bytes = 0_u64;
+
+    for pid in process_tree {
+        let Some(process) = system.process(pid) else {
+            continue;
+        };
+        saw_any = true;
+        total_cpu += f64::from(process.cpu_usage());
+        total_rss_bytes = total_rss_bytes.saturating_add(process.memory());
+    }
+
+    saw_any.then_some(ProcessMetricSummary {
+        average_cpu_percent: total_cpu as f32,
+        peak_rss_bytes: total_rss_bytes,
+    })
 }
 
 struct ProcessMonitor {
@@ -439,8 +480,7 @@ impl ProcessMonitor {
             let mut system = System::new();
             let interval = poll_interval.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
 
-            system
-                .refresh_process_specifics(pid, ProcessRefreshKind::new().with_cpu().with_memory());
+            system.refresh_processes_specifics(ProcessRefreshKind::new().with_cpu().with_memory());
             thread::sleep(interval);
 
             let mut total_cpu = 0.0_f64;
@@ -448,14 +488,11 @@ impl ProcessMonitor {
             let mut peak_rss_bytes = 0_u64;
 
             loop {
-                system.refresh_process_specifics(
-                    pid,
-                    ProcessRefreshKind::new().with_cpu().with_memory(),
-                );
-                match system.process(pid) {
-                    Some(process) => {
-                        total_cpu += f64::from(process.cpu_usage());
-                        peak_rss_bytes = peak_rss_bytes.max(process.memory());
+                system.refresh_processes_specifics(ProcessRefreshKind::new().with_cpu().with_memory());
+                match snapshot_process_tree_metrics(&system, pid) {
+                    Some(summary) => {
+                        total_cpu += f64::from(summary.average_cpu_percent);
+                        peak_rss_bytes = peak_rss_bytes.max(summary.peak_rss_bytes);
                         samples += 1;
                     }
                     None => break,
@@ -633,5 +670,32 @@ mod tests {
 
         let samples = load_audio_samples(&wav_path).unwrap();
         assert_eq!(samples.len(), 8);
+    }
+
+    #[test]
+    fn process_tree_collection_includes_descendants() {
+        let root = Pid::from_u32(10);
+        let child = Pid::from_u32(11);
+        let grandchild = Pid::from_u32(12);
+        let sibling = Pid::from_u32(13);
+        let other_root = Pid::from_u32(20);
+        let unrelated = Pid::from_u32(21);
+
+        let parents = HashMap::from([
+            (root, None),
+            (child, Some(root)),
+            (grandchild, Some(child)),
+            (sibling, Some(root)),
+            (other_root, None),
+            (unrelated, Some(other_root)),
+        ]);
+
+        let mut collected = collect_process_tree_pids(root, &parents)
+            .into_iter()
+            .map(|pid| pid.as_u32())
+            .collect::<Vec<_>>();
+        collected.sort_unstable();
+
+        assert_eq!(collected, vec![10, 11, 12, 13]);
     }
 }

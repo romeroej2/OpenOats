@@ -8,8 +8,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$base = Get-Content (Resolve-Path $BaseReport) -Raw | ConvertFrom-Json -Depth 10
-$head = Get-Content (Resolve-Path $HeadReport) -Raw | ConvertFrom-Json -Depth 10
+$base = Get-Content (Resolve-Path $BaseReport) -Raw | ConvertFrom-Json
+$head = Get-Content (Resolve-Path $HeadReport) -Raw | ConvertFrom-Json
 
 $baseRuns = @{}
 foreach ($run in @($base.runs)) {

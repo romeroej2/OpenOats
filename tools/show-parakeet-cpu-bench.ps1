@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $reportPath = (Resolve-Path $Report).Path
-$json = Get-Content $reportPath -Raw | ConvertFrom-Json -Depth 10
+$json = Get-Content $reportPath -Raw | ConvertFrom-Json
 
 $runs = @($json.runs)
 if ($runs.Count -eq 0) {
