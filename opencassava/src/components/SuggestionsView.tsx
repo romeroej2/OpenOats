@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { KBResult, Suggestion } from "../types";
 import { colors, radius, spacing, typography } from "../theme";
@@ -57,7 +57,7 @@ function parseBullets(text: string): ParsedBullet[] {
     if (trimmed.startsWith("\u2022") || trimmed.startsWith("-") || trimmed.startsWith("*")) {
       if (currentHeadline) {
         bullets.push({
-          id: Math.random().toString(36).slice(2, 11),
+          id: `bullet-${bullets.length}`,
           headline: currentHeadline,
           detail: currentDetail || undefined,
         });
@@ -76,7 +76,7 @@ function parseBullets(text: string): ParsedBullet[] {
 
   if (currentHeadline) {
     bullets.push({
-      id: Math.random().toString(36).slice(2, 11),
+      id: `bullet-${bullets.length}`,
       headline: currentHeadline,
       detail: currentDetail || undefined,
     });
@@ -214,7 +214,7 @@ function BulletRow({ bullet }: { bullet: ParsedBullet }) {
   );
 }
 
-function SuggestionCard({
+const SuggestionCard = memo(function SuggestionCard({
   suggestion,
   isPrimary,
   onDismiss,
@@ -223,7 +223,7 @@ function SuggestionCard({
   isPrimary: boolean;
   onDismiss: () => void;
 }) {
-  const bullets = parseBullets(suggestion.text);
+  const bullets = useMemo(() => parseBullets(suggestion.text), [suggestion.text]);
   const isSmartQuestion = suggestion.kind === "smart_question";
 
   return (
@@ -271,10 +271,12 @@ function SuggestionCard({
         </button>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: spacing[2] }}>
-        {bullets.length > 0 ? (
-          bullets.map((bullet) => <BulletRow key={bullet.id} bullet={bullet} />)
-        ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: spacing[2] }}>
+          {bullets.length > 0 ? (
+            bullets.map((bullet) => (
+              <BulletRow key={`${suggestion.id}-${bullet.id}`} bullet={bullet} />
+            ))
+          ) : (
           <div
             style={{
               fontSize: typography.md,
@@ -323,7 +325,7 @@ function SuggestionCard({
       ) : null}
     </article>
   );
-}
+});
 
 export function SuggestionsView({
   suggestions,

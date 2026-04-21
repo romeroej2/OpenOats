@@ -3,34 +3,30 @@ import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
-  Utterance,
-  Suggestion,
-  KBResult,
   AppSettings,
   EnhancedNotes,
   SessionDetails,
   SttStatus,
-  TranscriptionProgress,
 } from "./types";
-import { CaptureCapsule } from "./components/CaptureCapsule";
+import { CaptureCapsuleContainer } from "./components/CaptureCapsuleContainer";
 import { SaveRecordingModal } from "./components/SaveRecordingModal";
-import { TranscriptView } from "./components/TranscriptView";
-import { SuggestionsView } from "./components/SuggestionsView";
 import { NotesView } from "./components/NotesView";
 import { SettingsView } from "./components/SettingsView";
-import { TranscriptSearch } from "./components/TranscriptSearch";
-import { ExportMenu } from "./components/ExportMenu";
 import { AboutView } from "./components/AboutView";
 import { CompanionShell, type DrawerKey } from "./components/CompanionShell";
 import { SessionHistoryPanel } from "./components/SessionHistoryPanel";
+import { SuggestionsDrawer } from "./components/SuggestionsDrawer";
+import { TranscriptWorkspace } from "./components/TranscriptWorkspace";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import { colors, radius, typography, spacing } from "./theme";
+import { liveSessionStore, useLiveSessionStore } from "./hooks/useLiveSessionStore";
+import { useLiveSessionSubscriptions } from "./hooks/useLiveSessionSubscriptions";
+import {
+  dispatchTranscriptFocusSearch,
+  dispatchTranscriptOpenExport,
+} from "./transcriptCommands";
+import { colors, typography, spacing } from "./theme";
 
 type ModelState = "checking" | "missing" | "downloading" | "ready";
-type SuggestionCheckEvent = {
-  checkedAt: string;
-  surfaced: boolean;
-};
 type SttSetupStatusEvent = {
   stage: string;
   message: string;
@@ -136,32 +132,11 @@ function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
-  const [utterances, setUtterances] = useState<Utterance[]>([]);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [activeDrawer, setActiveDrawer] = useState<DrawerKey | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>();
   const [currentSessionNotes, setCurrentSessionNotes] = useState<EnhancedNotes | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
-  const [transcriptionProgress, setTranscriptionProgress] = useState<TranscriptionProgress>({
-    capturedSegments: 0,
-    processedSegments: 0,
-  });
-  const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false);
-  const [lastSuggestionCheckAt, setLastSuggestionCheckAt] = useState<string | null>(null);
-  const [lastSuggestionCheckSurfaced, setLastSuggestionCheckSurfaced] = useState<boolean | null>(null);
-  const [volatileYouText, setVolatileYouText] = useState("");
-  const [volatileThemText, setVolatileThemText] = useState("");
-  
-  const [showSearch, setShowSearch] = useState(false);
-  const [showExport, setShowExport] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<number[]>([]);
-  const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
-  const [audioLevel, setAudioLevel] = useState(0);
-  const [audioLevelRaw, setAudioLevelRaw] = useState(0);
-  const [audioLevelThem, setAudioLevelThem] = useState(0);
-  const [micTransmitActive, setMicTransmitActive] = useState(true);
   const [isSettingUpStt, setIsSettingUpStt] = useState(false);
   const [sttSetupMessage, setSttSetupMessage] = useState("");
   const [sttSetupStage, setSttSetupStage] = useState("");
@@ -171,7 +146,6 @@ function App() {
   const [parakeetWarming, setParakeetWarming] = useState(false);
   const [omniAsrWarming, setOmniAsrWarming] = useState(false);
   const [cohereTranscribeWarming, setCohereTranscribeWarming] = useState(false);
-  const [speakerLabels, setSpeakerLabels] = useState<Record<string, string>>({});
   const [releaseCheck, setReleaseCheck] = useState<ReleaseCheckState>({
     status: "checking",
     currentVersion: null,
@@ -186,13 +160,12 @@ function App() {
   currentSessionIdRef.current = currentSessionId;
   const activeDrawerRef = useRef<DrawerKey | null>(activeDrawer);
   activeDrawerRef.current = activeDrawer;
+  const suggestionCount = useLiveSessionStore((state) => state.suggestions.length);
+
+  useLiveSessionSubscriptions();
 
   const isPushToTalkMode = settings?.micCaptureMode === "push-to-talk";
   const desiredMicTransmitActive = !isPushToTalkMode || pushToTalkButtonHeld;
-
-  const handleRenameParticipant = useCallback((key: string, newName: string) => {
-    setSpeakerLabels((prev) => ({ ...prev, [key]: newName }));
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -325,7 +298,6 @@ function App() {
       return;
     }
 
-    setMicTransmitActive(desiredMicTransmitActive);
     invoke("set_mic_transmit_active", { active: desiredMicTransmitActive }).catch(console.error);
   }, [desiredMicTransmitActive, settings]);
 
@@ -354,13 +326,9 @@ function App() {
     },
     onFocusSearch: () => {
       setActiveDrawer(null);
-      setShowSearch(true);
+      dispatchTranscriptFocusSearch();
     },
-    onExportTranscript: () => {
-      if (utterances.length > 0) {
-        setShowExport(true);
-      }
-    },
+    onExportTranscript: () => dispatchTranscriptOpenExport(),
     onToggleSidebar: () =>
       setActiveDrawer((previous) => (previous === "history" ? null : "history")),
   });
@@ -377,36 +345,6 @@ function App() {
   // and must not re-register on settings changes (would cause duplicate events).
   useEffect(() => {
     const unlisteners = [
-      listen<{ text: string; speaker: string; participantId?: string; participantLabel?: string }>("transcript", (e) => {
-        const { text, speaker, participantId, participantLabel } = e.payload;
-        setUtterances((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            text,
-            speaker: speaker === "you" ? "you" : "them",
-            participantId: participantId || null,
-            participantLabel: participantLabel || null,
-            timestamp: new Date().toISOString(),
-          },
-        ]);
-
-        if (speaker === "you") {
-          setVolatileYouText("");
-        } else {
-          setVolatileThemText("");
-        }
-      }),
-
-      listen<{ text: string; speaker: string }>("transcript-volatile", (e) => {
-        const { text, speaker } = e.payload;
-        if (speaker === "you") {
-          setVolatileYouText(text);
-        } else {
-          setVolatileThemText(text);
-        }
-      }),
-
       listen<number>("model-download-progress", (e) => {
         setDownloadProgress(e.payload);
       }),
@@ -434,54 +372,11 @@ function App() {
         const line = e.payload.trim();
         if (!line) return;
         setInstallLogLines((prev) => [...prev, line].slice(-80));
-        
+
         const percentMatch = line.match(/(\d{1,3})%/);
         if (percentMatch) {
           setDownloadProgress(parseInt(percentMatch[1], 10));
         }
-      }),
-
-      listen<{ id: string; kind?: "knowledge_base" | "smart_question"; text: string; kbHits?: KBResult[] }>("suggestion", (e) => {
-        setIsGeneratingSuggestion(false);
-        setSuggestions((prev) => [
-          ...prev,
-          {
-            id: e.payload.id,
-            kind: e.payload.kind || "knowledge_base",
-            text: e.payload.text,
-            timestamp: new Date().toISOString(),
-            kbHits: e.payload.kbHits || [],
-          },
-        ]);
-      }),
-
-      listen("suggestion-generating", () => {
-        setIsGeneratingSuggestion(true);
-      }),
-
-      listen("suggestion-finished", () => {
-        setIsGeneratingSuggestion(false);
-      }),
-
-      listen<SuggestionCheckEvent>("suggestion-check-started", (e) => {
-        setLastSuggestionCheckAt(e.payload.checkedAt);
-        setLastSuggestionCheckSurfaced(false);
-      }),
-
-      listen<SuggestionCheckEvent>("suggestion-check-finished", (e) => {
-        setLastSuggestionCheckAt(e.payload.checkedAt);
-        setLastSuggestionCheckSurfaced(e.payload.surfaced);
-      }),
-
-      listen<{ micInput: number; micPostGate: number; them: number; micTransmitActive: boolean }>("audio-level", (e) => {
-        setAudioLevelRaw(e.payload.micInput);
-        setAudioLevel(e.payload.micPostGate);
-        setAudioLevelThem(e.payload.them);
-        setMicTransmitActive(e.payload.micTransmitActive);
-      }),
-
-      listen<TranscriptionProgress>("transcription-progress", (e) => {
-        setTranscriptionProgress(e.payload);
       }),
 
       listen<NotesPublishStatusEvent>("notes-publish-status", (e) => {
@@ -565,14 +460,9 @@ function App() {
     try {
       const sessionId = await invoke<string>("start_transcription", { saveRecording });
       setCurrentSessionId(sessionId);
-      setUtterances([]);
-      setSuggestions([]);
+      liveSessionStore.resetSession();
       setCurrentSessionNotes(null);
       setHasUnreadAutoSummary(false);
-      setVolatileYouText("");
-      setVolatileThemText("");
-      setSpeakerLabels({});
-      setTranscriptionProgress({ capturedSegments: 0, processedSegments: 0 });
       setIsStopping(false);
       setStopStatusTone("success");
       setStopStatusMessage(null);
@@ -588,13 +478,14 @@ function App() {
       return;
     }
 
+    const progress = liveSessionStore.getState().transcriptionProgress;
     setIsStopping(true);
     setStopStatusTone("warning");
     setStopStatusMessage(
-      `Recording stopped. Processing remaining segments (${transcriptionProgress.processedSegments}/${transcriptionProgress.capturedSegments}).`,
+      `Recording stopped. Processing remaining segments (${progress.processedSegments}/${progress.capturedSegments}).`,
     );
-    setVolatileYouText("");
-    setVolatileThemText("");
+    liveSessionStore.setVolatileTranscript("you", "");
+    liveSessionStore.setVolatileTranscript("them", "");
 
     try {
       await invoke("stop_transcription");
@@ -637,13 +528,9 @@ function App() {
     try {
       const sessionId = await invoke<string>("start_import_transcription");
       setCurrentSessionId(sessionId);
-      setUtterances([]);
-      setSuggestions([]);
+      liveSessionStore.resetSession();
       setCurrentSessionNotes(null);
       setHasUnreadAutoSummary(false);
-      setVolatileYouText("");
-      setVolatileThemText("");
-      setTranscriptionProgress({ capturedSegments: 0, processedSegments: 0 });
       setIsImporting(true);
       setIsRunning(true);
       setActiveDrawer(null);
@@ -656,34 +543,10 @@ function App() {
     }
   };
 
-  const handleDismissSuggestion = useCallback((id: string) => {
-    setSuggestions((prev) => prev.filter((s) => s.id !== id));
-    invoke("suggestion_feedback", { sessionId: currentSessionId, suggestionId: id, helpful: false }).catch(console.error);
-  }, [currentSessionId]);
-
-  const handleSearch = (query: string) => {
-    setSearchQuery(query);
-    if (!query.trim()) {
-      setSearchResults([]);
-      setCurrentSearchIndex(0);
-      return;
-    }
-
-    const indices: number[] = [];
-    const lowerQuery = query.toLowerCase();
-    utterances.forEach((u, i) => {
-      if (u.text.toLowerCase().includes(lowerQuery)) {
-        indices.push(i);
-      }
-    });
-    setSearchResults(indices);
-    setCurrentSearchIndex(0);
-  };
-
   const handleLoadSession = async (sessionId: string) => {
     try {
       const sessionData = await invoke<SessionDetails>("load_session", { id: sessionId });
-      setUtterances(sessionData.transcript);
+      liveSessionStore.replaceTranscript(sessionData.transcript);
       setCurrentSessionNotes(sessionData.notes ?? null);
       setHasUnreadAutoSummary(false);
       setCurrentSessionId(sessionId);
@@ -832,7 +695,7 @@ function App() {
       label: "Ideas",
       shortLabel: "Sg",
       icon: "ideas" as const,
-      badge: suggestions.length > 0 ? suggestions.length : undefined,
+      badge: suggestionCount > 0 ? suggestionCount : undefined,
     },
     {
       key: "notes" as const,
@@ -891,12 +754,10 @@ function App() {
       }}
       onCloseDrawer={() => setActiveDrawer(null)}
       captureCapsule={
-        <CaptureCapsule
+        <CaptureCapsuleContainer
           isRunning={isRunning}
           isImporting={isImporting}
           isStopping={isStopping}
-          capturedSegments={transcriptionProgress.capturedSegments}
-          processedSegments={transcriptionProgress.processedSegments}
           onStart={handleStart}
           onStop={handleStop}
           onImport={handleImport}
@@ -906,11 +767,7 @@ function App() {
             ((parakeetWarming || omniAsrWarming || cohereTranscribeWarming) && !isRunning)
           }
           engineWarming={(parakeetWarming || omniAsrWarming || cohereTranscribeWarming) && !isRunning}
-          audioLevelRaw={audioLevelRaw}
-          audioLevel={audioLevel}
-          audioLevelThem={audioLevelThem}
           micCaptureMode={settings?.micCaptureMode ?? "auto"}
-          micTransmitActive={micTransmitActive}
           onPushToTalkPress={() => setPushToTalkButtonHeld(true)}
           onPushToTalkRelease={() => setPushToTalkButtonHeld(false)}
           saveRecording={saveRecording}
@@ -977,92 +834,7 @@ function App() {
           </div>
         ) : undefined
       }
-      transcriptUtilities={
-        <div style={{ display: "flex", flexDirection: "column", gap: spacing[2] }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              justifyContent: "space-between",
-              gap: spacing[3],
-              flexWrap: "wrap",
-            }}
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: spacing[1] }}>
-              <span
-                style={{
-                  fontSize: typography.xs,
-                  color: colors.textMuted,
-                  fontWeight: 700,
-                  letterSpacing: "0.1em",
-                  textTransform: "uppercase",
-                }}
-              >
-                Conversation
-              </span>
-              <div style={{ fontSize: typography["2xl"], color: colors.text, fontWeight: 700 }}>
-                Transcript
-              </div>
-              <span style={{ fontSize: typography.sm, color: colors.textSecondary }}>
-                {utterances.length > 0
-                  ? `${utterances.length} saved lines${currentSessionId ? ` in session ${currentSessionId.slice(0, 8)}` : ""}`
-                  : "Waiting for the first transcript line"}
-              </span>
-            </div>
-
-            <div style={{ display: "flex", gap: spacing[2], flexWrap: "wrap" }}>
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveDrawer(null);
-                  setShowSearch((current) => !current);
-                }}
-                style={headerActionButtonStyle(showSearch)}
-              >
-                {showSearch ? "Hide search" : "Search"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowExport(true)}
-                disabled={utterances.length === 0}
-                style={headerActionButtonStyle(false)}
-              >
-                Export
-              </button>
-            </div>
-          </div>
-
-          {showSearch && (
-            <TranscriptSearch
-              compact
-              onSearch={handleSearch}
-              onClose={() => {
-                setShowSearch(false);
-                handleSearch("");
-              }}
-              resultCount={searchResults.length}
-              currentIndex={currentSearchIndex}
-              onNext={() =>
-                setCurrentSearchIndex((index) => Math.min(index + 1, searchResults.length - 1))
-              }
-              onPrev={() => setCurrentSearchIndex((index) => Math.max(index - 1, 0))}
-            />
-          )}
-        </div>
-      }
-      transcriptContent={
-        <TranscriptView
-          utterances={utterances}
-          volatileYouText={volatileYouText}
-          volatileThemText={volatileThemText}
-          searchQuery={searchQuery}
-          searchResults={searchResults}
-          currentSearchIndex={currentSearchIndex}
-          speakerLabels={speakerLabels}
-          onRenameParticipant={handleRenameParticipant}
-          layout="companion"
-        />
-      }
+      transcriptPanel={<TranscriptWorkspace currentSessionId={currentSessionId} />}
       drawerContent={
         <>
           <div style={paneStyle(activeDrawer === "history")}>
@@ -1077,14 +849,10 @@ function App() {
           </div>
 
           <div style={paneStyle(activeDrawer === "suggestions")}>
-            <SuggestionsView
-              compact
-              suggestions={suggestions}
-              isGenerating={isGeneratingSuggestion}
+            <SuggestionsDrawer
+              currentSessionId={currentSessionId}
               kbConnected={kbConnected}
               kbFileCount={kbFileCount}
-              lastCheckedAt={lastSuggestionCheckAt}
-              lastCheckSurfaced={lastSuggestionCheckSurfaced}
               suggestionsEnabled={settings?.suggestionsEnabled ?? true}
               suggestionIntervalSeconds={settings?.suggestionIntervalSeconds ?? 30}
               onSuggestionsEnabledChange={(enabled) =>
@@ -1092,16 +860,6 @@ function App() {
               }
               onSuggestionIntervalChange={(seconds) =>
                 handleSuggestionSettingsChange({ suggestionIntervalSeconds: seconds })
-              }
-              onDismiss={handleDismissSuggestion}
-              onInjectTest={(suggestion) =>
-                setSuggestions((previous) => [
-                  ...previous,
-                  {
-                    ...suggestion,
-                    timestamp: new Date().toISOString(),
-                  },
-                ])
               }
             />
           </div>
@@ -1144,7 +902,6 @@ function App() {
       }
       modal={
         <>
-          {showExport && <ExportMenu utterances={utterances} onClose={() => setShowExport(false)} />}
           {recordingFiles && currentSessionId && (
             <SaveRecordingModal
               files={recordingFiles}
@@ -1165,18 +922,6 @@ function LoadingSpinner() {
     </div>
   );
 }
-
-const headerActionButtonStyle = (active: boolean): React.CSSProperties => ({
-  padding: `${spacing[2]}px ${spacing[3]}px`,
-  background: active ? `${colors.accent}10` : colors.surface,
-  color: active ? colors.accent : colors.text,
-  border: `1px solid ${active ? `${colors.accent}24` : colors.border}`,
-  borderRadius: radius.full,
-  fontSize: typography.sm,
-  fontWeight: 700,
-  cursor: "pointer",
-  opacity: 1,
-});
 
 const centerStyle: React.CSSProperties = {
   height: "100vh",

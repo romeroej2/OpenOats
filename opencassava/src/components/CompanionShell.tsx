@@ -23,8 +23,7 @@ interface CompanionShellProps {
   onCloseDrawer: () => void;
   captureCapsule: ReactNode;
   statusBanner?: ReactNode;
-  transcriptUtilities?: ReactNode;
-  transcriptContent: ReactNode;
+  transcriptPanel: ReactNode;
   drawerContent: ReactNode;
   modal?: ReactNode;
 }
@@ -115,8 +114,7 @@ export function CompanionShell({
   onCloseDrawer,
   captureCapsule,
   statusBanner,
-  transcriptUtilities,
-  transcriptContent,
+  transcriptPanel,
   drawerContent,
   modal,
 }: CompanionShellProps) {
@@ -176,22 +174,7 @@ export function CompanionShell({
               WebkitBackdropFilter: "blur(18px)",
             }}
           >
-            {transcriptUtilities && (
-              <div
-                style={{
-                  padding: `${spacing[3]}px ${spacing[4]}px ${spacing[2]}px`,
-                  borderBottom: `1px solid ${colors.border}`,
-                  background:
-                    `linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(250, 248, 245, 0.94) 100%)`,
-                }}
-              >
-                {transcriptUtilities}
-              </div>
-            )}
-
-            <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-              {transcriptContent}
-            </div>
+            {transcriptPanel}
           </section>
         </main>
 

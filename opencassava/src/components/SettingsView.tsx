@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { normalizeShortcut, shortcutFromKeyboardEvent } from "../hotkeys";
@@ -158,6 +158,64 @@ function resolveWhisperModel(
   }
 }
 
+function arraysEqual(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function appSettingsEqual(left: AppSettings | null, right: AppSettings | null) {
+  if (!left || !right) {
+    return left === right;
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function apiKeysEqual(left: ApiKeys | null, right: ApiKeys | null) {
+  if (!left || !right) {
+    return left === right;
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function shouldReindexKnowledgeBase(previous: AppSettings, next: AppSettings) {
+  const ollamaEmbeddingConfigChanged =
+    (previous.embeddingProvider === "ollama" || next.embeddingProvider === "ollama") &&
+    (previous.ollamaBaseUrl !== next.ollamaBaseUrl ||
+      previous.ollamaEmbedModel !== next.ollamaEmbedModel);
+  const openAiEmbeddingConfigChanged =
+    (previous.embeddingProvider === "openai" || next.embeddingProvider === "openai") &&
+    (previous.openAiEmbedBaseUrl !== next.openAiEmbedBaseUrl ||
+      previous.openAiEmbedModel !== next.openAiEmbedModel);
+
+  return (
+    previous.kbFolderPath !== next.kbFolderPath ||
+    previous.obsidianVaultPath !== next.obsidianVaultPath ||
+    !arraysEqual(previous.obsidianKbIncludePaths, next.obsidianKbIncludePaths) ||
+    previous.obsidianNotesFolder !== next.obsidianNotesFolder ||
+    previous.embeddingProvider !== next.embeddingProvider ||
+    ollamaEmbeddingConfigChanged ||
+    openAiEmbeddingConfigChanged
+  );
+}
+
+function shouldReindexAfterApiKeySave(
+  settings: AppSettings | null,
+  previous: ApiKeys,
+  next: ApiKeys,
+) {
+  if (!settings) {
+    return false;
+  }
+
+  switch (settings.embeddingProvider) {
+    case "voyage":
+      return previous.voyageApiKey !== next.voyageApiKey;
+    case "openai":
+      return previous.openAiEmbedApiKey !== next.openAiEmbedApiKey;
+    default:
+      return false;
+  }
+}
+
 interface SettingsViewProps {
   settings?: AppSettings | null;
   onSettingsChange?: (settings: AppSettings) => void;
@@ -194,6 +252,9 @@ export function SettingsView({
   const [systemAudioDevices, setSystemAudioDevices] = useState<string[]>([]);
   const [huggingFaceTokenDraft, setHuggingFaceTokenDraft] = useState("");
   const [isRecordingPushToTalkHotkey, setIsRecordingPushToTalkHotkey] = useState(false);
+  const persistedSettingsRef = useRef<AppSettings | null>(initialSettings);
+  const persistedApiKeysRef = useRef<ApiKeys | null>(null);
+  const kbSyncTimeoutRef = useRef<number | null>(null);
   // Prerequisite check state
   const [wsl2Status, setWsl2Status] = useState<{ ok: boolean; message: string } | null>(null);
   const [pythonStatus, setPythonStatus] = useState<{ ok: boolean; message: string } | null>(null);
@@ -202,28 +263,28 @@ export function SettingsView({
   const hasKbSource = !!(settings?.obsidianVaultPath || settings?.kbFolderPath);
 
 
-  const countKBFiles = useCallback(async () => {
+  const countKBFiles = useCallback(async (targetSettings: AppSettings | null = settings) => {
     try {
-      if (!settings) {
+      if (!targetSettings) {
         setKbFileCount(0);
         return;
       }
-      if (settings.obsidianVaultPath) {
+      if (targetSettings.obsidianVaultPath) {
         const includeCount = new Set([
-          ...settings.obsidianKbIncludePaths.filter(Boolean),
-          settings.obsidianNotesFolder,
+          ...targetSettings.obsidianKbIncludePaths.filter(Boolean),
+          targetSettings.obsidianNotesFolder,
         ]).size;
         setKbFileCount(includeCount);
         return;
       }
-      setKbFileCount(settings.kbFolderPath ? 1 : 0);
+      setKbFileCount(targetSettings.kbFolderPath ? 1 : 0);
     } catch {
       setKbFileCount(0);
     }
   }, [settings]);
 
-  const syncKnowledgeBase = useCallback(async () => {
-    if (!settings || !(settings.obsidianVaultPath || settings.kbFolderPath)) {
+  const syncKnowledgeBase = useCallback(async (targetSettings: AppSettings | null = persistedSettingsRef.current) => {
+    if (!targetSettings || !(targetSettings.obsidianVaultPath || targetSettings.kbFolderPath)) {
       setKbStatus(null);
       setIsIndexingKb(false);
       return;
@@ -245,12 +306,165 @@ export function SettingsView({
     } finally {
       setIsIndexingKb(false);
     }
-  }, [settings]);
+  }, []);
+
+  const scheduleKnowledgeBaseSync = useCallback(
+    (targetSettings: AppSettings | null, immediate = false) => {
+      if (kbSyncTimeoutRef.current !== null) {
+        window.clearTimeout(kbSyncTimeoutRef.current);
+        kbSyncTimeoutRef.current = null;
+      }
+
+      if (!targetSettings || !(targetSettings.obsidianVaultPath || targetSettings.kbFolderPath)) {
+        setKbStatus(null);
+        setIsIndexingKb(false);
+        return;
+      }
+
+      kbSyncTimeoutRef.current = window.setTimeout(() => {
+        kbSyncTimeoutRef.current = null;
+        void syncKnowledgeBase(targetSettings);
+      }, immediate ? 0 : 600);
+    },
+    [syncKnowledgeBase],
+  );
+
+  const runKnowledgeBaseSyncNow = useCallback(() => {
+    scheduleKnowledgeBaseSync(persistedSettingsRef.current ?? settings, true);
+  }, [scheduleKnowledgeBaseSync, settings]);
+
+  const flashSaved = useCallback(() => {
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  }, []);
+
+  const persistSettings = useCallback(
+    async (
+      updated: AppSettings,
+      options?: {
+        reindexKnowledgeBase?: boolean;
+      },
+    ) => {
+      try {
+        await invoke("save_settings", { newSettings: updated });
+        persistedSettingsRef.current = updated;
+        onSettingsChange?.(updated);
+        setError(null);
+        flashSaved();
+        if (options?.reindexKnowledgeBase) {
+          scheduleKnowledgeBaseSync(updated);
+        }
+        return true;
+      } catch (err) {
+        setError(String(err));
+        return false;
+      }
+    },
+    [flashSaved, onSettingsChange, scheduleKnowledgeBaseSync],
+  );
+
+  const commitSettingsDraft = useCallback(async () => {
+    if (!settings) {
+      return false;
+    }
+
+    const previous = persistedSettingsRef.current;
+    if (appSettingsEqual(settings, previous)) {
+      return true;
+    }
+
+    return persistSettings(settings, {
+      reindexKnowledgeBase: previous ? shouldReindexKnowledgeBase(previous, settings) : false,
+    });
+  }, [persistSettings, settings]);
+
+  const applyImmediateSettings = useCallback(
+    async (update: Partial<AppSettings>) => {
+      if (!settings) {
+        return false;
+      }
+
+      const previousDraft = settings;
+      const previousPersisted = persistedSettingsRef.current ?? settings;
+      const nextDraft = { ...previousDraft, ...update };
+      const nextPersisted = { ...previousPersisted, ...update };
+      setSettings(nextDraft);
+
+      const saved = await persistSettings(nextPersisted, {
+        reindexKnowledgeBase: shouldReindexKnowledgeBase(previousPersisted, nextPersisted),
+      });
+
+      if (!saved) {
+        setSettings(previousDraft);
+      }
+
+      return saved;
+    },
+    [persistSettings, settings],
+  );
+
+  const persistApiKeys = useCallback(
+    async (
+      updated: ApiKeys,
+      options?: {
+        reindexKnowledgeBase?: boolean;
+      },
+    ) => {
+      try {
+        await invoke("save_api_keys", { newKeys: updated });
+        persistedApiKeysRef.current = updated;
+        onApiKeysSaved?.();
+        setError(null);
+        flashSaved();
+        if (options?.reindexKnowledgeBase) {
+          scheduleKnowledgeBaseSync(persistedSettingsRef.current);
+        }
+        return true;
+      } catch (err) {
+        setError(String(err));
+        return false;
+      }
+    },
+    [flashSaved, onApiKeysSaved, scheduleKnowledgeBaseSync],
+  );
+
+  const commitApiKeysDraft = useCallback(async () => {
+    if (!apiKeys) {
+      return false;
+    }
+
+    const previous = persistedApiKeysRef.current;
+    if (apiKeysEqual(apiKeys, previous)) {
+      return true;
+    }
+
+    return persistApiKeys(apiKeys, {
+      reindexKnowledgeBase: previous
+        ? shouldReindexAfterApiKeySave(persistedSettingsRef.current, previous, apiKeys)
+        : false,
+    });
+  }, [apiKeys, persistApiKeys]);
+
+  const handleTextFieldCommitKeyDown = useCallback(
+    (
+      event: React.KeyboardEvent<HTMLInputElement>,
+      commit: () => Promise<unknown>,
+    ) => {
+      if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+        return;
+      }
+
+      event.preventDefault();
+      void commit();
+    },
+    [],
+  );
 
   useEffect(() => {
     invoke<ApiKeys>("get_api_keys")
       .then((keys) => {
         setApiKeys(keys);
+        persistedApiKeysRef.current = keys;
         setHuggingFaceTokenDraft(keys.huggingFaceToken || "");
       })
       .catch((err) => setError(String(err)));
@@ -303,6 +517,7 @@ export function SettingsView({
   useEffect(() => {
     if (initialSettings) {
       setSettings(initialSettings);
+      persistedSettingsRef.current = initialSettings;
       setKbFileCount(
         initialSettings.obsidianVaultPath
           ? new Set([
@@ -319,6 +534,7 @@ export function SettingsView({
     invoke<AppSettings>("get_settings")
       .then((loadedSettings) => {
         setSettings(loadedSettings);
+        persistedSettingsRef.current = loadedSettings;
         setKbFileCount(
           loadedSettings.obsidianVaultPath
             ? new Set([
@@ -342,40 +558,12 @@ export function SettingsView({
   }, [settings?.micCaptureMode]);
 
   useEffect(() => {
-    if (settings?.obsidianVaultPath || settings?.kbFolderPath) {
-      void syncKnowledgeBase();
-    } else {
-      setKbStatus(null);
-      setIsIndexingKb(false);
-    }
-  }, [
-    settings?.kbFolderPath,
-    settings?.obsidianVaultPath,
-    settings?.obsidianKbIncludePaths,
-    settings?.obsidianNotesFolder,
-    settings?.obsidianTranscriptsFolder,
-    syncKnowledgeBase,
-  ]);
-
-  const flashSaved = useCallback(() => {
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
-  }, []);
-
-  const saveSettings = useCallback(
-    async (updated: AppSettings) => {
-      try {
-        await invoke("save_settings", { newSettings: updated });
-        setSettings(updated);
-        onSettingsChange?.(updated);
-        setError(null);
-        flashSaved();
-      } catch (err) {
-        setError(String(err));
+    return () => {
+      if (kbSyncTimeoutRef.current !== null) {
+        window.clearTimeout(kbSyncTimeoutRef.current);
       }
-    },
-    [flashSaved, onSettingsChange],
-  );
+    };
+  }, []);
 
   useEffect(() => {
     if (!isRecordingPushToTalkHotkey || !settings) {
@@ -403,15 +591,14 @@ export function SettingsView({
       }
 
       setIsRecordingPushToTalkHotkey(false);
-      void saveSettings({
-        ...settings,
+      void applyImmediateSettings({
         pushToTalkHotkey: normalizeShortcut(captured) || "Space",
       });
     };
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [isRecordingPushToTalkHotkey, saveSettings, settings]);
+  }, [applyImmediateSettings, isRecordingPushToTalkHotkey, settings]);
 
   const startCalibration = async () => {
     if (!settings) return;
@@ -434,7 +621,9 @@ export function SettingsView({
 
       const rms = await invoke<number>("calibrate_mic_threshold");
       await invoke("stop_calibration_preview").catch(() => {});
-      await saveSettings({ ...settings, micCalibrationRms: rms });
+      setSettings((current) => (current ? { ...current, micCalibrationRms: rms } : current));
+      const persistedSettings = persistedSettingsRef.current ?? settings;
+      await persistSettings({ ...persistedSettings, micCalibrationRms: rms });
     } catch (err) {
       setCalibrationError(String(err));
       await invoke("stop_calibration_preview").catch(() => {});
@@ -445,26 +634,15 @@ export function SettingsView({
     }
   };
 
-  const saveApiKeys = async (updated: ApiKeys) => {
-    const previous = apiKeys;
-    setApiKeys(updated);
-    try {
-      await invoke("save_api_keys", { newKeys: updated });
-      onApiKeysSaved?.();
-      setError(null);
-      flashSaved();
-    } catch (err) {
-      if (previous) {
-        setApiKeys(previous);
-      }
-      setError(String(err));
-    }
-  };
-
   const saveHuggingFaceToken = async () => {
     if (!apiKeys) return;
     const updated = { ...apiKeys, huggingFaceToken: huggingFaceTokenDraft };
-    await saveApiKeys(updated);
+    setApiKeys(updated);
+    const previous = persistedApiKeysRef.current ?? apiKeys;
+    const saved = await persistApiKeys(updated);
+    if (!saved) {
+      setApiKeys(previous);
+    }
   };
 
   const chooseFolder = async (
@@ -473,10 +651,10 @@ export function SettingsView({
     try {
       const selected = await invoke<string | null>("choose_folder");
       if (selected && settings) {
-        const updated = { ...settings, [key]: selected };
-        await saveSettings(updated);
+        const updated = { [key]: selected } as Partial<AppSettings>;
+        const saved = await applyImmediateSettings(updated);
         if (key === "kbFolderPath" || key === "obsidianVaultPath") {
-          void countKBFiles();
+          void countKBFiles(saved ? { ...settings, ...updated } : settings);
         }
       }
     } catch (err) {
@@ -498,8 +676,13 @@ export function SettingsView({
       const nextIncludePaths = Array.from(
         new Set([...settings.obsidianKbIncludePaths, relativePath]),
       );
-      await saveSettings({ ...settings, obsidianKbIncludePaths: nextIncludePaths });
-      void countKBFiles();
+      const nextSettings = { ...settings, obsidianKbIncludePaths: nextIncludePaths };
+      const saved = await applyImmediateSettings({
+        obsidianKbIncludePaths: nextIncludePaths,
+      });
+      if (saved) {
+        void countKBFiles(nextSettings);
+      }
     } catch (err) {
       if (String(err).includes("No folder selected")) {
         return;
@@ -513,8 +696,13 @@ export function SettingsView({
       return;
     }
     const nextIncludePaths = settings.obsidianKbIncludePaths.filter((value) => value !== relativePath);
-    await saveSettings({ ...settings, obsidianKbIncludePaths: nextIncludePaths });
-    void countKBFiles();
+    const nextSettings = { ...settings, obsidianKbIncludePaths: nextIncludePaths };
+    const saved = await applyImmediateSettings({
+      obsidianKbIncludePaths: nextIncludePaths,
+    });
+    if (saved) {
+      void countKBFiles(nextSettings);
+    }
   };
 
   if (!settings || !apiKeys) {
@@ -754,8 +942,7 @@ export function SettingsView({
                     onClick={() => {
                       setKbFileCount(0);
                       setKbStatus(null);
-                      void saveSettings({
-                        ...settings,
+                      void applyImmediateSettings({
                         obsidianVaultPath: null,
                         obsidianKbIncludePaths: [],
                       });
@@ -815,8 +1002,7 @@ export function SettingsView({
                   <select
                     value={settings.defaultNotesTemplateId || ""}
                     onChange={(e) =>
-                      saveSettings({
-                        ...settings,
+                      applyImmediateSettings({
                         defaultNotesTemplateId: e.target.value || null,
                       })
                     }
@@ -831,7 +1017,15 @@ export function SettingsView({
                   </select>
                 </div>
 
-                <div style={{ marginTop: spacing[2] }}>
+                <div
+                  style={{
+                    marginTop: spacing[2],
+                    display: "flex",
+                    alignItems: "center",
+                    gap: spacing[2],
+                    flexWrap: "wrap",
+                  }}
+                >
                   <span style={styles.statusBadge("success")}>
                     <span>
                       {isIndexingKb
@@ -839,6 +1033,13 @@ export function SettingsView({
                         : kbStatus || `Vault connected - ${kbFileCount > 0 ? `${kbFileCount} folders indexed` : "ready"}`}
                     </span>
                   </span>
+                  <button
+                    style={styles.buttonSecondary}
+                    onClick={runKnowledgeBaseSyncNow}
+                    disabled={isIndexingKb}
+                  >
+                    Sync now
+                  </button>
                 </div>
 
                 <p style={{ ...styles.sectionDescription, marginTop: spacing[3], marginBottom: 0 }}>
@@ -887,7 +1088,7 @@ export function SettingsView({
                     onClick={() => {
                       setKbFileCount(0);
                       setKbStatus(null);
-                      void saveSettings({ ...settings, kbFolderPath: "" });
+                      void applyImmediateSettings({ kbFolderPath: "" });
                     }}
                   >
                     Clear
@@ -924,8 +1125,7 @@ export function SettingsView({
                 <select
                   value={settings.inputDeviceName || "default"}
                   onChange={(e) =>
-                    saveSettings({
-                      ...settings,
+                    applyImmediateSettings({
                       inputDeviceName: e.target.value === "default" ? null : e.target.value,
                     })
                   }
@@ -945,8 +1145,7 @@ export function SettingsView({
                 <select
                   value={settings.systemAudioDeviceName || "default"}
                   onChange={(e) =>
-                    saveSettings({
-                      ...settings,
+                    applyImmediateSettings({
                       systemAudioDeviceName:
                         e.target.value === "default" ? null : e.target.value,
                     })
@@ -968,8 +1167,7 @@ export function SettingsView({
               <select
                 value={settings.micCaptureMode ?? "auto"}
                 onChange={(e) =>
-                  saveSettings({
-                    ...settings,
+                  applyImmediateSettings({
                     micCaptureMode: e.target.value as "auto" | "push-to-talk",
                   })
                 }
@@ -1001,7 +1199,7 @@ export function SettingsView({
                   <button
                     style={styles.buttonSecondary}
                     onClick={() =>
-                      saveSettings({ ...settings, pushToTalkHotkey: "Space" })
+                      applyImmediateSettings({ pushToTalkHotkey: "Space" })
                     }
                   >
                     Reset to Space
@@ -1061,8 +1259,7 @@ export function SettingsView({
                           step={0.05}
                           value={settings.micThresholdMultiplier ?? 0.6}
                           onChange={(e) =>
-                            saveSettings({
-                              ...settings,
+                            applyImmediateSettings({
                               micThresholdMultiplier: parseFloat(e.target.value),
                             })
                           }
@@ -1119,7 +1316,7 @@ export function SettingsView({
                 type="checkbox"
                 checked={settings.hideFromScreenShare}
                 onChange={(e) =>
-                  saveSettings({ ...settings, hideFromScreenShare: e.target.checked })
+                  applyImmediateSettings({ hideFromScreenShare: e.target.checked })
                 }
                 style={styles.checkboxInput}
               />
@@ -1147,8 +1344,7 @@ export function SettingsView({
               <div
                 style={styles.aiModeCard(isLocalMode)}
                 onClick={() =>
-                  saveSettings({
-                    ...settings,
+                  applyImmediateSettings({
                     llmProvider: "ollama",
                     embeddingProvider: "ollama",
                   })
@@ -1162,8 +1358,7 @@ export function SettingsView({
               <div
                 style={styles.aiModeCard(!isLocalMode)}
                 onClick={() =>
-                  saveSettings({
-                    ...settings,
+                  applyImmediateSettings({
                     llmProvider: "openrouter",
                     embeddingProvider: "voyage",
                   })
@@ -1191,8 +1386,10 @@ export function SettingsView({
                     type="password"
                     value={apiKeys.openRouterApiKey}
                     onChange={(e) =>
-                      saveApiKeys({ ...apiKeys, openRouterApiKey: e.target.value })
+                      setApiKeys({ ...apiKeys, openRouterApiKey: e.target.value })
                     }
+                    onBlur={() => void commitApiKeysDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitApiKeysDraft)}
                     style={styles.inputStyle}
                     placeholder="sk-or-..."
                   />
@@ -1202,9 +1399,9 @@ export function SettingsView({
                   <input
                     type="text"
                     value={settings.selectedModel}
-                    onChange={(e) =>
-                      saveSettings({ ...settings, selectedModel: e.target.value })
-                    }
+                    onChange={(e) => setSettings({ ...settings, selectedModel: e.target.value })}
+                    onBlur={() => void commitSettingsDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
                     style={styles.inputStyle}
                     placeholder="e.g. google/gemini-2.5-flash-preview"
                   />
@@ -1220,9 +1417,9 @@ export function SettingsView({
                   <input
                     type="text"
                     value={settings.ollamaBaseUrl}
-                    onChange={(e) =>
-                      saveSettings({ ...settings, ollamaBaseUrl: e.target.value })
-                    }
+                    onChange={(e) => setSettings({ ...settings, ollamaBaseUrl: e.target.value })}
+                    onBlur={() => void commitSettingsDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
                     style={styles.inputStyle}
                     placeholder="http://127.0.0.1:11434"
                   />
@@ -1232,9 +1429,9 @@ export function SettingsView({
                   <input
                     type="text"
                     value={settings.ollamaLlmModel}
-                    onChange={(e) =>
-                      saveSettings({ ...settings, ollamaLlmModel: e.target.value })
-                    }
+                    onChange={(e) => setSettings({ ...settings, ollamaLlmModel: e.target.value })}
+                    onBlur={() => void commitSettingsDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
                     style={styles.inputStyle}
                     placeholder="e.g. qwen3:8b, llama3.2:3b"
                   />
@@ -1248,8 +1445,10 @@ export function SettingsView({
                     type="text"
                     value={settings.openAiLlmBaseUrl}
                     onChange={(e) =>
-                      saveSettings({ ...settings, openAiLlmBaseUrl: e.target.value })
+                      setSettings({ ...settings, openAiLlmBaseUrl: e.target.value })
                     }
+                    onBlur={() => void commitSettingsDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
                     style={styles.inputStyle}
                     placeholder="http://127.0.0.1:1234"
                   />
@@ -1260,8 +1459,10 @@ export function SettingsView({
                     type="password"
                     value={apiKeys.openAiLlmApiKey}
                     onChange={(e) =>
-                      saveApiKeys({ ...apiKeys, openAiLlmApiKey: e.target.value })
+                      setApiKeys({ ...apiKeys, openAiLlmApiKey: e.target.value })
                     }
+                    onBlur={() => void commitApiKeysDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitApiKeysDraft)}
                     style={styles.inputStyle}
                   />
                 </div>
@@ -1270,9 +1471,9 @@ export function SettingsView({
                   <input
                     type="text"
                     value={settings.selectedModel}
-                    onChange={(e) =>
-                      saveSettings({ ...settings, selectedModel: e.target.value })
-                    }
+                    onChange={(e) => setSettings({ ...settings, selectedModel: e.target.value })}
+                    onBlur={() => void commitSettingsDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
                     style={styles.inputStyle}
                     placeholder="e.g. gpt-4o-mini"
                   />
@@ -1297,9 +1498,9 @@ export function SettingsView({
                   <input
                     type="password"
                     value={apiKeys.voyageApiKey}
-                    onChange={(e) =>
-                      saveApiKeys({ ...apiKeys, voyageApiKey: e.target.value })
-                    }
+                    onChange={(e) => setApiKeys({ ...apiKeys, voyageApiKey: e.target.value })}
+                    onBlur={() => void commitApiKeysDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitApiKeysDraft)}
                     style={styles.inputStyle}
                     placeholder="pa-..."
                   />
@@ -1316,9 +1517,9 @@ export function SettingsView({
                   <input
                     type="text"
                     value={settings.ollamaBaseUrl}
-                    onChange={(e) =>
-                      saveSettings({ ...settings, ollamaBaseUrl: e.target.value })
-                    }
+                    onChange={(e) => setSettings({ ...settings, ollamaBaseUrl: e.target.value })}
+                    onBlur={() => void commitSettingsDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
                     style={styles.inputStyle}
                     placeholder="http://127.0.0.1:11434"
                   />
@@ -1329,8 +1530,10 @@ export function SettingsView({
                     type="text"
                     value={settings.ollamaEmbedModel}
                     onChange={(e) =>
-                      saveSettings({ ...settings, ollamaEmbedModel: e.target.value })
+                      setSettings({ ...settings, ollamaEmbedModel: e.target.value })
                     }
+                    onBlur={() => void commitSettingsDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
                     style={styles.inputStyle}
                     placeholder="e.g. nomic-embed-text"
                   />
@@ -1344,8 +1547,10 @@ export function SettingsView({
                     type="text"
                     value={settings.openAiEmbedBaseUrl}
                     onChange={(e) =>
-                      saveSettings({ ...settings, openAiEmbedBaseUrl: e.target.value })
+                      setSettings({ ...settings, openAiEmbedBaseUrl: e.target.value })
                     }
+                    onBlur={() => void commitSettingsDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
                     style={styles.inputStyle}
                     placeholder="http://127.0.0.1:8080"
                   />
@@ -1356,8 +1561,10 @@ export function SettingsView({
                     type="password"
                     value={apiKeys.openAiEmbedApiKey}
                     onChange={(e) =>
-                      saveApiKeys({ ...apiKeys, openAiEmbedApiKey: e.target.value })
+                      setApiKeys({ ...apiKeys, openAiEmbedApiKey: e.target.value })
                     }
+                    onBlur={() => void commitApiKeysDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitApiKeysDraft)}
                     style={styles.inputStyle}
                   />
                 </div>
@@ -1367,8 +1574,10 @@ export function SettingsView({
                     type="text"
                     value={settings.openAiEmbedModel}
                     onChange={(e) =>
-                      saveSettings({ ...settings, openAiEmbedModel: e.target.value })
+                      setSettings({ ...settings, openAiEmbedModel: e.target.value })
                     }
+                    onBlur={() => void commitSettingsDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
                     style={styles.inputStyle}
                     placeholder="e.g. text-embedding-3-small"
                   />
@@ -1391,7 +1600,7 @@ export function SettingsView({
               <select
                 value={settings.sttProvider}
                 onChange={(e) =>
-                  saveSettings({ ...settings, sttProvider: e.target.value })
+                  applyImmediateSettings({ sttProvider: e.target.value })
                 }
                 style={styles.selectStyle}
               >
@@ -1413,7 +1622,7 @@ export function SettingsView({
               <select
                 value={settings.transcriptionLocale}
                 onChange={(e) =>
-                  saveSettings({ ...settings, transcriptionLocale: e.target.value })
+                  applyImmediateSettings({ transcriptionLocale: e.target.value })
                 }
                 style={styles.selectStyle}
               >
@@ -1441,7 +1650,7 @@ export function SettingsView({
                 <select
                   value={settings.whisperModel}
                   onChange={(e) =>
-                    saveSettings({ ...settings, whisperModel: e.target.value })
+                    applyImmediateSettings({ whisperModel: e.target.value })
                   }
                   style={styles.selectStyle}
                 >
@@ -1462,7 +1671,7 @@ export function SettingsView({
                   <select
                     value={settings.fasterWhisperModel}
                     onChange={(e) =>
-                      saveSettings({ ...settings, fasterWhisperModel: e.target.value })
+                      applyImmediateSettings({ fasterWhisperModel: e.target.value })
                     }
                     style={styles.selectStyle}
                   >
@@ -1479,7 +1688,7 @@ export function SettingsView({
                     <select
                       value={settings.fasterWhisperDevice}
                       onChange={(e) =>
-                        saveSettings({ ...settings, fasterWhisperDevice: e.target.value })
+                        applyImmediateSettings({ fasterWhisperDevice: e.target.value })
                       }
                       style={styles.selectStyle}
                     >
@@ -1495,7 +1704,7 @@ export function SettingsView({
                     <select
                       value={settings.fasterWhisperComputeType}
                       onChange={(e) =>
-                        saveSettings({ ...settings, fasterWhisperComputeType: e.target.value })
+                        applyImmediateSettings({ fasterWhisperComputeType: e.target.value })
                       }
                       style={styles.selectStyle}
                     >
@@ -1515,7 +1724,7 @@ export function SettingsView({
                   <select
                     value={settings.parakeetModel}
                     onChange={(e) =>
-                      saveSettings({ ...settings, parakeetModel: e.target.value })
+                      applyImmediateSettings({ parakeetModel: e.target.value })
                     }
                     style={styles.selectStyle}
                   >
@@ -1534,7 +1743,7 @@ export function SettingsView({
                   <select
                     value={settings.parakeetDevice}
                     onChange={(e) =>
-                      saveSettings({ ...settings, parakeetDevice: e.target.value })
+                      applyImmediateSettings({ parakeetDevice: e.target.value })
                     }
                     style={styles.selectStyle}
                   >
@@ -1553,7 +1762,7 @@ export function SettingsView({
                       id="diarization-toggle"
                       checked={settings.diarizationEnabled ?? true}
                       onChange={(e) =>
-                        saveSettings({ ...settings, diarizationEnabled: e.target.checked })
+                        applyImmediateSettings({ diarizationEnabled: e.target.checked })
                       }
                     />
                     <label htmlFor="diarization-toggle" style={{ fontSize: typography.sm, color: colors.text, cursor: "pointer" }}>
@@ -1572,7 +1781,7 @@ export function SettingsView({
                       id="echo-cancellation-toggle"
                       checked={settings.echoCancellationEnabled ?? true}
                       onChange={(e) =>
-                        saveSettings({ ...settings, echoCancellationEnabled: e.target.checked })
+                        applyImmediateSettings({ echoCancellationEnabled: e.target.checked })
                       }
                     />
                     <label
@@ -1595,7 +1804,7 @@ export function SettingsView({
                   <select
                     value={settings.omniAsrModel}
                     onChange={(e) =>
-                      saveSettings({ ...settings, omniAsrModel: e.target.value })
+                      applyImmediateSettings({ omniAsrModel: e.target.value })
                     }
                     style={styles.selectStyle}
                   >
@@ -1614,7 +1823,7 @@ export function SettingsView({
                   <select
                     value={settings.omniAsrDevice}
                     onChange={(e) =>
-                      saveSettings({ ...settings, omniAsrDevice: e.target.value })
+                      applyImmediateSettings({ omniAsrDevice: e.target.value })
                     }
                     style={styles.selectStyle}
                   >
@@ -1633,7 +1842,7 @@ export function SettingsView({
                   <select
                     value={settings.cohereTranscribeModel}
                     onChange={(e) =>
-                      saveSettings({ ...settings, cohereTranscribeModel: e.target.value })
+                      applyImmediateSettings({ cohereTranscribeModel: e.target.value })
                     }
                     style={styles.selectStyle}
                   >
@@ -1652,7 +1861,7 @@ export function SettingsView({
                     <select
                       value={settings.cohereTranscribeDevice}
                       onChange={(e) =>
-                      saveSettings({ ...settings, cohereTranscribeDevice: e.target.value })
+                      applyImmediateSettings({ cohereTranscribeDevice: e.target.value })
                     }
                     style={styles.selectStyle}
                   >
@@ -1681,6 +1890,7 @@ export function SettingsView({
                         void saveHuggingFaceToken();
                       }
                     }}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, saveHuggingFaceToken)}
                     style={styles.inputStyle}
                     placeholder="hf_..."
                   />

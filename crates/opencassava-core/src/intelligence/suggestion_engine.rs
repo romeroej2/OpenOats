@@ -10,6 +10,8 @@ const COOLDOWN_SECS: u64 = 90;
 const MIN_WORDS: usize = 8;
 const MIN_CHARS: usize = 30;
 const MAX_RECENT_ANGLES: usize = 3;
+const CONVERSATION_STATE_REFRESH_SECS: u64 = 20;
+const CONVERSATION_STATE_REFRESH_UTTERANCE_DELTA: usize = 4;
 
 pub struct SuggestionEngine {
     pub conversation_state: ConversationState,
@@ -17,6 +19,8 @@ pub struct SuggestionEngine {
     surfaced_smart_questions: HashSet<String>,
     last_suggestion_time: Option<Instant>,
     utterance_count: usize,
+    last_conversation_state_refresh: Option<Instant>,
+    last_conversation_state_utterance_count: usize,
     pub kb_surfacing_system_prompt: String,
     pub suggestion_synthesis_system_prompt: String,
     pub smart_question_system_prompt: String,
@@ -32,6 +36,8 @@ impl SuggestionEngine {
             surfaced_smart_questions: HashSet::new(),
             last_suggestion_time: None,
             utterance_count: 0,
+            last_conversation_state_refresh: None,
+            last_conversation_state_utterance_count: 0,
             kb_surfacing_system_prompt: "You decide if an AI suggestion should be shown. Return only valid JSON.".into(),
             suggestion_synthesis_system_prompt: "You write brief, helpful suggestions for meeting participants.".into(),
             smart_question_system_prompt: "You decide when a smart clarifying question should be suggested. Return only valid JSON.".into(),
@@ -68,20 +74,18 @@ impl SuggestionEngine {
         }
 
         // Stage 2: Refresh conversation state from the current rolling window.
-        self.update_conversation_state(recent_them_utterances, &complete_fn)
+        self.maybe_refresh_conversation_state(recent_them_utterances, &complete_fn)
             .await;
 
         // Stage 3: KB retrieval
         let queries = self.build_search_queries(transcript_window);
         let mut kb_hits: Vec<KBResult> = Vec::new();
-        for q in &queries {
-            if let Ok(embeddings) = embed_fn(vec![q.clone()]).await {
-                if let Some(emb) = embeddings.into_iter().next() {
-                    let results = search_fn(&emb);
-                    for r in results {
-                        if !kb_hits.iter().any(|h: &KBResult| h.text == r.text) {
-                            kb_hits.push(r);
-                        }
+        if let Ok(embeddings) = embed_fn(queries).await {
+            for emb in embeddings {
+                let results = search_fn(&emb);
+                for r in results {
+                    if !kb_hits.iter().any(|h: &KBResult| h.text == r.text) {
+                        kb_hits.push(r);
                     }
                 }
             }
@@ -127,6 +131,8 @@ impl SuggestionEngine {
         self.surfaced_smart_questions.clear();
         self.last_suggestion_time = None;
         self.utterance_count = 0;
+        self.last_conversation_state_refresh = None;
+        self.last_conversation_state_utterance_count = 0;
     }
 
     // -- Private helpers -------------------------------------------------------
@@ -178,6 +184,40 @@ impl SuggestionEngine {
     fn has_already_surfaced_question(&self, question: &str) -> bool {
         let normalized = Self::normalize_question(question);
         !normalized.is_empty() && self.surfaced_smart_questions.contains(&normalized)
+    }
+
+    fn should_refresh_conversation_state(&self) -> bool {
+        let enough_new_utterances = self
+            .utterance_count
+            .saturating_sub(self.last_conversation_state_utterance_count)
+            >= CONVERSATION_STATE_REFRESH_UTTERANCE_DELTA;
+
+        match self.last_conversation_state_refresh {
+            None => true,
+            Some(last_refresh) => {
+                enough_new_utterances
+                    || last_refresh.elapsed()
+                        >= Duration::from_secs(CONVERSATION_STATE_REFRESH_SECS)
+            }
+        }
+    }
+
+    async fn maybe_refresh_conversation_state<F, Fut>(
+        &mut self,
+        recent_them: &[&Utterance],
+        complete_fn: &F,
+    ) where
+        F: Fn(Vec<Message>) -> Fut,
+        Fut: std::future::Future<Output = Result<String, String>>,
+    {
+        if !self.should_refresh_conversation_state() {
+            return;
+        }
+
+        self.last_conversation_state_refresh = Some(Instant::now());
+        self.last_conversation_state_utterance_count = self.utterance_count;
+        self.update_conversation_state(recent_them, complete_fn)
+            .await;
     }
 
     async fn update_conversation_state<F, Fut>(
@@ -417,6 +457,11 @@ impl Default for SuggestionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::Speaker;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     #[test]
     fn prefilter_rejects_short_text() {
@@ -457,5 +502,78 @@ mod tests {
         assert!(engine.has_already_surfaced_question("what is the budget timeline"));
         assert!(engine.has_already_surfaced_question("What is the budget timeline?!"));
         assert!(!engine.has_already_surfaced_question("Who owns the budget timeline?"));
+    }
+
+    #[tokio::test]
+    async fn process_transcript_window_batches_query_embeddings() {
+        let mut engine = SuggestionEngine::new();
+        engine.conversation_state.current_topic = "timeline".into();
+        engine.conversation_state.short_summary = "Budget review".into();
+        engine.last_conversation_state_refresh = Some(Instant::now());
+        engine.last_conversation_state_utterance_count = usize::MAX;
+
+        let embed_call_count = Arc::new(AtomicUsize::new(0));
+        let embed_batch_size = Arc::new(AtomicUsize::new(0));
+        let search_call_count = Arc::new(AtomicUsize::new(0));
+
+        let transcript_window =
+            "We need to lock the customer timeline and confirm budget owners before Friday.";
+        let them = vec![Utterance::new(transcript_window.to_string(), Speaker::Them)];
+        let recent_them = them.iter().collect::<Vec<_>>();
+
+        let suggestion = engine
+            .process_transcript_window(
+                transcript_window,
+                &recent_them,
+                {
+                    let embed_call_count = Arc::clone(&embed_call_count);
+                    let embed_batch_size = Arc::clone(&embed_batch_size);
+                    move |texts: Vec<String>| {
+                        let embed_call_count = Arc::clone(&embed_call_count);
+                        let embed_batch_size = Arc::clone(&embed_batch_size);
+                        async move {
+                            embed_call_count.fetch_add(1, Ordering::Relaxed);
+                            embed_batch_size.store(texts.len(), Ordering::Relaxed);
+                            Ok(texts.iter().map(|_| vec![1.0, 0.0, 0.0]).collect())
+                        }
+                    }
+                },
+                {
+                    let search_call_count = Arc::clone(&search_call_count);
+                    move |_embedding: &[f32]| {
+                        search_call_count.fetch_add(1, Ordering::Relaxed);
+                        vec![KBResult::new(
+                            "Use the pricing playbook".into(),
+                            "playbook.md".into(),
+                            String::new(),
+                            0.95,
+                        )]
+                    }
+                },
+                |_messages| async {
+                    Ok(
+                        "{\"shouldSurface\":true,\"confidence\":0.9,\"relevanceScore\":0.9,\"helpfulnessScore\":0.9,\"timingScore\":0.9,\"noveltyScore\":0.9,\"reason\":\"helpful\"}"
+                            .to_string(),
+                    )
+                },
+            )
+            .await;
+
+        assert!(suggestion.is_some());
+        assert_eq!(embed_call_count.load(Ordering::Relaxed), 1);
+        assert_eq!(embed_batch_size.load(Ordering::Relaxed), 3);
+        assert_eq!(search_call_count.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn conversation_state_refresh_is_gated_by_utterance_delta() {
+        let mut engine = SuggestionEngine::new();
+        engine.last_conversation_state_refresh = Some(Instant::now());
+        engine.last_conversation_state_utterance_count = 5;
+        engine.utterance_count = 7;
+        assert!(!engine.should_refresh_conversation_state());
+
+        engine.utterance_count = 9;
+        assert!(engine.should_refresh_conversation_state());
     }
 }

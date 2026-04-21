@@ -42,15 +42,24 @@ export function WaveformVisualizer({
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number>(0);
+  const levelRef = useRef(level);
+  const isActiveRef = useRef(isActive);
+  const colorRef = useRef(color);
+  const thresholdLevelRef = useRef(thresholdLevel);
+  const thresholdColorRef = useRef(thresholdColor);
+  const gainRef = useRef(gain);
+  const widthRef = useRef(width);
   const height = 32;
-  const normalizedLevel = normalizeLevel(level * gain);
-  const visualLevel = toVisualLevel(normalizedLevel);
-  const normalizedThreshold =
-    thresholdLevel == null ? null : normalizeLevel(thresholdLevel * gain);
-  const visualThreshold =
-    normalizedThreshold == null ? null : toVisualLevel(normalizedThreshold);
-  const thresholdY =
-    visualThreshold == null ? null : height - visualThreshold * MAX_BAR_HEIGHT;
+
+  useEffect(() => {
+    levelRef.current = level;
+    isActiveRef.current = isActive;
+    colorRef.current = color;
+    thresholdLevelRef.current = thresholdLevel;
+    thresholdColorRef.current = thresholdColor;
+    gainRef.current = gain;
+    widthRef.current = width;
+  }, [color, gain, isActive, level, thresholdColor, thresholdLevel, width]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -58,16 +67,27 @@ export function WaveformVisualizer({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const availableWidth = Math.max(48, width - 12);
-    const scale = Math.min(1, availableWidth / CLUSTER_WIDTH);
-    const barWidth = Math.max(3, BAR_WIDTH * scale);
-    const barGap = Math.max(2, BAR_GAP * scale);
-    const barStride = barWidth + barGap;
-    const clusterWidth = BAR_COUNT * barWidth + (BAR_COUNT - 1) * barGap;
-    const startX = Math.max(0, (width - clusterWidth) / 2);
-    const cornerRadius = Math.min(CORNER_RADIUS, barWidth / 2);
+    const computeLayout = () => {
+      const currentWidth = widthRef.current;
+      const availableWidth = Math.max(48, currentWidth - 12);
+      const scale = Math.min(1, availableWidth / CLUSTER_WIDTH);
+      const barWidth = Math.max(3, BAR_WIDTH * scale);
+      const barGap = Math.max(2, BAR_GAP * scale);
+      const barStride = barWidth + barGap;
+      const clusterWidth = BAR_COUNT * barWidth + (BAR_COUNT - 1) * barGap;
+      const startX = Math.max(0, (currentWidth - clusterWidth) / 2);
+      const cornerRadius = Math.min(CORNER_RADIUS, barWidth / 2);
 
-    const drawRoundedBar = (x: number, barHeight: number, fillColor: string) => {
+      return { barWidth, barStride, clusterWidth, cornerRadius, currentWidth, startX };
+    };
+
+    const drawRoundedBar = (
+      x: number,
+      barHeight: number,
+      fillColor: string,
+      barWidth: number,
+      cornerRadius: number,
+    ) => {
       const y = height - barHeight;
       ctx.fillStyle = fillColor;
       ctx.beginPath();
@@ -75,10 +95,10 @@ export function WaveformVisualizer({
       ctx.fill();
     };
 
-    const drawThreshold = () => {
+    const drawThreshold = (startX: number, clusterWidth: number, thresholdY: number | null) => {
       if (thresholdY == null) return;
       ctx.save();
-      ctx.strokeStyle = thresholdColor;
+      ctx.strokeStyle = thresholdColorRef.current;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
@@ -88,21 +108,31 @@ export function WaveformVisualizer({
       ctx.restore();
     };
 
-    const isSilent = !isActive || normalizedLevel < 0.02;
-
-    if (isSilent) {
-      cancelAnimationFrame(animFrameRef.current);
-      ctx.clearRect(0, 0, width, height);
-      for (let i = 0; i < BAR_COUNT; i++) {
-        drawRoundedBar(startX + i * barStride, SILENCE_BAR_HEIGHT, colors.border);
-      }
-      drawThreshold();
-      return;
-    }
-
     const loop = () => {
-      ctx.clearRect(0, 0, width, height);
-      // Wave speed proportional to audio level: silent = barely moves, loud = fast
+      const { barWidth, barStride, clusterWidth, cornerRadius, currentWidth, startX } =
+        computeLayout();
+      const normalizedLevel = normalizeLevel(levelRef.current * gainRef.current);
+      const visualLevel = toVisualLevel(normalizedLevel);
+      const normalizedThreshold =
+        thresholdLevelRef.current == null
+          ? null
+          : normalizeLevel(thresholdLevelRef.current * gainRef.current);
+      const visualThreshold =
+        normalizedThreshold == null ? null : toVisualLevel(normalizedThreshold);
+      const thresholdY =
+        visualThreshold == null ? null : height - visualThreshold * MAX_BAR_HEIGHT;
+      const isSilent = !isActiveRef.current || normalizedLevel < 0.02;
+
+      ctx.clearRect(0, 0, currentWidth, height);
+      if (isSilent) {
+        for (let i = 0; i < BAR_COUNT; i++) {
+          drawRoundedBar(startX + i * barStride, SILENCE_BAR_HEIGHT, colors.border, barWidth, cornerRadius);
+        }
+        drawThreshold(startX, clusterWidth, thresholdY);
+        animFrameRef.current = requestAnimationFrame(loop);
+        return;
+      }
+
       const t = performance.now() * BASE_TEMPORAL_FREQ * visualLevel;
       for (let i = 0; i < BAR_COUNT; i++) {
         const wave = 0.5 + 0.5 * Math.sin(i * SPATIAL_FREQ - t);
@@ -110,16 +140,16 @@ export function WaveformVisualizer({
           MIN_ACTIVE_BAR_HEIGHT,
           visualLevel * MAX_BAR_HEIGHT * wave
         );
-        drawRoundedBar(startX + i * barStride, barHeight, color);
+        drawRoundedBar(startX + i * barStride, barHeight, colorRef.current, barWidth, cornerRadius);
       }
-      drawThreshold();
+      drawThreshold(startX, clusterWidth, thresholdY);
       animFrameRef.current = requestAnimationFrame(loop);
     };
 
     animFrameRef.current = requestAnimationFrame(loop);
 
     return () => cancelAnimationFrame(animFrameRef.current);
-  }, [level, isActive, color, normalizedLevel, visualLevel, width, thresholdColor, thresholdY]);
+  }, []);
 
   return (
     <canvas

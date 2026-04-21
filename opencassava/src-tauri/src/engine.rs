@@ -15,7 +15,9 @@ use opencassava_core::{
     },
     download,
     intelligence::{
-        embedding_client, knowledge_base::KnowledgeBase, notes_engine,
+        embedding_client,
+        knowledge_base::{KbChunk, KnowledgeBase},
+        notes_engine,
         suggestion_engine::SuggestionEngine,
     },
     keychain,
@@ -46,7 +48,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindo
 use tauri_plugin_dialog::DialogExt;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutEvent, ShortcutState};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
 use uuid::Uuid;
 
 const OVERLAY_LABEL: &str = "overlay";
@@ -302,6 +304,7 @@ pub struct AppState {
     pub template_store: Mutex<TemplateStore>,
     pub transcript_logger: Mutex<TranscriptLogger>,
     pub knowledge_base: AsyncMutex<KnowledgeBase>,
+    pub kb_search_snapshot: AsyncRwLock<Arc<Vec<KbChunk>>>,
     pub suggestion_engine: AsyncMutex<SuggestionEngine>,
     pub audio_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub system_audio_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -361,12 +364,15 @@ impl AppState {
         let initial_mic_transmit_active = mic_transmit_enabled_by_default(&settings);
         let kb_cache = Self::persistent_data_dir().join("kb_cache.json");
         let kb_context = knowledge_base_context(&settings, kb_cache);
+        let knowledge_base = KnowledgeBase::new(
+            kb_context.cache_path,
+            kb_context.config_fingerprint,
+            kb_context.root_marker,
+        );
+        let kb_search_snapshot = Arc::new(knowledge_base.chunks.clone());
         Self {
-            knowledge_base: AsyncMutex::new(KnowledgeBase::new(
-                kb_context.cache_path,
-                kb_context.config_fingerprint,
-                kb_context.root_marker,
-            )),
+            knowledge_base: AsyncMutex::new(knowledge_base),
+            kb_search_snapshot: AsyncRwLock::new(kb_search_snapshot),
             suggestion_engine: AsyncMutex::new(SuggestionEngine::new()),
             session_store: Mutex::new(SessionStore::with_default_path()),
             template_store: Mutex::new(TemplateStore::load()),
@@ -1784,6 +1790,62 @@ struct ResolvedKbIndexConfig {
     exclude_relative_paths: Vec<PathBuf>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SettingsChangeSet {
+    kb_config_changed: bool,
+    stt_config_changed: bool,
+    push_to_talk_changed: bool,
+    content_protection_changed: bool,
+}
+
+impl SettingsChangeSet {
+    fn between(previous: &AppSettings, next: &AppSettings) -> Self {
+        let ollama_embedding_config_changed = (previous.embedding_provider == "ollama"
+            || next.embedding_provider == "ollama")
+            && (previous.ollama_base_url != next.ollama_base_url
+                || previous.ollama_embed_model != next.ollama_embed_model);
+        let openai_embedding_config_changed = (previous.embedding_provider == "openai"
+            || next.embedding_provider == "openai")
+            && (previous.open_ai_embed_base_url != next.open_ai_embed_base_url
+                || previous.open_ai_embed_model != next.open_ai_embed_model);
+        let kb_config_changed = previous.kb_folder_path != next.kb_folder_path
+            || previous.obsidian_vault_path != next.obsidian_vault_path
+            || previous.obsidian_kb_include_paths != next.obsidian_kb_include_paths
+            || previous.obsidian_notes_folder != next.obsidian_notes_folder
+            || previous.embedding_provider != next.embedding_provider
+            || ollama_embedding_config_changed
+            || openai_embedding_config_changed;
+
+        let stt_config_changed = previous.stt_provider != next.stt_provider
+            || previous.transcription_locale != next.transcription_locale
+            || previous.whisper_model != next.whisper_model
+            || previous.faster_whisper_model != next.faster_whisper_model
+            || previous.faster_whisper_compute_type != next.faster_whisper_compute_type
+            || previous.faster_whisper_device != next.faster_whisper_device
+            || previous.parakeet_model != next.parakeet_model
+            || previous.parakeet_device != next.parakeet_device
+            || previous.omni_asr_model != next.omni_asr_model
+            || previous.omni_asr_device != next.omni_asr_device
+            || previous.cohere_transcribe_model != next.cohere_transcribe_model
+            || previous.cohere_transcribe_device != next.cohere_transcribe_device
+            || previous.diarization_enabled != next.diarization_enabled
+            || previous.echo_cancellation_enabled != next.echo_cancellation_enabled;
+
+        let push_to_talk_changed = previous.mic_capture_mode != next.mic_capture_mode
+            || previous.push_to_talk_hotkey != next.push_to_talk_hotkey;
+
+        let content_protection_changed =
+            previous.hide_from_screen_share != next.hide_from_screen_share;
+
+        Self {
+            kb_config_changed,
+            stt_config_changed,
+            push_to_talk_changed,
+            content_protection_changed,
+        }
+    }
+}
+
 fn knowledge_base_context(settings: &AppSettings, cache_path: PathBuf) -> KnowledgeBaseContext {
     let (embed_url, _, embed_model) = embed_config(settings);
     let root_marker = resolved_kb_index_config(settings)
@@ -1852,11 +1914,14 @@ fn resolved_kb_index_config(settings: &AppSettings) -> Option<ResolvedKbIndexCon
 fn reinitialize_knowledge_base(state: &Arc<AppState>, settings: &AppSettings) {
     let cache_path = AppState::persistent_data_dir().join("kb_cache.json");
     let context = knowledge_base_context(settings, cache_path);
-    *state.knowledge_base.blocking_lock() = KnowledgeBase::new(
+    let knowledge_base = KnowledgeBase::new(
         context.cache_path,
         context.config_fingerprint,
         context.root_marker,
     );
+    let snapshot = Arc::new(knowledge_base.chunks.clone());
+    *state.knowledge_base.blocking_lock() = knowledge_base;
+    *state.kb_search_snapshot.blocking_write() = snapshot;
 }
 
 async fn sync_knowledge_base(
@@ -1883,16 +1948,19 @@ async fn sync_knowledge_base(
         }
     };
 
-    let count = {
+    let (count, snapshot) = {
         let mut kb = state.knowledge_base.lock().await;
-        kb.index_with_paths(
-            &config.root,
-            &config.include_paths,
-            &config.exclude_relative_paths,
-            embed_fn,
-        )
-        .await?
+        let count = kb
+            .index_with_paths(
+                &config.root,
+                &config.include_paths,
+                &config.exclude_relative_paths,
+                embed_fn,
+            )
+            .await?;
+        (count, Arc::new(kb.chunks.clone()))
     };
+    *state.kb_search_snapshot.write().await = snapshot;
 
     if let Some(app) = app {
         app.emit("kb-indexed", count).ok();
@@ -2155,26 +2223,41 @@ pub fn save_settings(
     app: AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
+    let previous_settings = state.settings.lock().unwrap().clone();
+    let changes = SettingsChangeSet::between(&previous_settings, &new_settings);
+
     if new_settings.mic_capture_mode == MicCaptureMode::PushToTalk {
         push_to_talk_shortcut_for_plugin(&new_settings.push_to_talk_hotkey)?;
     }
     let is_running = *state.is_running.lock().unwrap();
-    sync_push_to_talk_shortcut_registration(&app, &state, &new_settings, is_running)?;
+    if changes.push_to_talk_changed {
+        sync_push_to_talk_shortcut_registration(&app, &state, &new_settings, is_running)?;
+    }
 
     let mut s = state.settings.lock().unwrap();
-    *s = new_settings;
+    *s = new_settings.clone();
     state
         .mic_gate_threshold
         .store(mic_gate_threshold(&s).to_bits(), Ordering::Relaxed);
     reset_mic_transmit_sources(&state, &s);
     s.save();
-    reinitialize_knowledge_base(&state, &s);
     let hide_from_screen_share = s.hide_from_screen_share;
     drop(s);
-    // Drop any pre-warmed workers so they don't carry stale config
-    // (e.g. old language) into the next recording session.
-    clear_warmed_workers(&state);
-    set_content_protection(app, hide_from_screen_share)?;
+
+    if changes.kb_config_changed {
+        reinitialize_knowledge_base(&state, &new_settings);
+    }
+
+    if changes.stt_config_changed {
+        // Drop any pre-warmed workers so they don't carry stale config
+        // (e.g. old language) into the next recording session.
+        clear_warmed_workers(&state);
+    }
+
+    if changes.content_protection_changed {
+        set_content_protection(app, hide_from_screen_share)?;
+    }
+
     Ok(())
 }
 
@@ -2596,7 +2679,7 @@ pub fn start_transcription(
                 };
 
                 use opencassava_core::intelligence::knowledge_base::search_chunks;
-                let kb_snapshot = suggestion_state.knowledge_base.lock().await.chunks.clone();
+                let kb_snapshot = suggestion_state.kb_search_snapshot.read().await.clone();
 
                 let embed_fn = {
                     let url = embed_url.clone();
@@ -2621,7 +2704,7 @@ pub fn start_transcription(
                 };
 
                 let search_fn = move |emb: &[f32]| -> Vec<opencassava_core::models::KBResult> {
-                    search_chunks(&kb_snapshot, emb, 5, 0.4)
+                    search_chunks(kb_snapshot.as_ref(), emb, 5, 0.4)
                 };
 
                 let complete_fn = {
@@ -4157,6 +4240,23 @@ mod tests {
             error.contains("non-modifier"),
             "unexpected error message: {error}"
         );
+    }
+
+    #[test]
+    fn settings_change_set_only_flags_relevant_subsystems() {
+        let previous = AppSettings::default();
+        let mut next = previous.clone();
+        next.embedding_provider = "ollama".into();
+        next.ollama_embed_model = "nomic-embed-text-v2".into();
+        next.mic_capture_mode = MicCaptureMode::PushToTalk;
+        next.push_to_talk_hotkey = "Ctrl+Space".into();
+        next.hide_from_screen_share = !previous.hide_from_screen_share;
+
+        let changes = SettingsChangeSet::between(&previous, &next);
+        assert!(changes.kb_config_changed);
+        assert!(changes.push_to_talk_changed);
+        assert!(changes.content_protection_changed);
+        assert!(!changes.stt_config_changed);
     }
 
     #[test]

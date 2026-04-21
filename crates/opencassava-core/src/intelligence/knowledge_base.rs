@@ -180,20 +180,34 @@ pub fn search_chunks(
     top_k: usize,
     threshold: f32,
 ) -> Vec<crate::models::KBResult> {
-    let mut scored: Vec<(f32, &KbChunk)> = chunks
-        .iter()
-        .map(|chunk| (cosine_similarity(query_embedding, &chunk.embedding), chunk))
-        .filter(|(score, _)| *score >= threshold)
-        .collect();
-    scored.sort_by(|left, right| {
-        right
-            .0
-            .partial_cmp(&left.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    if top_k == 0 {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(f32, &KbChunk)> = Vec::with_capacity(top_k);
+    for chunk in chunks {
+        let score = cosine_similarity(query_embedding, &chunk.embedding);
+        if score < threshold {
+            continue;
+        }
+
+        let insert_at = scored
+            .iter()
+            .position(|(existing_score, _)| score > *existing_score)
+            .unwrap_or(scored.len());
+
+        if insert_at >= top_k {
+            continue;
+        }
+
+        scored.insert(insert_at, (score, chunk));
+        if scored.len() > top_k {
+            scored.pop();
+        }
+    }
+
     scored
         .into_iter()
-        .take(top_k)
         .map(|(score, chunk)| crate::models::KBResult {
             id: Uuid::new_v4(),
             text: chunk.text.clone(),
@@ -447,6 +461,36 @@ mod tests {
         }];
         let results = search_chunks(&chunks, &[1.0, 0.0, 0.0], 5, 0.5);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_chunks_keeps_only_top_k_without_full_sorting() {
+        let chunks = vec![
+            KbChunk {
+                text: "best".into(),
+                source_file: "f.md".into(),
+                header_context: "".into(),
+                embedding: vec![1.0, 0.0, 0.0],
+            },
+            KbChunk {
+                text: "second".into(),
+                source_file: "f.md".into(),
+                header_context: "".into(),
+                embedding: vec![0.9, 0.1, 0.0],
+            },
+            KbChunk {
+                text: "third".into(),
+                source_file: "f.md".into(),
+                header_context: "".into(),
+                embedding: vec![0.8, 0.2, 0.0],
+            },
+        ];
+
+        let results = search_chunks(&chunks, &[1.0, 0.0, 0.0], 2, 0.1);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].text, "best");
+        assert_eq!(results[1].text, "second");
+        assert!(results[0].score >= results[1].score);
     }
 
     #[tokio::test]

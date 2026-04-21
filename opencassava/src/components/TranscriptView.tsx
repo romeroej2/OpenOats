@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Utterance } from "../types";
 import { colors, radius, spacing, typography } from "../theme";
 
@@ -341,6 +341,21 @@ export function TranscriptView({
     }
   }, [currentSearchIndex, searchResults]);
 
+  const grouped = useMemo(() => groupByTimeBucket(utterances), [utterances]);
+  const bucketOffsets = useMemo(
+    () =>
+      grouped.reduce<number[]>((offsets, _bucket, index) => {
+        if (index === 0) {
+          offsets.push(0);
+          return offsets;
+        }
+
+        offsets.push((offsets[index - 1] ?? 0) + (grouped[index - 1]?.items.length ?? 0));
+        return offsets;
+      }, []),
+    [grouped],
+  );
+
   if (utterances.length === 0 && !volatileYouText && !volatileThemText) {
     return (
       <div
@@ -399,19 +414,6 @@ export function TranscriptView({
       </div>
     );
   }
-
-  const grouped = groupByTimeBucket(utterances);
-  const bucketOffsets = grouped.reduce<number[]>((offsets, _bucket, index) => {
-    if (index === 0) {
-      offsets.push(0);
-      return offsets;
-    }
-
-    const previousOffset = offsets[index - 1] ?? 0;
-    const previousSize = grouped[index - 1]?.items.length ?? 0;
-    offsets.push(previousOffset + previousSize);
-    return offsets;
-  }, []);
 
   return (
     <div
