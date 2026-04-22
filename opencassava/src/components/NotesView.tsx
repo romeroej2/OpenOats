@@ -1,4 +1,11 @@
-import { Fragment, useRef, type CSSProperties, type ReactNode, useEffect, useState } from "react";
+import {
+  Fragment,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { EnhancedNotes, MeetingTemplate } from "../types";
@@ -62,21 +69,11 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
   const [historyViewIndex, setHistoryViewIndex] = useState<number | null>(null);
   const [, setSecondsSinceRegen] = useState<number | null>(null);
 
-  // Refs to avoid stale closures in interval
-  const isGeneratingRef = useRef(isGenerating);
-  isGeneratingRef.current = isGenerating;
-  const markdownRef = useRef(markdown);
-  markdownRef.current = markdown;
-  const selectedTemplateRef = useRef(selectedTemplate);
-  selectedTemplateRef.current = selectedTemplate;
-  const sessionIdRef = useRef(sessionId);
-  sessionIdRef.current = sessionId;
-
-  // Ref to hold the latest trigger function (avoids stale closures in effects)
   const triggerAutoRegenRef = useRef<() => Promise<void>>(async () => {});
+
   const autoRegenTrigger = async () => {
-    if (isGeneratingRef.current || !sessionIdRef.current) return;
-    const currentMarkdown = markdownRef.current;
+    if (isGenerating || !sessionId) return;
+    const currentMarkdown = markdown;
     if (currentMarkdown) {
       setPreviousMarkdown(currentMarkdown);
       setSummaryHistory((prev) => [
@@ -92,8 +89,8 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
     setSecondsSinceRegen(0);
     try {
       const generatedMarkdown = await invoke<string>("generate_preview_notes", {
-        sessionId: sessionIdRef.current,
-        templateId: selectedTemplateRef.current,
+        sessionId,
+        templateId: selectedTemplate,
       });
       setMarkdown(generatedMarkdown);
     } catch (e) {
@@ -102,7 +99,10 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
       setIsGenerating(false);
     }
   };
-  triggerAutoRegenRef.current = autoRegenTrigger;
+
+  useEffect(() => {
+    triggerAutoRegenRef.current = autoRegenTrigger;
+  });
 
   useEffect(() => {
     invoke<MeetingTemplate[]>("list_templates").then((ts) => {
@@ -162,7 +162,9 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
   useEffect(() => {
     if (!autoRegen || !isRunning || !sessionId) return;
 
-    const intervalId = window.setInterval(() => triggerAutoRegenRef.current(), regenIntervalSec * 1000);
+    const intervalId = window.setInterval(() => {
+      void triggerAutoRegenRef.current();
+    }, regenIntervalSec * 1000);
 
     return () => clearInterval(intervalId);
   }, [autoRegen, isRunning, sessionId, regenIntervalSec]);
@@ -280,7 +282,9 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
               if (!canAutoSummarize) return;
               const enabling = !autoRegen;
               setAutoRegen(enabling);
-              if (enabling) triggerAutoRegenRef.current();
+              if (enabling) {
+                void autoRegenTrigger();
+              }
             }}
             style={{
               display: "flex",
@@ -360,7 +364,9 @@ export function NotesView({ sessionId, initialNotes, onNotesChange, isRunning }:
                   : "Starting..."}
               </span>
               <button
-                onClick={() => triggerAutoRegenRef.current()}
+                onClick={() => {
+                  void autoRegenTrigger();
+                }}
                 disabled={isGenerating}
                 style={{
                   padding: `${spacing[1]}px ${spacing[2]}px`,
