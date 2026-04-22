@@ -21,3 +21,6 @@ opencassava/.npm-cache/
 Cargo.lock
 /docs/superpowers
 logs/
+bun.lock
+package-lock.json
+package-lock.json

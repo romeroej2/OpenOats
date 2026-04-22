@@ -5,12 +5,28 @@ import { colors, typography, spacing } from "../theme";
 
 interface Props {
   utterances: Utterance[];
+  speakerLabels: Record<string, string>;
   onClose: () => void;
 }
 
 type ExportFormat = "markdown" | "txt" | "json";
 
-export function ExportMenu({ utterances, onClose }: Props) {
+function speakerKeyForUtterance(utterance: Utterance): string {
+  return utterance.participantId || utterance.speaker || "them";
+}
+
+function displaySpeakerLabel(
+  utterance: Utterance,
+  speakerLabels: Record<string, string>,
+): string {
+  return (
+    speakerLabels[speakerKeyForUtterance(utterance)] ||
+    utterance.participantLabel ||
+    (utterance.speaker === "you" ? "You" : "Them")
+  );
+}
+
+export function ExportMenu({ utterances, speakerLabels, onClose }: Props) {
   const [format, setFormat] = useState<ExportFormat>("markdown");
   const [isExporting, setIsExporting] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -21,7 +37,7 @@ export function ExportMenu({ utterances, onClose }: Props) {
         return utterances
           .map(
             (u) =>
-              `**${u.participantLabel || (u.speaker === "you" ? "You" : "Them")}** (${new Date(
+              `**${displaySpeakerLabel(u, speakerLabels)}** (${new Date(
                 u.timestamp
               ).toLocaleTimeString()})\n${u.text}\n`
           )
@@ -30,13 +46,22 @@ export function ExportMenu({ utterances, onClose }: Props) {
         return utterances
           .map(
             (u) =>
-              `[${u.participantLabel || (u.speaker === "you" ? "You" : "Them")}] ${new Date(
+              `[${displaySpeakerLabel(u, speakerLabels)}] ${new Date(
                 u.timestamp
               ).toLocaleTimeString()}: ${u.text}`
           )
           .join("\n");
       case "json":
-        return JSON.stringify(utterances, null, 2);
+        return JSON.stringify(
+          utterances.map((utterance) => {
+            const manualLabel = speakerLabels[speakerKeyForUtterance(utterance)];
+            return manualLabel
+              ? { ...utterance, participantLabel: manualLabel }
+              : utterance;
+          }),
+          null,
+          2,
+        );
     }
   };
 

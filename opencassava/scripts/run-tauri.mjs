@@ -1,13 +1,52 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import "./sync-version.mjs";
 
 const args = process.argv.slice(2);
 const isBuild = args.includes("build");
 const powershell = process.platform === "win32" ? "powershell.exe" : "pwsh";
-const tauriCommand = process.platform === "win32"
-  ? ["cmd.exe", ["/d", "/s", "/c", ".\\node_modules\\.bin\\tauri.cmd", ...args]]
-  : ["./node_modules/.bin/tauri", args];
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const appRoot = path.resolve(scriptDir, "..");
+const workspaceRoot = path.resolve(appRoot, "..");
+
+function quoteWindowsArg(arg) {
+  if (!arg.length) {
+    return "\"\"";
+  }
+
+  return /[\s"]/u.test(arg) ? `"${arg.replace(/"/g, "\\\"")}"` : arg;
+}
+
+function resolveTauriCommand(commandArgs) {
+  const tauriCandidates = process.platform === "win32"
+    ? [
+        path.join(appRoot, "node_modules", ".bin", "tauri.cmd"),
+        path.join(workspaceRoot, "node_modules", ".bin", "tauri.cmd"),
+      ]
+    : [
+        path.join(appRoot, "node_modules", ".bin", "tauri"),
+        path.join(workspaceRoot, "node_modules", ".bin", "tauri"),
+      ];
+
+  const tauriBinary = tauriCandidates.find((candidate) => existsSync(candidate));
+  if (!tauriBinary) {
+    throw new Error(
+      `Unable to find the Tauri CLI in ${appRoot} or ${workspaceRoot}. Run npm install in one of those directories.`,
+    );
+  }
+
+  if (process.platform === "win32") {
+    const command = [quoteWindowsArg(tauriBinary), ...commandArgs.map(quoteWindowsArg)].join(" ");
+    return ["cmd.exe", ["/d", "/s", "/c", command]];
+  }
+
+  return [tauriBinary, commandArgs];
+}
+
+const tauriCommand = resolveTauriCommand(args);
 
 function run(command, commandArgs) {
   return new Promise((resolve, reject) => {

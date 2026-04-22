@@ -180,7 +180,13 @@ export function TranscriptWorkspace({ currentSessionId }: TranscriptWorkspacePro
         />
       </div>
 
-      {showExport ? <ExportMenu utterances={utterances} onClose={() => setShowExport(false)} /> : null}
+      {showExport ? (
+        <ExportMenu
+          utterances={utterances}
+          speakerLabels={speakerLabels}
+          onClose={() => setShowExport(false)}
+        />
+      ) : null}
     </>
   );
 }

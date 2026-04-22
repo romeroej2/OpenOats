@@ -1,4 +1,8 @@
 {
+  "private": true,
+  "workspaces": [
+    "opencassava"
+  ],
   "scripts": {
     "dev": "npm --prefix ./opencassava run dev",
     "build": "npm --prefix ./opencassava run build",
