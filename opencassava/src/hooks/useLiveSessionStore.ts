@@ -42,6 +42,26 @@ interface SuggestionPayload {
 
 type Listener = () => void;
 
+function looksLikeSourceReferenceList(text: string): boolean {
+  const parts = text
+    .split(" . ")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    return false;
+  }
+
+  return parts.every((part) => {
+    const normalized = part.replace(/\\/g, "/");
+    const hasMarkdownTarget = normalized.includes(".md");
+    const hasHeadingAnchor = normalized.includes("#");
+    const pathLike =
+      normalized.startsWith("OpenCassava/") || normalized.includes("/") || normalized.includes("\\");
+    return hasMarkdownTarget && hasHeadingAnchor && pathLike;
+  });
+}
+
 const EMPTY_AUDIO_LEVELS: AudioLevelsState = {
   raw: 0,
   mic: 0,
@@ -153,6 +173,18 @@ class LiveSessionStore {
   };
 
   addSuggestion = (payload: SuggestionPayload) => {
+    const text = payload.text.trim();
+    if (!text || looksLikeSourceReferenceList(text)) {
+      this.update((current) => ({
+        ...current,
+        suggestionStatus: {
+          ...current.suggestionStatus,
+          isGenerating: false,
+        },
+      }));
+      return;
+    }
+
     this.update((current) => ({
       ...current,
       suggestions: [
@@ -160,7 +192,7 @@ class LiveSessionStore {
         {
           id: payload.id,
           kind: payload.kind || "knowledge_base",
-          text: payload.text,
+          text,
           timestamp: new Date().toISOString(),
           kbHits: payload.kbHits || [],
         },

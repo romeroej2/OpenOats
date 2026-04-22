@@ -157,12 +157,15 @@ function App() {
   const [pushToTalkButtonHeld, setPushToTalkButtonHeld] = useState(false);
   const [hasUnreadAutoSummary, setHasUnreadAutoSummary] = useState(false);
   const currentSessionIdRef = useRef<string | undefined>(currentSessionId);
-  currentSessionIdRef.current = currentSessionId;
   const activeDrawerRef = useRef<DrawerKey | null>(activeDrawer);
-  activeDrawerRef.current = activeDrawer;
   const suggestionCount = useLiveSessionStore((state) => state.suggestions.length);
 
   useLiveSessionSubscriptions();
+
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+    activeDrawerRef.current = activeDrawer;
+  }, [activeDrawer, currentSessionId]);
 
   const isPushToTalkMode = settings?.micCaptureMode === "push-to-talk";
   const desiredMicTransmitActive = !isPushToTalkMode || pushToTalkButtonHeld;

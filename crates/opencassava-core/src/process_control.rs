@@ -276,7 +276,7 @@ fn signal_process(pid: i32, signal: i32) -> io::Result<bool> {
 
 #[cfg(unix)]
 fn process_descendants(root_pid: i32) -> io::Result<Vec<i32>> {
-    let output = Command::new("ps")
+    let output = Command::new("/bin/ps")
         .args(["-A", "-o", "pid=", "-o", "ppid="])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -352,7 +352,7 @@ mod tests {
 
         #[cfg(not(windows))]
         let mut command = {
-            let mut command = Command::new("sh");
+            let mut command = Command::new("/bin/sh");
             command.args(["-c", "sleep 30"]);
             command
         };

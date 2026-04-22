@@ -172,6 +172,35 @@ impl SuggestionEngine {
         self.last_suggestion_time = Some(Instant::now());
     }
 
+    fn normalize_suggestion_text(raw: &str) -> Option<String> {
+        let trimmed = strip_fences(raw).trim();
+        if trimmed.is_empty() || Self::looks_like_source_reference_list(trimmed) {
+            return None;
+        }
+        Some(trimmed.to_string())
+    }
+
+    fn looks_like_source_reference_list(text: &str) -> bool {
+        let parts = text
+            .split(" . ")
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        if parts.is_empty() {
+            return false;
+        }
+
+        parts.iter().all(|part| {
+            let normalized = part.replace('\\', "/");
+            let has_markdown_target = normalized.contains(".md");
+            let has_heading_anchor = normalized.contains('#');
+            let path_like = normalized.starts_with("OpenCassava/")
+                || normalized.contains('/')
+                || normalized.contains('\\');
+            has_markdown_target && has_heading_anchor && path_like
+        })
+    }
+
     fn normalize_question(text: &str) -> String {
         text.split_whitespace()
             .map(|part| part.trim_matches(|c: char| c.is_ascii_punctuation()))
@@ -351,7 +380,8 @@ impl SuggestionEngine {
             Message::user(prompt),
         ];
 
-        complete_fn(messages).await.ok()
+        let raw = complete_fn(messages).await.ok()?;
+        Self::normalize_suggestion_text(&raw)
     }
 
     async fn maybe_surface_smart_question<F, Fut>(
@@ -575,5 +605,26 @@ mod tests {
 
         engine.utterance_count = 9;
         assert!(engine.should_refresh_conversation_state());
+    }
+
+    #[test]
+    fn normalize_suggestion_text_rejects_blank_output() {
+        assert_eq!(SuggestionEngine::normalize_suggestion_text("   \n\t"), None);
+    }
+
+    #[test]
+    fn normalize_suggestion_text_rejects_source_reference_lists() {
+        let source_list = "OpenCassava/Meetings/2026/04/session_2026-04-22_09-29-15.md#Summary . OpenCassava/Meetings/2026/04/session_2026-04-22_09-29-15.md#Key Points . OpenCassava/Meetings/2026/04/session_2026-04-22_09-29-15.md#Decisions Made";
+        assert_eq!(SuggestionEngine::normalize_suggestion_text(source_list), None);
+    }
+
+    #[test]
+    fn normalize_suggestion_text_keeps_real_suggestions() {
+        let suggestion =
+            "Ask whether procurement needs to be involved before they commit to the revised timeline.";
+        assert_eq!(
+            SuggestionEngine::normalize_suggestion_text(suggestion),
+            Some(suggestion.to_string())
+        );
     }
 }
