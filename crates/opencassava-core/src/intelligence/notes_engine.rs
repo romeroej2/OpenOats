@@ -39,18 +39,11 @@ fn truncate_transcript(text: &str) -> String {
 /// Generate meeting notes by streaming an LLM completion.
 /// Returns the full markdown string.
 /// `on_chunk` is called for each streamed token (for live display).
-pub async fn generate_notes<F>(
+pub fn build_notes_messages(
     records: &[SessionRecord],
     template: &MeetingTemplate,
-    base_url: &str,
-    api_key: Option<&str>,
-    model: &str,
     language: &str,
-    on_chunk: F,
-) -> Result<String, String>
-where
-    F: Fn(String),
-{
+) -> Vec<crate::intelligence::llm_client::Message> {
     let raw = format_transcript(records);
     let transcript = truncate_transcript(&raw);
 
@@ -64,10 +57,25 @@ where
         )
     };
 
-    let messages = vec![
+    vec![
         crate::intelligence::llm_client::Message::system(&template.system_prompt),
         crate::intelligence::llm_client::Message::user(user_message),
-    ];
+    ]
+}
+
+pub async fn generate_notes<F>(
+    records: &[SessionRecord],
+    template: &MeetingTemplate,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    language: &str,
+    on_chunk: F,
+) -> Result<String, String>
+where
+    F: Fn(String),
+{
+    let messages = build_notes_messages(records, template, language);
 
     crate::intelligence::llm_client::stream_completion(
         base_url, api_key, model, messages, 4096, on_chunk,

@@ -56,6 +56,9 @@ export interface AppSettings {
   openAiLlmBaseUrl: string;
   openAiEmbedBaseUrl: string;
   openAiEmbedModel: string;
+  codexCliPath: string;
+  codexCliModel: string;
+  codexCliFallbackProvider: string;
   suggestionIntervalSeconds: number;
   suggestionsEnabled: boolean;
   kbFolderPath: string | null;
@@ -79,6 +82,21 @@ export interface ApiKeys {
   openAiLlmApiKey: string;
   openAiEmbedApiKey: string;
   huggingFaceToken: string;
+}
+
+export interface CodexUsageSummary {
+  totalRequests: number;
+  successfulRequests: number;
+  failedRequests: number;
+  fallbackRequests: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  unknownTokenRequests: number;
+  estimatedMeteredCostUsd: number | null;
+  billingNote: string;
+  ledgerPath: string;
 }
 
 export interface SttStatus {

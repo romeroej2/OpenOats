@@ -24,7 +24,7 @@
 
 OpenCassava sits next to your call, transcribes both sides of the conversation in real time, and searches your own notes to surface talking points right when you need them.
 
-For first-time setup with LM Studio, start here: [LM Studio Setup Guide](docs/lm-studio-setup.md)
+For first-time setup with LM Studio, start here: [LM Studio Setup Guide](docs/lm-studio-setup.md). OpenCassava can also use the local Codex CLI as the LLM backend for suggestions and notes when you want to use your ChatGPT/Codex subscription.
 
 <p align="center">
   <img src="assets/image.png" width="360" alt="OpenCassava during a call - suggestions drawn from your own notes appear at the top, live transcript below" />
@@ -59,7 +59,7 @@ Found a bug or have an idea? [Open an issue](https://github.com/romeroej2/OpenCa
 ### AI & deployment flexibility
 
 - **Runs 100% locally** - tested primarily with LM Studio for LLM suggestions and local embeddings; no audio has to leave your device.
-- **Flexible AI providers** - use local providers like Ollama, or cloud endpoints through OpenRouter and OpenAI-compatible APIs.
+- **Flexible AI providers** - use local providers like Ollama, OpenAI-compatible endpoints like LM Studio, the local Codex CLI, or cloud endpoints through OpenRouter.
 - **Multi-language transcription** - supports `whisper-rs`, [NVIDIA Parakeet](https://github.com/NVIDIA/NeMo), and [Omni-ASR](https://github.com/facebookresearch/omnilingual-asr) (1,600+ languages) for local speech recognition.
 - **Omni-ASR on Windows** - multilingual Omni-ASR runs via WSL2 on Windows. The app guides you through setup automatically.
 
@@ -139,6 +139,7 @@ The installers are output to `opencassava/src-tauri/target/release/bundle/`.
 
 - **OS:** Windows 10/11 (64-bit) or macOS 15+ (Apple Silicon)
 - **For local mode (Tested):** LM Studio (or [Ollama](https://ollama.com/)) running locally with your preferred models. For LM Studio, use `text-embedding-nomic-embed-text-v1.5` for embeddings. For Ollama, use `nomic-embed-text`.
+- **For Codex CLI mode:** install the [Codex CLI](https://www.npmjs.com/package/@openai/codex), run `codex login`, then select **Settings -> AI Providers -> Codex CLI**. This uses your existing ChatGPT/Codex login for LLM suggestions and notes; embeddings still use the embedding provider configured below.
 - **For cloud mode (Untested):** [OpenRouter](https://openrouter.ai/) API key + [Voyage AI](https://www.voyageai.com/) API key.
 - **For OpenAI-compatible embeddings:** any server implementing `/v1/embeddings`.
 
@@ -176,6 +177,48 @@ The app will detect missing prerequisites automatically and show guided setup st
 3. In **Settings -> General**, either connect a local Obsidian vault or point OpenCassava at a legacy folder of `.md` or `.txt` files.
 4. Optional: in **Settings -> General -> Audio & Capture**, switch **Mic Capture Mode** to **Push to talk** and record a shortcut if you only want your mic forwarded while a trigger is held.
 5. Click **Start Session** to go live. If push-to-talk is enabled, use the live **Hold to talk** control in the capture panel or your configured shortcut while the app window is focused. *(The first run downloads the required local Whisper speech model.)*
+
+---
+
+## Codex CLI Backend
+
+OpenCassava can use the local Codex CLI as its LLM backend for live suggestions and generated notes. This is useful when you want those features to run through your ChatGPT/Codex subscription instead of LM Studio, Ollama, OpenRouter, or another OpenAI-compatible chat endpoint.
+
+Codex CLI mode is LLM-only. Knowledge base embeddings are still produced by the configured embedding provider, such as LM Studio/OpenAI-compatible embeddings, Ollama, or Voyage.
+
+### Setup
+
+1. Install Codex CLI:
+   ```powershell
+   npm install -g @openai/codex
+   ```
+2. Sign in:
+   ```powershell
+   codex login
+   ```
+3. In OpenCassava, open **Settings -> AI Providers** and choose **Codex CLI**.
+4. Leave **Codex CLI Command** as `codex` unless you need to provide an explicit path.
+5. Click **Check**. The check runs `codex --version` and a real non-interactive `codex exec` smoke test that must return `OK`.
+
+On Windows, OpenCassava resolves `codex` to executable shims such as `%APPDATA%\npm\codex.cmd`, even when the app does not inherit your terminal PATH. If you set a manual path, use `codex.cmd` or `codex.exe`; do not use the PowerShell `codex.ps1` shim.
+
+### Runtime Behavior
+
+- Codex calls run in an isolated OpenCassava app-data workspace, not inside this repo.
+- The app invokes Codex with read-only sandboxing, ephemeral sessions, JSON output, and no approval prompts.
+- Live suggestions use a shorter timeout; notes generation uses a longer timeout.
+- Codex fallback is explicit. By default, Codex failures surface as errors instead of silently using another provider. You can choose a fallback provider in Settings.
+
+### Usage Tracking
+
+OpenCassava records Codex usage locally in `codex_usage.jsonl` under the app data directory. The Settings screen summarizes:
+
+- total requests
+- successful, failed, and fallback requests
+- input, cached input, output, and total tokens when Codex emits usage data
+- requests where token counts were unavailable
+
+Because Codex CLI mode uses your ChatGPT/Codex login, OpenCassava tracks requests and tokens but does not infer a separate metered API bill. The displayed cost is therefore described as included in your ChatGPT/Codex plan unless a future provider exposes billable API pricing directly.
 
 ---
 
@@ -228,7 +271,7 @@ OpenCassava is built on a cross-platform Rust core with a shared React frontend.
 | Core logic | Rust (`opencassava-core`) |
 | Transcription | whisper-rs (default) · faster-whisper · NVIDIA Parakeet · Omni-ASR |
 | Audio capture | cpal (mic), WASAPI (Windows system audio) |
-| LLM inference | OpenRouter API or [Ollama](https://ollama.com/) |
+| LLM inference | OpenRouter API, [Ollama](https://ollama.com/), OpenAI-compatible endpoints, or Codex CLI |
 | Embeddings | Voyage AI, Ollama, or OpenAI-compatible |
 | Frontend UI | React 18 + TypeScript + Vite |
 | Secret storage | Windows Credential Manager / macOS Keychain |

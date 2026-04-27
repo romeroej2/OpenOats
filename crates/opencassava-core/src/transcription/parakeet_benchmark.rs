@@ -419,7 +419,9 @@ fn measure_process_rss(pid: u32, wait: Duration) -> Result<u64, String> {
     system.refresh_processes_specifics(ProcessRefreshKind::new().with_memory());
     snapshot_process_tree_metrics(&system, pid)
         .map(|summary| summary.peak_rss_bytes)
-        .ok_or_else(|| format!("Benchmark worker process {pid} exited before RSS could be sampled."))
+        .ok_or_else(|| {
+            format!("Benchmark worker process {pid} exited before RSS could be sampled.")
+        })
 }
 
 fn collect_process_tree_pids(root: Pid, parents: &HashMap<Pid, Option<Pid>>) -> Vec<Pid> {
@@ -488,7 +490,9 @@ impl ProcessMonitor {
             let mut peak_rss_bytes = 0_u64;
 
             loop {
-                system.refresh_processes_specifics(ProcessRefreshKind::new().with_cpu().with_memory());
+                system.refresh_processes_specifics(
+                    ProcessRefreshKind::new().with_cpu().with_memory(),
+                );
                 match snapshot_process_tree_metrics(&system, pid) {
                     Some(summary) => {
                         total_cpu += f64::from(summary.average_cpu_percent);

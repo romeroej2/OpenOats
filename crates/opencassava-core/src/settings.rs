@@ -103,6 +103,18 @@ pub struct AppSettings {
     #[serde(default = "default_openai_embed_model", alias = "open_ai_embed_model")]
     pub open_ai_embed_model: String,
 
+    #[serde(default = "default_codex_cli_path", alias = "codex_cli_path")]
+    pub codex_cli_path: String,
+
+    #[serde(default, alias = "codex_cli_model")]
+    pub codex_cli_model: String,
+
+    #[serde(
+        default = "default_codex_cli_fallback_provider",
+        alias = "codex_cli_fallback_provider"
+    )]
+    pub codex_cli_fallback_provider: String,
+
     #[serde(
         default = "default_suggestion_interval_seconds",
         alias = "suggestion_interval_seconds"
@@ -278,6 +290,9 @@ impl Default for AppSettings {
             open_ai_llm_base_url: default_openai_llm_url(),
             open_ai_embed_base_url: default_openai_embed_url(),
             open_ai_embed_model: default_openai_embed_model(),
+            codex_cli_path: default_codex_cli_path(),
+            codex_cli_model: String::new(),
+            codex_cli_fallback_provider: default_codex_cli_fallback_provider(),
             suggestion_interval_seconds: default_suggestion_interval_seconds(),
             suggestions_enabled: default_true(),
             kb_folder_path: None,
@@ -377,6 +392,12 @@ fn default_openai_embed_url() -> String {
 }
 fn default_openai_embed_model() -> String {
     "text-embedding-nomic-embed-text-v1.5".into()
+}
+fn default_codex_cli_path() -> String {
+    "codex".into()
+}
+fn default_codex_cli_fallback_provider() -> String {
+    "disabled".into()
 }
 fn default_suggestion_interval_seconds() -> u64 {
     30
@@ -490,6 +511,16 @@ mod tests {
             settings.open_ai_embed_model,
             "text-embedding-nomic-embed-text-v1.5"
         );
+    }
+
+    #[test]
+    fn codex_cli_defaults_are_conscious_and_keyless() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = AppSettings::load_from(path);
+        assert_eq!(settings.codex_cli_path, "codex");
+        assert_eq!(settings.codex_cli_model, "");
+        assert_eq!(settings.codex_cli_fallback_provider, "disabled");
     }
 
     #[test]

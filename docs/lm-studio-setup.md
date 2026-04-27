@@ -4,6 +4,8 @@ This guide standardizes the local AI setup for OpenCassava using LM Studio for t
 
 Important: the current OpenCassava backend supports OpenAI-compatible endpoints, which works with LM Studio, but the current Settings screen does not expose an LM Studio preset. For now, the LM Studio path is configured through the app settings file.
 
+Alternative: if you want to use your ChatGPT/Codex subscription for suggestions and notes, OpenCassava can use Codex CLI as the LLM backend while still using LM Studio for embeddings. In that setup, follow this guide for the embedding model/server, then select **Settings -> AI Providers -> Codex CLI** in the app.
+
 ## Recommended Setup Stack
 
 Use the following three-model setup:
@@ -108,6 +110,28 @@ Notes:
 - API keys for the OpenAI-compatible LM Studio path are optional and can stay blank for local use.
 - If LM Studio serves embeddings on a different port, only change `openAiEmbedBaseUrl`.
 
+## Optional: Use Codex CLI for LLM Generation
+
+Codex CLI mode replaces LM Studio only for LLM generation: live suggestions and generated notes. Knowledge base embeddings still need LM Studio or another embedding provider.
+
+Install and sign in:
+
+```powershell
+npm install -g @openai/codex
+codex login
+```
+
+Then in OpenCassava:
+
+- Open **Settings -> AI Providers**.
+- Choose **Codex CLI**.
+- Keep **Codex CLI Command** as `codex` unless you need an explicit path.
+- Click **Check**.
+
+The check verifies both `codex --version` and a real non-interactive `codex exec` smoke test. On Windows, OpenCassava resolves `codex` to `%APPDATA%\npm\codex.cmd` when needed, which avoids failures caused by the app not inheriting your terminal PATH. If you manually configure the path, use `codex.cmd` or `codex.exe`, not `codex.ps1`.
+
+Codex usage is tracked locally in `codex_usage.jsonl` under the OpenCassava app-data directory. Settings summarizes request counts, fallback counts, and token usage when Codex emits it. Since Codex CLI uses your ChatGPT/Codex login, OpenCassava does not estimate a separate metered API bill.
+
 ## Finish Setup Inside the App
 
 - Open OpenCassava.
@@ -122,6 +146,7 @@ Notes:
 - Confirm LM Studio is running before starting OpenCassava.
 - Confirm the local chat endpoint responds.
 - Confirm the embeddings endpoint responds.
+- If using Codex CLI for LLM generation, click **Settings -> AI Providers -> Codex CLI -> Check** and confirm the smoke test passes.
 - Start a short session and verify transcript text appears for both you and them.
 - Ask a question that should match one of your knowledge base notes and confirm a suggestion appears.
 - Generate notes after the session and confirm the Nemotron model is used without cloud keys.

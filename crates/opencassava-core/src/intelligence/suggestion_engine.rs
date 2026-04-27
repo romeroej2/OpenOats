@@ -24,6 +24,7 @@ pub struct SuggestionEngine {
     pub kb_surfacing_system_prompt: String,
     pub suggestion_synthesis_system_prompt: String,
     pub smart_question_system_prompt: String,
+    pub external_kb_search_instruction: Option<String>,
     /// BCP-47 locale (e.g. "es", "fr", "auto") from transcription settings.
     pub response_language: String,
 }
@@ -41,6 +42,7 @@ impl SuggestionEngine {
             kb_surfacing_system_prompt: "You decide if an AI suggestion should be shown. Return only valid JSON.".into(),
             suggestion_synthesis_system_prompt: "You write brief, helpful suggestions for meeting participants.".into(),
             smart_question_system_prompt: "You decide when a smart clarifying question should be suggested. Return only valid JSON.".into(),
+            external_kb_search_instruction: None,
             response_language: String::new(),
         }
     }
@@ -70,6 +72,11 @@ impl SuggestionEngine {
 
         // Stage 1: Heuristic pre-filter
         if !self.passes_prefilter(transcript_window) {
+            log::info!(
+                "suggestion pipeline stopped: prefilter rejected transcript_chars={} words={}",
+                transcript_window.chars().count(),
+                transcript_window.split_whitespace().count()
+            );
             return None;
         }
 
@@ -92,6 +99,19 @@ impl SuggestionEngine {
         }
 
         if kb_hits.is_empty() {
+            if let Some(instruction) = self.external_kb_search_instruction.as_deref() {
+                log::info!("suggestion pipeline: enabling Codex external vault search");
+                kb_hits.push(KBResult::new(
+                    instruction.to_string(),
+                    "codex-workspace-search".into(),
+                    "Codex vault search".into(),
+                    1.0,
+                ));
+            }
+        }
+
+        if kb_hits.is_empty() {
+            log::info!("suggestion pipeline: no KB hits; trying smart question");
             return self
                 .maybe_surface_smart_question(
                     transcript_window,
@@ -105,6 +125,16 @@ impl SuggestionEngine {
         let decision = self
             .run_surfacing_gate(transcript_window, &kb_hits, &complete_fn)
             .await?;
+        log::info!(
+            "suggestion surfacing decision: should_surface={} confidence={:.2} relevance={:.2} helpfulness={:.2} timing={:.2} novelty={:.2} reason={}",
+            decision.should_surface,
+            decision.confidence,
+            decision.relevance_score,
+            decision.helpfulness_score,
+            decision.timing_score,
+            decision.novelty_score,
+            decision.reason
+        );
 
         if !decision.should_surface {
             return None;
@@ -113,6 +143,11 @@ impl SuggestionEngine {
         let suggestion_text = self
             .synthesize_suggestion(transcript_window, &kb_hits, &complete_fn)
             .await?;
+        log::info!(
+            "suggestion synthesized: chars={} kb_hits={}",
+            suggestion_text.chars().count(),
+            kb_hits.len()
+        );
 
         // Track recent suggestions to avoid duplicates
         self.register_recent_suggestion(suggestion_text.clone());
@@ -133,6 +168,7 @@ impl SuggestionEngine {
         self.utterance_count = 0;
         self.last_conversation_state_refresh = None;
         self.last_conversation_state_utterance_count = 0;
+        self.external_kb_search_instruction = None;
     }
 
     // -- Private helpers -------------------------------------------------------
@@ -312,11 +348,16 @@ impl SuggestionEngine {
             .join("\n");
 
         let recent = self.recent_suggestion_texts.join(", ");
+        let external_search_note = self
+            .external_kb_search_instruction
+            .as_deref()
+            .map(|instruction| format!("\nExternal search instruction:\n{instruction}\n"))
+            .unwrap_or_default();
 
         let prompt = format!(
             "Should we surface a suggestion based on this?\n\
             Recent conversation:\n{transcript_window}\n\
-            KB Context:\n{context}\n\
+            KB Context:\n{context}\n{external_search_note}\
             Recent suggestions: {recent}\n\n\
             Return JSON: {{\"shouldSurface\": bool, \"confidence\": 0-1, \
             \"relevanceScore\": 0-1, \"helpfulnessScore\": 0-1, \
@@ -330,7 +371,16 @@ impl SuggestionEngine {
 
         let raw = complete_fn(messages).await.ok()?;
         let clean = strip_fences(&raw);
-        let v: serde_json::Value = serde_json::from_str(clean).ok()?;
+        let v: serde_json::Value = match serde_json::from_str(clean) {
+            Ok(value) => value,
+            Err(err) => {
+                log::warn!(
+                    "suggestion surfacing gate returned invalid JSON: {err}; raw={}",
+                    clean.chars().take(500).collect::<String>()
+                );
+                return None;
+            }
+        };
 
         let should_surface = v["shouldSurface"].as_bool().unwrap_or(false);
         let confidence = v["confidence"].as_f64().unwrap_or(0.0);
@@ -381,7 +431,14 @@ impl SuggestionEngine {
         ];
 
         let raw = complete_fn(messages).await.ok()?;
-        Self::normalize_suggestion_text(&raw)
+        let normalized = Self::normalize_suggestion_text(&raw);
+        if normalized.is_none() {
+            log::warn!(
+                "suggestion synthesis returned unusable text: raw={}",
+                raw.chars().take(500).collect::<String>()
+            );
+        }
+        normalized
     }
 
     async fn maybe_surface_smart_question<F, Fut>(
@@ -615,7 +672,10 @@ mod tests {
     #[test]
     fn normalize_suggestion_text_rejects_source_reference_lists() {
         let source_list = "OpenCassava/Meetings/2026/04/session_2026-04-22_09-29-15.md#Summary . OpenCassava/Meetings/2026/04/session_2026-04-22_09-29-15.md#Key Points . OpenCassava/Meetings/2026/04/session_2026-04-22_09-29-15.md#Decisions Made";
-        assert_eq!(SuggestionEngine::normalize_suggestion_text(source_list), None);
+        assert_eq!(
+            SuggestionEngine::normalize_suggestion_text(source_list),
+            None
+        );
     }
 
     #[test]

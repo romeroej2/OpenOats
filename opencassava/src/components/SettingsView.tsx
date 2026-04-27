@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { normalizeShortcut, shortcutFromKeyboardEvent } from "../hotkeys";
-import type { ApiKeys, AppSettings, MeetingTemplate, SttStatus } from "../types";
+import type { ApiKeys, AppSettings, CodexUsageSummary, MeetingTemplate, SttStatus } from "../types";
 import { colors, typography, spacing } from "../theme";
 import { WaveformVisualizer } from "./WaveformVisualizer";
 import { PromptsView } from "./PromptsView";
@@ -252,6 +252,9 @@ export function SettingsView({
   const [systemAudioDevices, setSystemAudioDevices] = useState<string[]>([]);
   const [huggingFaceTokenDraft, setHuggingFaceTokenDraft] = useState("");
   const [isRecordingPushToTalkHotkey, setIsRecordingPushToTalkHotkey] = useState(false);
+  const [codexCliStatus, setCodexCliStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const [isCheckingCodexCli, setIsCheckingCodexCli] = useState(false);
+  const [codexUsage, setCodexUsage] = useState<CodexUsageSummary | null>(null);
   const persistedSettingsRef = useRef<AppSettings | null>(initialSettings);
   const persistedApiKeysRef = useRef<ApiKeys | null>(null);
   const kbSyncTimeoutRef = useRef<number | null>(null);
@@ -332,6 +335,31 @@ export function SettingsView({
   const runKnowledgeBaseSyncNow = useCallback(() => {
     scheduleKnowledgeBaseSync(persistedSettingsRef.current ?? settings, true);
   }, [scheduleKnowledgeBaseSync, settings]);
+
+  const checkCodexCli = useCallback(async () => {
+    if (!settings) {
+      return;
+    }
+    setIsCheckingCodexCli(true);
+    try {
+      const message = await invoke<string>("check_codex_cli", { path: settings.codexCliPath });
+      setCodexCliStatus({ ok: true, message });
+      setError(null);
+    } catch (err) {
+      setCodexCliStatus({ ok: false, message: String(err) });
+    } finally {
+      setIsCheckingCodexCli(false);
+    }
+  }, [settings]);
+
+  const refreshCodexUsage = useCallback(async () => {
+    try {
+      const summary = await invoke<CodexUsageSummary>("get_codex_usage_summary");
+      setCodexUsage(summary);
+    } catch (err) {
+      setError(String(err));
+    }
+  }, []);
 
   const flashSaved = useCallback(() => {
     setSaved(true);
@@ -513,6 +541,12 @@ export function SettingsView({
       setPythonStatus(null);
     }
   }, [settings, activeTab, isWindows]);
+
+  useEffect(() => {
+    if (activeTab === "ai" && settings?.llmProvider === "codex-cli") {
+      void refreshCodexUsage();
+    }
+  }, [activeTab, refreshCodexUsage, settings?.llmProvider]);
 
   useEffect(() => {
     if (initialSettings) {
@@ -716,10 +750,12 @@ export function SettingsView({
   }
 
   const isLocalUrl = (url?: string) => !url || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(url);
+  const isCodexCliMode = settings.llmProvider === "codex-cli";
   const isLocalMode =
-    (settings.llmProvider === "ollama" && settings.embeddingProvider === "ollama") ||
-    (settings.llmProvider === "openai" && settings.embeddingProvider === "openai" &&
-      isLocalUrl(settings.openAiLlmBaseUrl) && isLocalUrl(settings.openAiEmbedBaseUrl));
+    !isCodexCliMode &&
+    ((settings.llmProvider === "ollama" && settings.embeddingProvider === "ollama") ||
+      (settings.llmProvider === "openai" && settings.embeddingProvider === "openai" &&
+        isLocalUrl(settings.openAiLlmBaseUrl) && isLocalUrl(settings.openAiEmbedBaseUrl)));
 
   // Local styles for SettingsView
   const styles = {
@@ -1356,7 +1392,20 @@ export function SettingsView({
                 </div>
               </div>
               <div
-                style={styles.aiModeCard(!isLocalMode)}
+                style={styles.aiModeCard(isCodexCliMode)}
+                onClick={() =>
+                  applyImmediateSettings({
+                    llmProvider: "codex-cli",
+                  })
+                }
+              >
+                <div style={styles.aiModeTitle}>Codex CLI</div>
+                <div style={styles.aiModeDesc}>
+                  Uses your local Codex CLI login for suggestions and notes. Embeddings stay on the provider configured below.
+                </div>
+              </div>
+              <div
+                style={styles.aiModeCard(!isLocalMode && !isCodexCliMode)}
                 onClick={() =>
                   applyImmediateSettings({
                     llmProvider: "openrouter",
@@ -1378,7 +1427,101 @@ export function SettingsView({
           <div style={styles.section}>
             <h4 style={styles.sectionTitle}>Language Model</h4>
             
-            {settings.llmProvider === "openrouter" ? (
+            {settings.llmProvider === "codex-cli" ? (
+              <>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Codex CLI Command</label>
+                  <div style={{ display: "flex", gap: spacing[2], alignItems: "flex-start" }}>
+                    <input
+                      type="text"
+                      value={settings.codexCliPath}
+                      onChange={(e) => {
+                        setCodexCliStatus(null);
+                        setSettings({ ...settings, codexCliPath: e.target.value });
+                      }}
+                      onBlur={() => void commitSettingsDraft()}
+                      onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
+                      style={styles.inputStyle}
+                      placeholder="codex"
+                    />
+                    <button
+                      style={styles.buttonSecondary}
+                      onClick={() => void checkCodexCli()}
+                      disabled={isCheckingCodexCli}
+                    >
+                      {isCheckingCodexCli ? "Checking..." : "Check"}
+                    </button>
+                  </div>
+                  {codexCliStatus && (
+                    <div
+                      style={{
+                        ...styles.statusBadge(codexCliStatus.ok ? "success" : "error"),
+                        marginTop: spacing[2],
+                      }}
+                    >
+                      <span>{codexCliStatus.message}</span>
+                    </div>
+                  )}
+                </div>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Model Override (optional)</label>
+                  <input
+                    type="text"
+                    value={settings.codexCliModel}
+                    onChange={(e) => setSettings({ ...settings, codexCliModel: e.target.value })}
+                    onBlur={() => void commitSettingsDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
+                    style={styles.inputStyle}
+                    placeholder="Leave blank for Codex CLI default"
+                  />
+                </div>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Fallback Provider</label>
+                  <select
+                    value={settings.codexCliFallbackProvider}
+                    onChange={(e) =>
+                      applyImmediateSettings({ codexCliFallbackProvider: e.target.value })
+                    }
+                    style={styles.selectStyle}
+                  >
+                    <option value="disabled">Disabled - show Codex errors</option>
+                    <option value="openai">OpenAI-compatible</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="openrouter">OpenRouter</option>
+                  </select>
+                  <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                    Fallback is only used after a Codex CLI failure, timeout, or unusable response.
+                  </span>
+                </div>
+                <div style={styles.fieldWrap}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: spacing[2], alignItems: "center" }}>
+                    <label style={styles.labelStyle}>Usage</label>
+                    <button style={styles.buttonSecondary} onClick={() => void refreshCodexUsage()}>
+                      Refresh
+                    </button>
+                  </div>
+                  <div style={{ ...styles.statusBadge("success"), display: "flex", flexDirection: "column", alignItems: "flex-start", gap: spacing[1] }}>
+                    <span>
+                      Requests: {(codexUsage?.totalRequests ?? 0).toLocaleString()} total, {(codexUsage?.successfulRequests ?? 0).toLocaleString()} successful, {(codexUsage?.fallbackRequests ?? 0).toLocaleString()} fallback
+                    </span>
+                    <span>
+                      Tokens: {(codexUsage?.totalTokens ?? 0).toLocaleString()} total ({(codexUsage?.inputTokens ?? 0).toLocaleString()} input, {(codexUsage?.outputTokens ?? 0).toLocaleString()} output)
+                    </span>
+                    <span>
+                      Cost: {codexUsage?.estimatedMeteredCostUsd == null ? "included in ChatGPT/Codex plan" : `$${codexUsage.estimatedMeteredCostUsd.toFixed(4)}`}
+                    </span>
+                    {(codexUsage?.unknownTokenRequests ?? 0) > 0 && (
+                      <span>
+                        Token counts unavailable for {codexUsage?.unknownTokenRequests.toLocaleString()} request(s).
+                      </span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                    Ledger: {codexUsage?.ledgerPath ?? "No usage recorded yet."}
+                  </span>
+                </div>
+              </>
+            ) : settings.llmProvider === "openrouter" ? (
               <>
                 <div style={styles.fieldWrap}>
                   <label style={styles.labelStyle}>OpenRouter API Key</label>

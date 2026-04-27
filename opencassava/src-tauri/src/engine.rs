@@ -15,8 +15,10 @@ use opencassava_core::{
     },
     download,
     intelligence::{
+        codex_client::{self, CodexCliConfig, CodexTokenUsage},
         embedding_client,
         knowledge_base::{KbChunk, KnowledgeBase},
+        llm_client::{strip_fences, Message},
         notes_engine,
         suggestion_engine::SuggestionEngine,
     },
@@ -38,9 +40,10 @@ use opencassava_core::{
         streaming_transcriber::{SegmentProgress, StreamingTranscriber, SttBackend},
     },
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -175,6 +178,42 @@ pub struct CalibrationAudioLevelPayload {
 pub struct TranscriptionProgressPayload {
     pub captured_segments: u32,
     pub processed_segments: u32,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexUsageRecord {
+    pub id: String,
+    pub timestamp: String,
+    pub request_kind: String,
+    pub model: Option<String>,
+    pub success: bool,
+    pub outcome: String,
+    pub fallback_provider: Option<String>,
+    pub duration_ms: u128,
+    pub input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub estimated_metered_cost_usd: Option<f64>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexUsageSummary {
+    pub total_requests: u64,
+    pub successful_requests: u64,
+    pub failed_requests: u64,
+    pub fallback_requests: u64,
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub unknown_token_requests: u64,
+    pub estimated_metered_cost_usd: Option<f64>,
+    pub billing_note: String,
+    pub ledger_path: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -548,6 +587,10 @@ impl AppState {
             },
         }
     }
+}
+
+fn codex_usage_ledger_path() -> PathBuf {
+    AppState::persistent_data_dir().join("codex_usage.jsonl")
 }
 
 fn parakeet_worker_slot(
@@ -1735,19 +1778,371 @@ fn speaker_id_to_label(id: &str) -> (String, String) {
 
 // ── LLM / Embed resolver helpers ─────────────────────────────────────────────
 
-fn llm_base_url_and_key(settings: &AppSettings) -> (String, Option<String>) {
-    match settings.llm_provider.as_str() {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LlmRequestKind {
+    HealthCheck,
+    LiveSuggestion,
+    Notes,
+}
+
+impl LlmRequestKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::HealthCheck => "health_check",
+            Self::LiveSuggestion => "live_suggestion",
+            Self::Notes => "notes",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HttpLlmConfig {
+    base_url: String,
+    api_key: Option<String>,
+    model: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ResolvedLlmProvider {
+    Http(HttpLlmConfig),
+    CodexCli,
+}
+
+fn http_llm_config_for_provider(settings: &AppSettings, provider: &str) -> HttpLlmConfig {
+    match provider {
         "ollama" => (
             format!("{}/v1", settings.ollama_base_url.trim_end_matches('/')),
             None,
-        ),
+            settings.ollama_llm_model.clone(),
+        )
+            .into(),
         "openai" => (
             normalize_openai_base_url(&settings.open_ai_llm_base_url),
             keychain::KeyEntry::open_ai_llm_api_key().load(),
-        ),
+            settings.selected_model.clone(),
+        )
+            .into(),
         _ => {
             let key = keychain::KeyEntry::open_router_api_key().load();
-            ("https://openrouter.ai/api/v1".into(), key)
+            (
+                "https://openrouter.ai/api/v1".into(),
+                key,
+                settings.selected_model.clone(),
+            )
+                .into()
+        }
+    }
+}
+
+impl From<(String, Option<String>, String)> for HttpLlmConfig {
+    fn from(value: (String, Option<String>, String)) -> Self {
+        Self {
+            base_url: value.0,
+            api_key: value.1,
+            model: value.2,
+        }
+    }
+}
+
+fn resolve_llm_provider(settings: &AppSettings) -> ResolvedLlmProvider {
+    if settings.llm_provider == "codex-cli" {
+        ResolvedLlmProvider::CodexCli
+    } else {
+        ResolvedLlmProvider::Http(http_llm_config_for_provider(
+            settings,
+            &settings.llm_provider,
+        ))
+    }
+}
+
+fn codex_cli_config(settings: &AppSettings, request_kind: LlmRequestKind) -> CodexCliConfig {
+    let model = if settings.codex_cli_model.trim().is_empty() {
+        None
+    } else {
+        Some(settings.codex_cli_model.trim().to_string())
+    };
+    let command_path = if settings.codex_cli_path.trim().is_empty() {
+        "codex".to_string()
+    } else {
+        settings.codex_cli_path.trim().to_string()
+    };
+    let timeout = match request_kind {
+        LlmRequestKind::HealthCheck => Duration::from_secs(45),
+        LlmRequestKind::LiveSuggestion => Duration::from_secs(45),
+        LlmRequestKind::Notes => Duration::from_secs(120),
+    };
+    let obsidian_vault = settings
+        .obsidian_vault_pathbuf()
+        .filter(|path| path.is_dir());
+    let use_obsidian_search = request_kind == LlmRequestKind::LiveSuggestion
+        && settings.llm_provider == "codex-cli"
+        && obsidian_vault.is_some();
+    let working_dir = if use_obsidian_search {
+        obsidian_vault
+            .clone()
+            .unwrap_or_else(|| AppState::persistent_data_dir().join("codex-workspace"))
+    } else {
+        AppState::persistent_data_dir().join("codex-workspace")
+    };
+    CodexCliConfig {
+        command_path,
+        model,
+        working_dir,
+        output_dir: AppState::persistent_data_dir().join("codex-output"),
+        timeout,
+        allow_workspace_search: use_obsidian_search,
+    }
+}
+
+fn codex_obsidian_search_instruction(settings: &AppSettings) -> Option<String> {
+    if settings.llm_provider != "codex-cli" {
+        return None;
+    }
+    let vault = settings.obsidian_vault_pathbuf()?;
+    if !vault.is_dir() {
+        return None;
+    }
+
+    let include_paths = {
+        let mut paths = settings
+            .obsidian_kb_include_paths
+            .iter()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        if !settings.obsidian_notes_folder.trim().is_empty()
+            && !paths
+                .iter()
+                .any(|path| path == settings.obsidian_notes_folder.trim())
+        {
+            paths.push(settings.obsidian_notes_folder.trim().to_string());
+        }
+        if paths.is_empty() {
+            "the whole vault".into()
+        } else {
+            paths.join(", ")
+        }
+    };
+    let transcripts_folder = if settings.obsidian_transcripts_folder.trim().is_empty() {
+        "the configured transcript folder".into()
+    } else {
+        settings.obsidian_transcripts_folder.trim().to_string()
+    };
+
+    Some(format!(
+        "Codex vault search: before deciding, search the Obsidian vault mounted as the current working directory for notes that could answer or contextualize the current conversation. Prefer these paths: {include_paths}. Ignore .obsidian and {transcripts_folder}. Use only read-only inspection. If no relevant note exists, return shouldSurface=false in the JSON gate."
+    ))
+}
+
+fn codex_fallback_provider(settings: &AppSettings) -> Option<&str> {
+    match settings.codex_cli_fallback_provider.trim() {
+        "openai" => Some("openai"),
+        "ollama" => Some("ollama"),
+        "openrouter" => Some("openrouter"),
+        _ => None,
+    }
+}
+
+fn messages_require_json_response(messages: &[Message]) -> bool {
+    messages.iter().any(|message| {
+        let content = message.content.to_ascii_lowercase();
+        content.contains("return json")
+            || content.contains("return only valid json")
+            || content.contains("return only json")
+    })
+}
+
+fn is_valid_json_response(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(strip_fences(text)).is_ok()
+}
+
+fn record_codex_usage(record: CodexUsageRecord) {
+    if let Some(parent) = codex_usage_ledger_path().parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            log::warn!("Failed to create Codex usage directory: {err}");
+            return;
+        }
+    }
+
+    let line = match serde_json::to_string(&record) {
+        Ok(line) => line,
+        Err(err) => {
+            log::warn!("Failed to serialize Codex usage record: {err}");
+            return;
+        }
+    };
+
+    use std::io::Write;
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(codex_usage_ledger_path())
+    {
+        Ok(mut file) => {
+            if let Err(err) = writeln!(file, "{line}") {
+                log::warn!("Failed to write Codex usage record: {err}");
+            }
+        }
+        Err(err) => log::warn!("Failed to open Codex usage ledger: {err}"),
+    }
+}
+
+fn codex_usage_record(
+    request_kind: LlmRequestKind,
+    model: Option<String>,
+    success: bool,
+    outcome: impl Into<String>,
+    fallback_provider: Option<String>,
+    duration_ms: u128,
+    usage: Option<CodexTokenUsage>,
+    error: Option<String>,
+) -> CodexUsageRecord {
+    CodexUsageRecord {
+        id: Uuid::new_v4().to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        request_kind: request_kind.as_str().into(),
+        model,
+        success,
+        outcome: outcome.into(),
+        fallback_provider,
+        duration_ms,
+        input_tokens: usage.as_ref().and_then(|u| u.input_tokens),
+        cached_input_tokens: usage.as_ref().and_then(|u| u.cached_input_tokens),
+        output_tokens: usage.as_ref().and_then(|u| u.output_tokens),
+        total_tokens: usage.as_ref().and_then(|u| u.total_tokens),
+        // Codex CLI usage here is backed by the user's ChatGPT/Codex login. OpenCassava
+        // tracks calls and tokens, but does not infer a metered API bill from a subscription.
+        estimated_metered_cost_usd: None,
+        error,
+    }
+}
+
+async fn complete_with_http_provider(
+    config: HttpLlmConfig,
+    messages: Vec<Message>,
+    max_tokens: u32,
+) -> Result<String, String> {
+    opencassava_core::intelligence::llm_client::complete(
+        &config.base_url,
+        config.api_key.as_deref(),
+        &config.model,
+        messages,
+        max_tokens,
+    )
+    .await
+}
+
+async fn complete_with_settings(
+    settings: &AppSettings,
+    messages: Vec<Message>,
+    max_tokens: u32,
+    request_kind: LlmRequestKind,
+) -> Result<String, String> {
+    match resolve_llm_provider(settings) {
+        ResolvedLlmProvider::Http(config) => {
+            complete_with_http_provider(config, messages, max_tokens).await
+        }
+        ResolvedLlmProvider::CodexCli => {
+            let config = codex_cli_config(settings, request_kind);
+            let started = Instant::now();
+            let model = config.model.clone();
+            match codex_client::complete(&config, &messages).await {
+                Ok(completion) => {
+                    if messages_require_json_response(&messages)
+                        && !is_valid_json_response(&completion.text)
+                    {
+                        if let Some(provider) = codex_fallback_provider(settings) {
+                            log::warn!(
+                                "Codex CLI returned unusable JSON for {:?}; falling back to {}",
+                                request_kind,
+                                provider
+                            );
+                            record_codex_usage(codex_usage_record(
+                                request_kind,
+                                model,
+                                true,
+                                "fallback_after_unusable_json",
+                                Some(provider.to_string()),
+                                started.elapsed().as_millis(),
+                                completion.usage,
+                                Some("Codex CLI returned unusable JSON".into()),
+                            ));
+                            complete_with_http_provider(
+                                http_llm_config_for_provider(settings, provider),
+                                messages,
+                                max_tokens,
+                            )
+                            .await
+                        } else {
+                            record_codex_usage(codex_usage_record(
+                                request_kind,
+                                model,
+                                true,
+                                "unusable_json",
+                                None,
+                                started.elapsed().as_millis(),
+                                completion.usage,
+                                Some("Codex CLI returned unusable JSON".into()),
+                            ));
+                            Ok(completion.text)
+                        }
+                    } else {
+                        record_codex_usage(codex_usage_record(
+                            request_kind,
+                            model,
+                            true,
+                            "success",
+                            None,
+                            started.elapsed().as_millis(),
+                            completion.usage,
+                            None,
+                        ));
+                        Ok(completion.text)
+                    }
+                }
+                Err(err) => {
+                    if let Some(provider) = codex_fallback_provider(settings) {
+                        log::warn!(
+                            "Codex CLI failed for {:?}; falling back to {}: {}",
+                            request_kind,
+                            provider,
+                            err
+                        );
+                        record_codex_usage(codex_usage_record(
+                            request_kind,
+                            model,
+                            true,
+                            "fallback_after_error",
+                            Some(provider.to_string()),
+                            started.elapsed().as_millis(),
+                            None,
+                            Some(err.clone()),
+                        ));
+                        complete_with_http_provider(
+                            http_llm_config_for_provider(settings, provider),
+                            messages,
+                            max_tokens,
+                        )
+                        .await
+                    } else {
+                        record_codex_usage(codex_usage_record(
+                            request_kind,
+                            model,
+                            false,
+                            "error",
+                            None,
+                            started.elapsed().as_millis(),
+                            None,
+                            Some(err.clone()),
+                        ));
+                        Err(format!(
+                            "{err}. Check that Codex CLI is installed and signed in with `codex login`, or configure an explicit fallback provider."
+                        ))
+                    }
+                }
+            }
         }
     }
 }
@@ -2139,6 +2534,149 @@ pub fn get_stt_status(
     status.omni_asr_warming = state.omni_asr_warming.load(Ordering::Relaxed);
     status.cohere_transcribe_warming = state.cohere_transcribe_warming.load(Ordering::Relaxed);
     Ok(status)
+}
+
+#[tauri::command]
+pub async fn check_codex_cli(path: String) -> Result<String, String> {
+    let command_path = codex_client::resolve_command_path(&path)?;
+    let mut version_command = Command::new(&command_path);
+    version_command.arg("--version");
+    if let Some(path) = codex_client::process_path_env(&command_path) {
+        version_command.env("PATH", path);
+    }
+
+    let output = version_command.output()
+        .map_err(|e| {
+            format!(
+                "Could not run `{command_path} --version`: {e}. Install Codex CLI and sign in with `codex login`."
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "`{command_path} --version` failed. {}",
+            stderr.trim()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = stdout.trim();
+    let version_message = if version.is_empty() {
+        format!("{command_path} is available.")
+    } else {
+        version.to_string()
+    };
+
+    let config = CodexCliConfig {
+        command_path,
+        model: None,
+        working_dir: AppState::persistent_data_dir().join("codex-health-check"),
+        output_dir: AppState::persistent_data_dir().join("codex-output"),
+        timeout: Duration::from_secs(45),
+        allow_workspace_search: false,
+    };
+    let started = Instant::now();
+    let result = codex_client::complete(&config, &[Message::user("Reply with exactly: OK")]).await;
+
+    match result {
+        Ok(completion) => {
+            let normalized = completion.text.trim();
+            let success = normalized == "OK";
+            record_codex_usage(codex_usage_record(
+                LlmRequestKind::HealthCheck,
+                None,
+                success,
+                if success {
+                    "health_check_success"
+                } else {
+                    "health_check_unexpected_response"
+                },
+                None,
+                started.elapsed().as_millis(),
+                completion.usage,
+                (!success).then(|| format!("Expected OK, got `{normalized}`")),
+            ));
+
+            if success {
+                Ok(format!("{version_message}. Smoke test passed."))
+            } else {
+                Err(format!(
+                    "{version_message}, but Codex smoke test returned `{normalized}` instead of `OK`."
+                ))
+            }
+        }
+        Err(err) => {
+            record_codex_usage(codex_usage_record(
+                LlmRequestKind::HealthCheck,
+                None,
+                false,
+                "health_check_error",
+                None,
+                started.elapsed().as_millis(),
+                None,
+                Some(err.clone()),
+            ));
+            Err(format!(
+                "{version_message}, but Codex smoke test failed: {err}"
+            ))
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_codex_usage_summary() -> Result<CodexUsageSummary, String> {
+    let path = codex_usage_ledger_path();
+    let mut summary = CodexUsageSummary {
+        estimated_metered_cost_usd: None,
+        billing_note:
+            "Codex CLI is authenticated through your ChatGPT/Codex login; OpenCassava tracks calls and tokens, not a separate metered API bill."
+                .into(),
+        ledger_path: path.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+
+    let data = match std::fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(summary),
+        Err(err) => return Err(format!("Failed to read Codex usage ledger: {err}")),
+    };
+
+    for line in data.lines().filter(|line| !line.trim().is_empty()) {
+        let record = match serde_json::from_str::<CodexUsageRecord>(line) {
+            Ok(record) => record,
+            Err(err) => {
+                log::warn!("Skipping malformed Codex usage ledger line: {err}");
+                continue;
+            }
+        };
+        summary.total_requests += 1;
+        if record.success {
+            summary.successful_requests += 1;
+        } else {
+            summary.failed_requests += 1;
+        }
+        if record.fallback_provider.is_some() {
+            summary.fallback_requests += 1;
+        }
+
+        let known_tokens = record.input_tokens.is_some()
+            || record.cached_input_tokens.is_some()
+            || record.output_tokens.is_some()
+            || record.total_tokens.is_some();
+        if !known_tokens {
+            summary.unknown_token_requests += 1;
+        }
+
+        summary.input_tokens += record.input_tokens.unwrap_or(0);
+        summary.cached_input_tokens += record.cached_input_tokens.unwrap_or(0);
+        summary.output_tokens += record.output_tokens.unwrap_or(0);
+        summary.total_tokens += record.total_tokens.unwrap_or_else(|| {
+            record.input_tokens.unwrap_or(0) + record.output_tokens.unwrap_or(0)
+        });
+    }
+
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -2668,18 +3206,14 @@ pub fn start_transcription(
                         settings.suggestion_synthesis_system_prompt.clone();
                     engine.smart_question_system_prompt =
                         settings.smart_question_system_prompt.clone();
+                    engine.external_kb_search_instruction =
+                        codex_obsidian_search_instruction(&settings);
                     engine.response_language = settings.transcription_locale.clone();
                 }
                 let (embed_url, embed_key, embed_model) = embed_config(&settings);
-                let (llm_url, llm_key) = llm_base_url_and_key(&settings);
-                let llm_model = if settings.llm_provider == "ollama" {
-                    settings.ollama_llm_model.clone()
-                } else {
-                    settings.selected_model.clone()
-                };
-
                 use opencassava_core::intelligence::knowledge_base::search_chunks;
                 let kb_snapshot = suggestion_state.kb_search_snapshot.read().await.clone();
+                let kb_snapshot_chunks = kb_snapshot.len();
 
                 let embed_fn = {
                     let url = embed_url.clone();
@@ -2708,20 +3242,15 @@ pub fn start_transcription(
                 };
 
                 let complete_fn = {
-                    let url = llm_url.clone();
-                    let key = llm_key.clone();
-                    let model = llm_model.clone();
-                    move |messages: Vec<opencassava_core::intelligence::llm_client::Message>| {
-                        let url = url.clone();
-                        let key = key.clone();
-                        let model = model.clone();
+                    let settings = settings.clone();
+                    move |messages: Vec<Message>| {
+                        let settings = settings.clone();
                         async move {
-                            opencassava_core::intelligence::llm_client::complete(
-                                &url,
-                                key.as_deref(),
-                                &model,
+                            complete_with_settings(
+                                &settings,
                                 messages,
                                 512,
+                                LlmRequestKind::LiveSuggestion,
                             )
                             .await
                         }
@@ -2733,10 +3262,24 @@ pub fn start_transcription(
                     .filter(|u| matches!(u.speaker, Speaker::Them))
                     .collect::<Vec<_>>();
                 if recent_them.is_empty() || recent_buf.len() < 3 {
+                    log::info!(
+                        "suggestion skipped: insufficient context recent_them={} recent_total={}",
+                        recent_them.len(),
+                        recent_buf.len()
+                    );
                     suggestion_app.emit("suggestion-finished", ()).ok();
                     continue;
                 }
 
+                let codex_vault_search = settings.llm_provider == "codex-cli"
+                    && codex_obsidian_search_instruction(&settings).is_some();
+                log::info!(
+                    "suggestion check: transcript_chars={} recent_them={} codex_vault_search={} kb_snapshot_chunks={}",
+                    transcript_window.chars().count(),
+                    recent_them.len(),
+                    codex_vault_search,
+                    kb_snapshot_chunks
+                );
                 let mut engine = suggestion_state.suggestion_engine.lock().await;
                 let suggestion = engine
                     .process_transcript_window(
@@ -2750,6 +3293,19 @@ pub fn start_transcription(
                 let surfaced = suggestion.is_some();
 
                 if let Some(suggestion) = suggestion {
+                    log::info!(
+                        "suggestion surfaced: kind={:?} chars={} kb_hits={} sources={}",
+                        suggestion.kind,
+                        suggestion.text.chars().count(),
+                        suggestion.kb_hits.len(),
+                        suggestion
+                            .kb_hits
+                            .iter()
+                            .take(3)
+                            .map(|hit| hit.source_file.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                     let payload = SuggestionPayload {
                         id: suggestion.id.to_string(),
                         kind: match suggestion.kind {
@@ -2769,6 +3325,8 @@ pub fn start_transcription(
                         let _ = overlay.show();
                         emit_overlay_suggestion(overlay, payload.clone());
                     }
+                } else {
+                    log::info!("suggestion not surfaced");
                 }
 
                 suggestion_app
@@ -3529,36 +4087,41 @@ async fn generate_notes_for_session(
     }
 
     let template = resolve_template_for_generation(state, &settings, template_id.as_deref());
-    let (base_url, api_key) = llm_base_url_and_key(&settings);
-    let model = if settings.llm_provider == "ollama" {
-        settings.ollama_llm_model.clone()
-    } else {
-        settings.selected_model.clone()
-    };
 
-    let result = if behavior.emit_chunks {
+    let result = if settings.llm_provider == "codex-cli" {
+        let messages =
+            notes_engine::build_notes_messages(&records, &template, &settings.transcription_locale);
+        let markdown =
+            complete_with_settings(&settings, messages, 4096, LlmRequestKind::Notes).await?;
+        if behavior.emit_chunks {
+            app.emit("notes-chunk", markdown.clone()).ok();
+        }
+        Ok(markdown)
+    } else if behavior.emit_chunks {
         let app_c = app.clone();
         let on_chunk = move |chunk: String| {
             app_c.emit("notes-chunk", chunk).ok();
         };
+        let config = http_llm_config_for_provider(&settings, &settings.llm_provider);
 
         notes_engine::generate_notes(
             &records,
             &template,
-            &base_url,
-            api_key.as_deref(),
-            &model,
+            &config.base_url,
+            config.api_key.as_deref(),
+            &config.model,
             &settings.transcription_locale,
             on_chunk,
         )
         .await
     } else {
+        let config = http_llm_config_for_provider(&settings, &settings.llm_provider);
         notes_engine::generate_notes(
             &records,
             &template,
-            &base_url,
-            api_key.as_deref(),
-            &model,
+            &config.base_url,
+            config.api_key.as_deref(),
+            &config.model,
             &settings.transcription_locale,
             |_| {},
         )
@@ -4257,6 +4820,78 @@ mod tests {
         assert!(changes.push_to_talk_changed);
         assert!(changes.content_protection_changed);
         assert!(!changes.stt_config_changed);
+    }
+
+    #[test]
+    fn codex_cli_resolves_as_llm_provider_without_changing_embeddings() {
+        let mut settings = AppSettings::default();
+        settings.llm_provider = "codex-cli".into();
+        settings.embedding_provider = "openai".into();
+
+        assert_eq!(
+            resolve_llm_provider(&settings),
+            ResolvedLlmProvider::CodexCli
+        );
+        let (embed_url, _embed_key, embed_model) = embed_config(&settings);
+        assert_eq!(embed_url, "http://127.0.0.1:1234/v1");
+        assert_eq!(embed_model, "text-embedding-nomic-embed-text-v1.5");
+    }
+
+    #[test]
+    fn codex_cli_fallback_provider_is_explicit() {
+        let mut settings = AppSettings::default();
+        settings.codex_cli_fallback_provider = "disabled".into();
+        assert_eq!(codex_fallback_provider(&settings), None);
+
+        settings.codex_cli_fallback_provider = "ollama".into();
+        assert_eq!(codex_fallback_provider(&settings), Some("ollama"));
+    }
+
+    #[test]
+    fn codex_cli_config_uses_isolated_workspace_and_timeouts() {
+        let mut settings = AppSettings::default();
+        settings.codex_cli_path = "".into();
+        settings.codex_cli_model = "gpt-5.4".into();
+
+        let live = codex_cli_config(&settings, LlmRequestKind::LiveSuggestion);
+        assert_eq!(live.command_path, "codex");
+        assert_eq!(live.model.as_deref(), Some("gpt-5.4"));
+        assert!(live.working_dir.ends_with("codex-workspace"));
+        assert_eq!(live.timeout, Duration::from_secs(45));
+        assert!(!live.allow_workspace_search);
+
+        let notes = codex_cli_config(&settings, LlmRequestKind::Notes);
+        assert_eq!(notes.timeout, Duration::from_secs(120));
+        assert!(!notes.allow_workspace_search);
+    }
+
+    #[test]
+    fn codex_obsidian_search_instruction_requires_codex_and_vault() {
+        let mut settings = AppSettings::default();
+        settings.llm_provider = "openai".into();
+        settings.obsidian_vault_path = Some(".".into());
+        assert!(codex_obsidian_search_instruction(&settings).is_none());
+
+        settings.llm_provider = "codex-cli".into();
+        settings.obsidian_notes_folder = "Notes".into();
+        settings.obsidian_transcripts_folder = "Transcripts".into();
+        let instruction = codex_obsidian_search_instruction(&settings).unwrap();
+        assert!(instruction.contains("current working directory"));
+        assert!(instruction.contains("Notes"));
+        assert!(instruction.contains("Transcripts"));
+    }
+
+    #[test]
+    fn codex_json_detection_identifies_unusable_responses() {
+        let messages = vec![
+            Message::system("Return only valid JSON."),
+            Message::user("Should this surface?"),
+        ];
+        assert!(messages_require_json_response(&messages));
+        assert!(is_valid_json_response(
+            "```json\n{\"shouldSurface\": false}\n```"
+        ));
+        assert!(!is_valid_json_response("not json"));
     }
 
     #[test]
