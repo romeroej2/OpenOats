@@ -18,7 +18,6 @@ target/
 .claude/worktrees/
 opencassava/.npm-cache/
 .worktrees/
-Cargo.lock
 /docs/superpowers
 logs/
 bun.lock
