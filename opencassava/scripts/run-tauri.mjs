@@ -12,38 +12,23 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(scriptDir, "..");
 const workspaceRoot = path.resolve(appRoot, "..");
 
-function quoteWindowsArg(arg) {
-  if (!arg.length) {
-    return "\"\"";
-  }
-
-  return /[\s"]/u.test(arg) ? `"${arg.replace(/"/g, "\\\"")}"` : arg;
-}
-
 function resolveTauriCommand(commandArgs) {
-  const tauriCandidates = process.platform === "win32"
-    ? [
-        path.join(appRoot, "node_modules", ".bin", "tauri.cmd"),
-        path.join(workspaceRoot, "node_modules", ".bin", "tauri.cmd"),
-      ]
-    : [
-        path.join(appRoot, "node_modules", ".bin", "tauri"),
-        path.join(workspaceRoot, "node_modules", ".bin", "tauri"),
-      ];
+  // Spawn the Tauri CLI's JS entrypoint with the current Node binary instead of
+  // the platform .cmd/.sh shims. This avoids shelling out through cmd.exe on
+  // Windows (no argument quoting, no shell injection surface) and behaves
+  // identically on every platform.
+  const tauriCliCandidates = [appRoot, workspaceRoot].map((root) =>
+    path.join(root, "node_modules", "@tauri-apps", "cli", "tauri.js"),
+  );
 
-  const tauriBinary = tauriCandidates.find((candidate) => existsSync(candidate));
-  if (!tauriBinary) {
+  const tauriCli = tauriCliCandidates.find((candidate) => existsSync(candidate));
+  if (!tauriCli) {
     throw new Error(
       `Unable to find the Tauri CLI in ${appRoot} or ${workspaceRoot}. Run npm install in one of those directories.`,
     );
   }
 
-  if (process.platform === "win32") {
-    const command = [quoteWindowsArg(tauriBinary), ...commandArgs.map(quoteWindowsArg)].join(" ");
-    return ["cmd.exe", ["/d", "/s", "/c", command]];
-  }
-
-  return [tauriBinary, commandArgs];
+  return [process.execPath, [tauriCli, ...commandArgs]];
 }
 
 const tauriCommand = resolveTauriCommand(args);

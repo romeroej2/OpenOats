@@ -37,24 +37,22 @@ await updateJsonFile(path.join(workspaceRoot, "opencassava", "package.json"), (j
   version,
 }));
 
-await updateJsonFile(
-  path.join(workspaceRoot, "opencassava", "package-lock.json"),
-  (json) => ({
-    ...json,
-    version,
-    packages: json.packages
-      ? {
-          ...json.packages,
-          "": json.packages[""]
-            ? {
-                ...json.packages[""],
-                version,
-              }
-            : json.packages[""],
-        }
-      : json.packages,
-  }),
-);
+// The npm lockfile lives at the workspace root; the app is the "opencassava"
+// workspace member entry inside it.
+await updateJsonFile(path.join(workspaceRoot, "package-lock.json"), (json) => ({
+  ...json,
+  packages: json.packages
+    ? {
+        ...json.packages,
+        opencassava: json.packages.opencassava
+          ? {
+              ...json.packages.opencassava,
+              version,
+            }
+          : json.packages.opencassava,
+      }
+    : json.packages,
+}));
 
 await updateJsonFile(
   path.join(workspaceRoot, "opencassava", "src-tauri", "tauri.conf.json"),
