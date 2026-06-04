@@ -59,6 +59,7 @@ export interface AppSettings {
   codexCliPath: string;
   codexCliModel: string;
   codexCliFallbackProvider: string;
+  llamaServerPort: number;
   suggestionIntervalSeconds: number;
   suggestionsEnabled: boolean;
   kbFolderPath: string | null;
@@ -112,6 +113,18 @@ export interface SttStatus {
   parakeetWarming: boolean;
   omniAsrWarming: boolean;
   cohereTranscribeWarming: boolean;
+}
+
+export interface LlamaServerStatus {
+  binaryReady: boolean;
+  modelReady: boolean;
+  mmprojReady: boolean;
+  ready: boolean;
+  running: boolean;
+  port: number;
+  modelSource: string | null;
+  modelPath: string | null;
+  message: string;
 }
 
 export interface TranscriptionProgress {

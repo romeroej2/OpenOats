@@ -22,7 +22,7 @@ use opencassava_core::{
         notes_engine,
         suggestion_engine::SuggestionEngine,
     },
-    keychain,
+    keychain, llama_server,
     models::{EnhancedNotes, MeetingTemplate, SessionRecord, Speaker, SuggestionFeedbackEntry},
     process_control::process_registry,
     settings::{AppSettings, MicCaptureMode},
@@ -240,6 +240,20 @@ pub struct SttStatusPayload {
 #[serde(rename_all = "camelCase")]
 pub struct SttSetupStatusPayload {
     pub stage: String,
+    pub message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlamaServerStatusPayload {
+    pub binary_ready: bool,
+    pub model_ready: bool,
+    pub mmproj_ready: bool,
+    pub ready: bool,
+    pub running: bool,
+    pub port: u16,
+    pub model_source: Option<String>,
+    pub model_path: Option<String>,
     pub message: String,
 }
 
@@ -1438,6 +1452,7 @@ fn selected_stt_provider(settings: &AppSettings) -> &str {
         "parakeet" => "parakeet",
         "omni-asr" => "omni-asr",
         "cohere-transcribe" => "cohere-transcribe",
+        "llama-server" => "llama-server",
         _ => "whisper-rs",
     }
 }
@@ -1703,6 +1718,65 @@ fn resolve_stt_status(app: &AppHandle, settings: &AppSettings) -> SttStatusPaylo
         };
     }
 
+    if selected_provider == "llama-server" {
+        let assets = llama_server::assets_status();
+        let model_label = llama_server::MODEL_NAME.to_string();
+
+        if assets.ready() {
+            let source = assets.model_source.clone().unwrap_or_default();
+            return SttStatusPayload {
+                selected_provider,
+                effective_provider: "llama-server".into(),
+                selected_model: model_label.clone(),
+                effective_model: model_label,
+                selected_provider_ready: true,
+                ready: true,
+                using_fallback: false,
+                download_required: false,
+                message: if source == "managed" {
+                    "Gemma 4 12B (llama-server) is ready.".into()
+                } else {
+                    format!("Gemma 4 12B (llama-server) is ready, reusing your {source} model files.")
+                },
+                parakeet_warming: false,
+                omni_asr_warming: false,
+                cohere_transcribe_warming: false,
+            };
+        }
+
+        if whisper_ready {
+            return SttStatusPayload {
+                selected_provider,
+                effective_provider: "whisper-rs".into(),
+                selected_model: model_label,
+                effective_model: whisper_model,
+                selected_provider_ready: false,
+                ready: true,
+                using_fallback: true,
+                download_required: true,
+                message: "Gemma 4 (llama-server) needs setup. Falling back to whisper-rs.".into(),
+                parakeet_warming: false,
+                omni_asr_warming: false,
+                cohere_transcribe_warming: false,
+            };
+        }
+
+        return SttStatusPayload {
+            selected_provider,
+            effective_provider: "llama-server".into(),
+            selected_model: model_label.clone(),
+            effective_model: model_label,
+            selected_provider_ready: false,
+            ready: false,
+            using_fallback: false,
+            download_required: true,
+            message: "Gemma 4 (llama-server) needs setup before transcription can start.".into(),
+            parakeet_warming: false,
+            omni_asr_warming: false,
+            cohere_transcribe_warming: false,
+        };
+    }
+
     SttStatusPayload {
         selected_provider,
         effective_provider: "whisper-rs".into(),
@@ -1742,6 +1816,10 @@ fn resolve_stt_backend(
         SttBackend::OmniAsr(AppState::omni_asr_config(settings))
     } else if status.effective_provider == "cohere-transcribe" {
         SttBackend::CohereTranscribe(AppState::cohere_transcribe_config(settings))
+    } else if status.effective_provider == "llama-server" {
+        SttBackend::LlamaServer {
+            base_url: llama_server::base_url(settings.llama_server_port),
+        }
     } else {
         let model_path = AppState::whisper_model_path_for(app, &status.effective_model)?
             .to_string_lossy()
@@ -1810,6 +1888,12 @@ enum ResolvedLlmProvider {
 
 fn http_llm_config_for_provider(settings: &AppSettings, provider: &str) -> HttpLlmConfig {
     match provider {
+        "llama-server" => (
+            llama_server::base_url(settings.llama_server_port),
+            None,
+            llama_server::MODEL_NAME.to_string(),
+        )
+            .into(),
         "ollama" => (
             format!("{}/v1", settings.ollama_base_url.trim_end_matches('/')),
             None,
@@ -2034,15 +2118,41 @@ async fn complete_with_http_provider(
     .await
 }
 
+/// Resolve the llama-server config from settings, erroring when assets are missing.
+fn llama_server_config(settings: &AppSettings) -> Result<llama_server::LlamaServerConfig, String> {
+    llama_server::assets_status()
+        .into_config(settings.llama_server_port)
+        .ok_or_else(|| {
+            "Gemma 4 (llama-server) needs setup. Open Settings → AI Providers to download it."
+                .to_string()
+        })
+}
+
+/// Boot the managed llama-server before any HTTP call that targets it.
+/// No-op for every other provider.
+async fn ensure_llama_for_provider(settings: &AppSettings, provider: &str) -> Result<(), String> {
+    if provider != "llama-server" {
+        return Ok(());
+    }
+    llama_server::ensure_running(llama_server_config(settings)?).await
+}
+
 async fn complete_with_settings(
     settings: &AppSettings,
     messages: Vec<Message>,
     max_tokens: u32,
     request_kind: LlmRequestKind,
 ) -> Result<String, String> {
+    ensure_llama_for_provider(settings, &settings.llm_provider).await?;
     match resolve_llm_provider(settings) {
         ResolvedLlmProvider::Http(config) => {
-            complete_with_http_provider(config, messages, max_tokens).await
+            let result = complete_with_http_provider(config, messages, max_tokens).await;
+            if settings.llm_provider == "llama-server" {
+                // Gemma 4 can leak channel control tokens into content.
+                result.map(|text| llama_server::sanitize_output(&text))
+            } else {
+                result
+            }
         }
         ResolvedLlmProvider::CodexCli => {
             let config = codex_cli_config(settings, request_kind);
@@ -2224,7 +2334,8 @@ impl SettingsChangeSet {
             || previous.cohere_transcribe_model != next.cohere_transcribe_model
             || previous.cohere_transcribe_device != next.cohere_transcribe_device
             || previous.diarization_enabled != next.diarization_enabled
-            || previous.echo_cancellation_enabled != next.echo_cancellation_enabled;
+            || previous.echo_cancellation_enabled != next.echo_cancellation_enabled
+            || previous.llama_server_port != next.llama_server_port;
 
         let push_to_talk_changed = previous.mic_capture_mode != next.mic_capture_mode
             || previous.push_to_talk_hotkey != next.push_to_talk_hotkey;
@@ -2796,6 +2907,28 @@ pub fn save_settings(
         set_content_protection(app, hide_from_screen_share)?;
     }
 
+    // Pre-start llama-server in the background when the user just switched to it
+    // (assets permitting), so the first suggestion/recording is not delayed by
+    // model load; stop it to free VRAM when it is no longer selected anywhere.
+    // Config changes (e.g. port) restart it lazily on next use.
+    let llama_used_now = new_settings.llm_provider == "llama-server"
+        || selected_stt_provider(&new_settings) == "llama-server";
+    let llama_used_before = previous_settings.llm_provider == "llama-server"
+        || selected_stt_provider(&previous_settings) == "llama-server";
+    if llama_used_now && !llama_used_before {
+        if let Ok(config) = llama_server_config(&new_settings) {
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = llama_server::ensure_running(config).await {
+                    log::warn!("[llama-server] warmup after settings change failed: {e}");
+                }
+            });
+        }
+    } else if llama_used_before && !llama_used_now {
+        tauri::async_runtime::spawn(async {
+            llama_server::stop().await;
+        });
+    }
+
     Ok(())
 }
 
@@ -2856,6 +2989,28 @@ pub fn start_transcription(
     }
 
     let (backend, language, stt_status) = resolve_stt_backend(&app, &settings)?;
+
+    // Boot the llama-server in the background; the transcriber's worker thread
+    // waits for /health, buffering early VAD segments instead of dropping them.
+    if matches!(&backend, SttBackend::LlamaServer { .. }) {
+        let config = llama_server_config(&settings)?;
+        let app_for_error = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = llama_server::ensure_running(config).await {
+                log::error!("[llama-server] startup failed: {e}");
+                // Surface the failure; otherwise the session records silence.
+                app_for_error
+                    .emit(
+                        "stt-setup-status",
+                        &SttSetupStatusPayload {
+                            stage: "error".into(),
+                            message: format!("Gemma 4 (llama-server) failed to start: {e}"),
+                        },
+                    )
+                    .ok();
+            }
+        });
+    }
 
     let mut running = state.is_running.lock().unwrap();
     if *running {
@@ -3561,6 +3716,18 @@ pub async fn start_import_transcription(
     let settings = state.settings.lock().unwrap().clone();
     let (backend, language, _stt_status) = resolve_stt_backend(&app, &settings)?;
 
+    // Imports run through the same transcriber; boot llama-server when selected.
+    if matches!(&backend, SttBackend::LlamaServer { .. }) {
+        let config = llama_server_config(&settings)?;
+        let app_for_error = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = llama_server::ensure_running(config).await {
+                log::error!("[llama-server] startup failed: {e}");
+                app_for_error.emit("import-error", &e).ok();
+            }
+        });
+    }
+
     let state_clone = Arc::clone(&*state);
     let app_clone = app.clone();
     let session_id_for_event = session_id.clone();
@@ -3978,8 +4145,141 @@ pub async fn download_stt_model(
         return Ok(());
     }
 
+    if selected_provider == "llama-server" {
+        return run_llama_server_setup(&app, &settings).await;
+    }
+
     let model = resolve_whisper_model(&settings).to_string();
     download_model(app, model).await
+}
+
+/// Self-service setup for the Gemma 4 (llama-server) backend: downloads the pinned
+/// llama.cpp runtime and the GGUF model + audio mmproj (reusing LM Studio /
+/// Hugging Face cache copies when present), then boots the server until healthy.
+async fn run_llama_server_setup(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
+    app.emit(
+        "stt-setup-status",
+        &SttSetupStatusPayload {
+            stage: "prepare".into(),
+            message: "Checking Gemma 4 (llama-server) assets...".into(),
+        },
+    )
+    .ok();
+    app.emit("model-download-progress", 0).ok();
+
+    let app_progress = app.clone();
+    let assets = llama_server::ensure_assets(move |progress| {
+        // Map per-stage percentages onto one overall bar:
+        // binary 0–10, model 10–95, mmproj 95–100.
+        let overall = match progress.stage {
+            "download-binary" => progress.pct / 10,
+            "extract-binary" => 10,
+            "download-model" => 10 + progress.pct * 85 / 100,
+            "download-mmproj" => 95 + progress.pct / 20,
+            _ => progress.pct,
+        };
+        app_progress.emit("model-download-progress", overall).ok();
+        app_progress
+            .emit(
+                "stt-setup-status",
+                &SttSetupStatusPayload {
+                    stage: "model".into(),
+                    message: progress.message.clone(),
+                },
+            )
+            .ok();
+        if progress.pct % 10 == 0 {
+            app_progress
+                .emit("stt-install-log", format!("[llama-server] {}", progress.message))
+                .ok();
+        }
+    })
+    .await?;
+
+    app.emit(
+        "stt-setup-status",
+        &SttSetupStatusPayload {
+            stage: "health".into(),
+            message: "Starting llama-server and loading Gemma 4 12B...".into(),
+        },
+    )
+    .ok();
+    let config = assets
+        .into_config(settings.llama_server_port)
+        .ok_or_else(|| "llama-server assets are incomplete after setup".to_string())?;
+    llama_server::ensure_running(config).await?;
+
+    app.emit("model-download-progress", 100).ok();
+    app.emit(
+        "stt-setup-status",
+        &SttSetupStatusPayload {
+            stage: "done".into(),
+            message: "Gemma 4 (llama-server) is ready.".into(),
+        },
+    )
+    .ok();
+    app.emit("model-download-done", ()).ok();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn setup_llama_server(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let settings = state.settings.lock().unwrap().clone();
+    run_llama_server_setup(&app, &settings).await
+}
+
+#[tauri::command]
+pub async fn get_llama_server_status(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<LlamaServerStatusPayload, String> {
+    let port = state.settings.lock().unwrap().llama_server_port;
+    let assets = llama_server::assets_status();
+    let running = llama_server::is_running().await;
+    let ready = assets.ready();
+    let message = if running {
+        "llama-server is running.".into()
+    } else if ready {
+        "Gemma 4 (llama-server) is ready to start.".into()
+    } else {
+        format!(
+            "Gemma 4 (llama-server) needs setup (~{} GB download, reuses LM Studio models when found).",
+            llama_server::MODEL_DOWNLOAD_GB
+        )
+    };
+    Ok(LlamaServerStatusPayload {
+        binary_ready: assets.binary.is_some(),
+        model_ready: assets.model.is_some(),
+        mmproj_ready: assets.mmproj.is_some(),
+        ready,
+        running,
+        port,
+        model_source: assets.model_source.clone(),
+        model_path: assets.model.as_ref().map(|p| p.display().to_string()),
+        message,
+    })
+}
+
+/// Pre-start llama-server at app launch when it is the selected STT or LLM
+/// provider and its assets are already in place, so the first recording or
+/// suggestion does not pay the model-load delay.
+pub fn warm_llama_server(state: Arc<AppState>, _app: AppHandle) {
+    let settings = state.settings.lock().unwrap().clone();
+    let uses_llama = selected_stt_provider(&settings) == "llama-server"
+        || settings.llm_provider == "llama-server";
+    if !uses_llama {
+        return;
+    }
+    let Ok(config) = llama_server_config(&settings) else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = llama_server::ensure_running(config).await {
+            log::warn!("[llama-server] warmup failed: {e}");
+        }
+    });
 }
 
 async fn maybe_publish_to_obsidian(
@@ -4088,6 +4388,8 @@ async fn generate_notes_for_session(
 
     let template = resolve_template_for_generation(state, &settings, template_id.as_deref());
 
+    ensure_llama_for_provider(&settings, &settings.llm_provider).await?;
+
     let result = if settings.llm_provider == "codex-cli" {
         let messages =
             notes_engine::build_notes_messages(&records, &template, &settings.transcription_locale);
@@ -4126,6 +4428,13 @@ async fn generate_notes_for_session(
             |_| {},
         )
         .await
+    };
+
+    // Strip any leaked Gemma channel tokens from the saved notes markdown.
+    let result = if settings.llm_provider == "llama-server" {
+        result.map(|text| llama_server::sanitize_output(&text))
+    } else {
+        result
     };
 
     let result = match result {

@@ -277,9 +277,9 @@ function App() {
       setParakeetWarming(status.parakeetWarming);
       setOmniAsrWarming(status.omniAsrWarming);
       setCohereTranscribeWarming(status.cohereTranscribeWarming);
-      if (status.ready) {
-        setActiveDrawer(null);
-      }
+      // Note: no drawer auto-close here. This refresh runs on every settings
+      // change, so closing the drawer whenever STT happened to be ready made
+      // Settings unusable — every selection slammed it shut mid-review.
       setModelError(null);
       setModelState(status.ready ? "ready" : "missing");
     } catch (err) {

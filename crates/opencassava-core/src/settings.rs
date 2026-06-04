@@ -115,6 +115,9 @@ pub struct AppSettings {
     )]
     pub codex_cli_fallback_provider: String,
 
+    #[serde(default = "default_llama_server_port", alias = "llama_server_port")]
+    pub llama_server_port: u16,
+
     #[serde(
         default = "default_suggestion_interval_seconds",
         alias = "suggestion_interval_seconds"
@@ -293,6 +296,7 @@ impl Default for AppSettings {
             codex_cli_path: default_codex_cli_path(),
             codex_cli_model: String::new(),
             codex_cli_fallback_provider: default_codex_cli_fallback_provider(),
+            llama_server_port: default_llama_server_port(),
             suggestion_interval_seconds: default_suggestion_interval_seconds(),
             suggestions_enabled: default_true(),
             kb_folder_path: None,
@@ -398,6 +402,9 @@ fn default_codex_cli_path() -> String {
 }
 fn default_codex_cli_fallback_provider() -> String {
     "disabled".into()
+}
+fn default_llama_server_port() -> u16 {
+    8765
 }
 fn default_suggestion_interval_seconds() -> u64 {
     30
@@ -542,6 +549,18 @@ mod tests {
         s.save_to(path.clone());
         let s2 = AppSettings::load_from(path);
         assert_eq!(s2.whisper_model, "base");
+    }
+
+    #[test]
+    fn llama_server_port_defaults_and_persists() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = AppSettings::load_from(path.clone());
+        assert_eq!(s.llama_server_port, 8765);
+        s.llama_server_port = 9123;
+        s.save_to(path.clone());
+        let s2 = AppSettings::load_from(path);
+        assert_eq!(s2.llama_server_port, 9123);
     }
 
     #[test]

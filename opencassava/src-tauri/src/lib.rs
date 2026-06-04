@@ -37,6 +37,8 @@ pub fn run() {
             engine::start_import_transcription,
             engine::download_model,
             engine::download_stt_model,
+            engine::setup_llama_server,
+            engine::get_llama_server_status,
             engine::generate_notes,
             engine::generate_preview_notes,
             engine::index_kb,
@@ -109,6 +111,8 @@ pub fn run() {
                 Arc::clone(&_warmup_state),
                 app.handle().clone(),
             );
+            // Pre-start llama-server when Gemma 4 is the selected STT/LLM provider.
+            engine::warm_llama_server(Arc::clone(&_warmup_state), app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())

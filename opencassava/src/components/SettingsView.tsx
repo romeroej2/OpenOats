@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { normalizeShortcut, shortcutFromKeyboardEvent } from "../hotkeys";
-import type { ApiKeys, AppSettings, CodexUsageSummary, MeetingTemplate, SttStatus } from "../types";
+import type { ApiKeys, AppSettings, CodexUsageSummary, LlamaServerStatus, MeetingTemplate, SttStatus } from "../types";
 import { colors, typography, spacing } from "../theme";
 import { WaveformVisualizer } from "./WaveformVisualizer";
 import { PromptsView } from "./PromptsView";
@@ -63,6 +63,13 @@ sttProviderOptions.push({
   label: "Cohere Transcribe",
   description:
     "Local CohereLabs/cohere-transcribe-03-2026 via Transformers. Requires Python 3, a Hugging Face token, and a supported explicit locale.",
+});
+
+sttProviderOptions.push({
+  value: "llama-server",
+  label: "Gemma 4 12B (llama-server)",
+  description:
+    "Local Gemma 4 12B multimodal audio transcription via a bundled llama.cpp server. No Python required - one-click setup downloads everything (~7.6 GB) and reuses LM Studio models when found. The same server also powers the local AI agent.",
 });
 
 const parakeetModelOptions = [
@@ -255,6 +262,9 @@ export function SettingsView({
   const [codexCliStatus, setCodexCliStatus] = useState<{ ok: boolean; message: string } | null>(null);
   const [isCheckingCodexCli, setIsCheckingCodexCli] = useState(false);
   const [codexUsage, setCodexUsage] = useState<CodexUsageSummary | null>(null);
+  const [llamaStatus, setLlamaStatus] = useState<LlamaServerStatus | null>(null);
+  const [isSettingUpLlama, setIsSettingUpLlama] = useState(false);
+  const [llamaSetupMessage, setLlamaSetupMessage] = useState<string | null>(null);
   const persistedSettingsRef = useRef<AppSettings | null>(initialSettings);
   const persistedApiKeysRef = useRef<ApiKeys | null>(null);
   const kbSyncTimeoutRef = useRef<number | null>(null);
@@ -360,6 +370,42 @@ export function SettingsView({
       setError(String(err));
     }
   }, []);
+
+  const refreshLlamaStatus = useCallback(async () => {
+    try {
+      const status = await invoke<LlamaServerStatus>("get_llama_server_status");
+      setLlamaStatus(status);
+    } catch (err) {
+      setError(String(err));
+    }
+  }, []);
+
+  const setupLlamaServer = useCallback(async () => {
+    setIsSettingUpLlama(true);
+    setLlamaSetupMessage("Starting Gemma 4 (llama-server) setup...");
+    try {
+      await invoke("setup_llama_server");
+      setLlamaSetupMessage(null);
+      setError(null);
+    } catch (err) {
+      setLlamaSetupMessage(null);
+      setError(String(err));
+    } finally {
+      setIsSettingUpLlama(false);
+      void refreshLlamaStatus();
+    }
+  }, [refreshLlamaStatus]);
+
+  // Live setup progress for the AI-tab Gemma setup button.
+  useEffect(() => {
+    if (!isSettingUpLlama) return;
+    const unlisten = listen<{ stage: string; message: string }>("stt-setup-status", (e) => {
+      setLlamaSetupMessage(e.payload.message);
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, [isSettingUpLlama]);
 
   const flashSaved = useCallback(() => {
     setSaved(true);
@@ -547,6 +593,14 @@ export function SettingsView({
       void refreshCodexUsage();
     }
   }, [activeTab, refreshCodexUsage, settings?.llmProvider]);
+
+  useEffect(() => {
+    const llamaSelected =
+      settings?.llmProvider === "llama-server" || settings?.sttProvider === "llama-server";
+    if ((activeTab === "ai" || activeTab === "advanced") && llamaSelected) {
+      void refreshLlamaStatus();
+    }
+  }, [activeTab, refreshLlamaStatus, settings?.llmProvider, settings?.sttProvider]);
 
   useEffect(() => {
     if (initialSettings) {
@@ -751,8 +805,10 @@ export function SettingsView({
 
   const isLocalUrl = (url?: string) => !url || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(url);
   const isCodexCliMode = settings.llmProvider === "codex-cli";
+  const isGemmaLocalMode = settings.llmProvider === "llama-server";
   const isLocalMode =
     !isCodexCliMode &&
+    !isGemmaLocalMode &&
     ((settings.llmProvider === "ollama" && settings.embeddingProvider === "ollama") ||
       (settings.llmProvider === "openai" && settings.embeddingProvider === "openai" &&
         isLocalUrl(settings.openAiLlmBaseUrl) && isLocalUrl(settings.openAiEmbedBaseUrl)));
@@ -1392,6 +1448,19 @@ export function SettingsView({
                 </div>
               </div>
               <div
+                style={styles.aiModeCard(isGemmaLocalMode)}
+                onClick={() =>
+                  applyImmediateSettings({
+                    llmProvider: "llama-server",
+                  })
+                }
+              >
+                <div style={styles.aiModeTitle}>⚡ Gemma Local (built-in)</div>
+                <div style={styles.aiModeDesc}>
+                  Self-hosted Gemma 4 12B via a bundled llama.cpp server — no Ollama, no Python, no API keys. One-click setup; can also transcribe speech. Embeddings stay on the provider configured below.
+                </div>
+              </div>
+              <div
                 style={styles.aiModeCard(isCodexCliMode)}
                 onClick={() =>
                   applyImmediateSettings({
@@ -1405,7 +1474,7 @@ export function SettingsView({
                 </div>
               </div>
               <div
-                style={styles.aiModeCard(!isLocalMode && !isCodexCliMode)}
+                style={styles.aiModeCard(!isLocalMode && !isCodexCliMode && !isGemmaLocalMode)}
                 onClick={() =>
                   applyImmediateSettings({
                     llmProvider: "openrouter",
@@ -1427,7 +1496,72 @@ export function SettingsView({
           <div style={styles.section}>
             <h4 style={styles.sectionTitle}>Language Model</h4>
             
-            {settings.llmProvider === "codex-cli" ? (
+            {settings.llmProvider === "llama-server" ? (
+              <>
+                <div style={styles.fieldWrap}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: spacing[2], alignItems: "center" }}>
+                    <label style={styles.labelStyle}>Gemma 4 12B (llama-server)</label>
+                    <button style={styles.buttonSecondary} onClick={() => void refreshLlamaStatus()}>
+                      Refresh
+                    </button>
+                  </div>
+                  {llamaStatus && (
+                    <div
+                      style={{
+                        ...styles.statusBadge(llamaStatus.running ? "success" : llamaStatus.ready ? "warning" : "error"),
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "flex-start",
+                        gap: spacing[1],
+                      }}
+                    >
+                      <span>{llamaStatus.message}</span>
+                      {llamaStatus.modelPath && (
+                        <span style={{ fontSize: typography.sm }}>
+                          Model: {llamaStatus.modelPath}
+                          {llamaStatus.modelSource && llamaStatus.modelSource !== "managed"
+                            ? ` (reused from ${llamaStatus.modelSource})`
+                            : ""}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {llamaSetupMessage && (
+                    <div style={{ ...styles.statusBadge("warning"), marginTop: spacing[2] }}>
+                      <span>{llamaSetupMessage}</span>
+                    </div>
+                  )}
+                  <button
+                    style={{ ...styles.button, marginTop: spacing[2] }}
+                    onClick={() => void setupLlamaServer()}
+                    disabled={isSettingUpLlama}
+                  >
+                    {isSettingUpLlama
+                      ? "Setting up Gemma 4..."
+                      : llamaStatus?.ready
+                      ? "Start / verify server"
+                      : "Set up Gemma 4 (downloads what's missing)"}
+                  </button>
+                  <span style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4, display: "block" }}>
+                    Runs Gemma 4 12B Q4_K_M with its audio projector on llama.cpp. Existing LM Studio or Hugging Face model files are reused automatically; nothing leaves your machine.
+                  </span>
+                </div>
+                <div style={styles.fieldWrap}>
+                  <label style={styles.labelStyle}>Server Port</label>
+                  <input
+                    type="number"
+                    value={settings.llamaServerPort}
+                    onChange={(e) =>
+                      setSettings({ ...settings, llamaServerPort: Number(e.target.value) || 8765 })
+                    }
+                    onBlur={() => void commitSettingsDraft()}
+                    onKeyDown={(e) => handleTextFieldCommitKeyDown(e, commitSettingsDraft)}
+                    style={styles.inputStyle}
+                    placeholder="8765"
+                  />
+                </div>
+              </>
+            ) : settings.llmProvider === "codex-cli" ? (
               <>
                 <div style={styles.fieldWrap}>
                   <label style={styles.labelStyle}>Codex CLI Command</label>
@@ -2139,6 +2273,33 @@ export function SettingsView({
                 </div>
               </div>
             )}
+            {settings.sttProvider === "llama-server" && (
+              <div style={{
+                marginTop: spacing[2],
+                padding: spacing[3],
+                background: llamaStatus?.ready ? `${colors.success}12` : `${colors.warning}12`,
+                border: `1px solid ${llamaStatus?.ready ? colors.success : colors.warning}`,
+                borderRadius: 6,
+              }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: spacing[2] }}>
+                  <span style={{ fontSize: 18 }}>{llamaStatus?.ready ? "✅" : "⬇️"}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: typography.base, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
+                      {llamaStatus?.ready ? "Gemma 4 (llama-server) Ready" : "One-Click Setup Available"}
+                    </div>
+                    <div style={{ fontSize: typography.sm, color: colors.textMuted, lineHeight: 1.5 }}>
+                      {llamaStatus?.message ??
+                        "Downloads the llama.cpp runtime plus Gemma 4 12B Q4_K_M and its audio projector (~7.6 GB total). Existing LM Studio or Hugging Face model files are reused automatically."}
+                    </div>
+                    {llamaStatus?.modelSource && llamaStatus.modelSource !== "managed" && (
+                      <div style={{ fontSize: typography.sm, color: colors.textMuted, marginTop: 4 }}>
+                        Reusing model files from {llamaStatus.modelSource}.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
             {settings.sttProvider === "cohere-transcribe" && (
               <div style={{
                 marginTop: spacing[2],
@@ -2170,7 +2331,7 @@ export function SettingsView({
                 <span style={{ fontSize: typography.sm, color: colors.textMuted }}>
                   Active backend: `{sttStatus.effectiveProvider}` using `{sttStatus.effectiveModel}`.
                 </span>
-                {(settings.sttProvider === "faster-whisper" || settings.sttProvider === "parakeet" || settings.sttProvider === "omni-asr" || settings.sttProvider === "cohere-transcribe") && (
+                {(settings.sttProvider === "faster-whisper" || settings.sttProvider === "parakeet" || settings.sttProvider === "omni-asr" || settings.sttProvider === "cohere-transcribe" || settings.sttProvider === "llama-server") && (
                   <button
                     style={styles.button}
                     onClick={() => onSetupStt?.()}

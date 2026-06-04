@@ -22,7 +22,39 @@ pub enum SttBackend {
     Parakeet(crate::transcription::parakeet::ParakeetConfig),
     OmniAsr(crate::transcription::omni_asr::OmniAsrConfig),
     CohereTranscribe(crate::transcription::cohere_transcribe::CohereTranscribeConfig),
+    /// Gemma 4 12B audio STT served by the managed llama-server instance.
+    LlamaServer { base_url: String },
     Passthrough,
+}
+
+/// Per-backend VAD segmentation tuning. Whisper-class models transcribe short
+/// hard-cut chunks fine; Gemma 4's audio encoder degrades badly on them, so the
+/// llama-server backend uses longer segments and waits for fuller pauses.
+#[derive(Clone, Copy)]
+struct SegmentationParams {
+    silence_end_chunks: usize,
+    min_speech_samples: usize,
+    flush_samples: usize,
+}
+
+impl SegmentationParams {
+    fn for_backend(backend: &SttBackend) -> Self {
+        match backend {
+            SttBackend::LlamaServer { .. } => Self {
+                // 1 s pause before closing a segment, 1 s minimum speech, and up
+                // to 10 s per segment: Gemma needs natural, uncut phrases —
+                // 3 s mid-word flush cuts produce fragments and corrupted text.
+                silence_end_chunks: 10,
+                min_speech_samples: 16_000,
+                flush_samples: 160_000,
+            },
+            _ => Self {
+                silence_end_chunks: Vad::SILENCE_END_CHUNKS,
+                min_speech_samples: Vad::MIN_SPEECH_SAMPLES,
+                flush_samples: Vad::FLUSH_SAMPLES,
+            },
+        }
+    }
 }
 
 pub struct StreamingTranscriber {
@@ -436,10 +468,44 @@ impl StreamingTranscriber {
                         }
                     }
                 }
+                SttBackend::LlamaServer { base_url } => {
+                    // The engine starts the server in the background; wait here so
+                    // segments captured during model load are buffered, not dropped.
+                    if let Err(e) = crate::llama_server::wait_healthy_blocking(
+                        &base_url,
+                        std::time::Duration::from_secs(240),
+                    ) {
+                        log::error!("llama-server STT unavailable: {e}");
+                        return;
+                    }
+                    for samples in seg_rx.iter() {
+                        match crate::llama_server::transcribe_segment_blocking(
+                            &base_url, &samples, &language,
+                        ) {
+                            Ok(text) if !text.is_empty() => {
+                                if let Some(ref on_progress) = progress_for_backend {
+                                    on_progress(SegmentProgress::Processed);
+                                }
+                                log::info!(
+                                    "[transcriber] {}",
+                                    text.chars().take(80).collect::<String>()
+                                );
+                                on_final(text, None);
+                            }
+                            Ok(_) => {
+                                if let Some(ref on_progress) = progress_for_backend {
+                                    on_progress(SegmentProgress::Processed);
+                                }
+                            }
+                            Err(e) => log::error!("llama-server transcribe error: {e}"),
+                        }
+                    }
+                }
                 SttBackend::Passthrough => for _ in seg_rx.iter() {},
             }
         });
 
+        let seg_params = SegmentationParams::for_backend(&self.backend);
         let mut vad = Vad::new();
         let mut vad_buf: Vec<f32> = Vec::new();
         let mut pending_speech_buf: Vec<f32> = Vec::new();
@@ -491,12 +557,12 @@ impl StreamingTranscriber {
                     silence_count += 1;
                     speech_buf.extend_from_slice(&chunk);
 
-                    if silence_count >= Vad::SILENCE_END_CHUNKS {
+                    if silence_count >= seg_params.silence_end_chunks {
                         speaking = false;
                         silence_count = 0;
                         active_start_count = 0;
                         pending_speech_buf.clear();
-                        if speech_buf.len() > Vad::MIN_SPEECH_SAMPLES {
+                        if speech_buf.len() > seg_params.min_speech_samples {
                             match seg_tx.try_send(std::mem::take(&mut speech_buf)) {
                                 Ok(_) => {
                                     if let Some(ref on_progress) = on_progress {
@@ -516,7 +582,7 @@ impl StreamingTranscriber {
                     pending_speech_buf.clear();
                 }
 
-                if speaking && speech_buf.len() >= Vad::FLUSH_SAMPLES {
+                if speaking && speech_buf.len() >= seg_params.flush_samples {
                     match seg_tx.try_send(std::mem::take(&mut speech_buf)) {
                         Ok(_) => {
                             if let Some(ref on_progress) = on_progress {
@@ -549,7 +615,7 @@ impl StreamingTranscriber {
         }
 
         // Flush remainder
-        if speech_buf.len() > Vad::MIN_SPEECH_SAMPLES {
+        if speech_buf.len() > seg_params.min_speech_samples {
             if seg_tx.send(speech_buf).is_ok() {
                 if let Some(ref on_progress) = on_progress {
                     on_progress(SegmentProgress::Captured);
